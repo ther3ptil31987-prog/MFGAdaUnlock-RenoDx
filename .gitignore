@@ -1,6 +1,7 @@
 # Build output
 build/
 build.vs/
+/build-tests/
 out/
 *.addon64
 *.addon32

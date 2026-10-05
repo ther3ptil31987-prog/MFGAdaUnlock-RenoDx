@@ -38,6 +38,12 @@ void GuardedConstants(const sl::Constants& source, size_t prefix, Callback callb
 
 int main() {
   using namespace mfgunlock::qualityguard;
+  CHECK(LowPrecisionUiAlpha(24, FormatApi::kDxgi));
+  CHECK(!LowPrecisionUiAlpha(24, FormatApi::kVulkan));
+  CHECK(LowPrecisionUiAlpha(58, FormatApi::kVulkan));
+  CHECK(LowPrecisionUiAlpha(64, FormatApi::kVulkan));
+  CHECK(!LowPrecisionUiAlpha(64, FormatApi::kDxgi));
+  CHECK(!LowPrecisionUiAlpha(24, FormatApi::kUnknown));
 
   auto backbuffer = MakeResource(2560, 1440, 10);
   auto matching_hudless = MakeResource(2560, 1440, 10);

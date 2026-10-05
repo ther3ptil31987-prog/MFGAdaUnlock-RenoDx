@@ -30,8 +30,25 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "adaptive_quality.hpp"
+#include "adaptive_quality_v2.hpp"
+#include "adaptive_quality_v3.hpp"
+#include "quality_border.hpp"
+#include "quality_refinement.hpp"
 
 namespace mfgunlock::thingeometry {
+// Set once during addon initialization, before provider discovery starts.
+inline bool g_refinement_enabled = false;
+// Developer-only, restart-scoped border experiment. Requires the refined blend.
+inline bool g_border_confidence_enabled = false;
+// Unified experiment. It includes smooth confidence and the symmetric border
+// taper, then adds forward/inverse candidate arbitration. Kept separate from
+// the earlier component toggles so saved configurations retain their meaning.
+inline bool g_adaptive_quality_enabled = false;
+inline adaptivequality::Profile g_adaptive_quality_profile =
+    adaptivequality::Profile::kStableV1;
+inline bool g_adaptive_quality_v3_photometric = true;
+inline bool g_adaptive_quality_v3_directional_border = true;
 
 enum class Mechanism {
   ValidatedWarpBlend,
@@ -69,6 +86,8 @@ struct MechanismResult {
   bool requested = false;
   bool detected = false;
   bool applied = false;
+  adaptivequality::ComponentVersion adaptive_version =
+      adaptivequality::ComponentVersion::kNative;
   std::string detail;
 };
 
@@ -216,15 +235,21 @@ inline bool RewritePreviousScatter(std::string& ptx, std::string& why) {
       why);
 }
 
-inline bool RewriteValidatedWarpBlend(std::string& ptx, std::string& why) {
+inline bool RewriteValidatedWarpBlend(std::string& ptx,
+                                      adaptivequality::Profile profile,
+                                      std::string& why) {
   if (ptx.find("MFGUNLOCK_VALIDATED_WARP_BLEND_V1") != std::string::npos) {
     why = "validated-warp PTX is already modified";
     return false;
   }
   constexpr char kRegisters[] = ".reg .pred %p<260>;\n";
+  const char* quality_registers =
+      profile == adaptivequality::Profile::kLuminanceDirectionalV3 &&
+              g_adaptive_quality_v3_photometric
+          ? ".reg .pred %qv<7>;\n.reg .f32 %qf<8>;\n"
+          : ".reg .pred %qv<7>;\n.reg .f32 %qf<12>;\n";
   if (!ReplaceOnce(ptx, kRegisters,
-                   std::string(kRegisters) + ".reg .pred %qv<7>;\n"
-                                             ".reg .f32 %qf<12>;\n",
+                   std::string(kRegisters) + quality_registers,
                    why)) {
     return false;
   }
@@ -317,7 +342,132 @@ sub.f32 %qf4, %f133, %f121;
 @%qv1 fma.rn.f32 %f42, %qf1, %qf3, %f120;
 @%qv1 fma.rn.f32 %f41, %qf1, %qf4, %f121;
 )ptx";
-  return ReplaceOnce(ptx, kInsertion, std::string(kProgram) + kInsertion, why);
+  std::string program(kProgram);
+  const bool adaptive_v2 = g_adaptive_quality_enabled &&
+      profile == adaptivequality::Profile::kFlickerReducedV2;
+  const bool adaptive_v3 = g_adaptive_quality_enabled &&
+      profile == adaptivequality::Profile::kLuminanceDirectionalV3;
+  const bool use_refinement =
+      g_refinement_enabled || g_adaptive_quality_enabled;
+  const bool use_border =
+      g_adaptive_quality_enabled ||
+      (g_refinement_enabled && g_border_confidence_enabled);
+  if (use_refinement) {
+    constexpr const char* anchor = "min.f32 %qf1, %qf1, 0f3F800000;\n";
+    if (adaptive_v2 || adaptive_v3) {
+      constexpr const char* semantic_gates =
+          "add.f32 %qf10, %qf9, 0f3DA3D70A;\n"
+          "setp.lt.f32 %qv4, %qf10, %qf6;\n"
+          "setp.lt.f32 %qv2, %qf9, 0f3E19999A;\n"
+          "and.pred %qv4, %qv4, %qv2;\n"
+          "and.pred %qv4, %qv4, %qv3;\n"
+          "setp.gt.f32 %qv2, %qf6, 0f3E800000;\n"
+          "setp.ge.f32 %qv5, %f148, 0f3E4CCCCD;\n"
+          "and.pred %qv5, %qv5, %qv2;\n"
+          "or.pred %qv5, %qv5, %qv4;\n"
+          "and.pred %qv0, %qv0, %qv5;\n"
+          "setp.ge.f32 %qv6, %f149, 0f3E4CCCCD;\n"
+          "and.pred %qv6, %qv6, %qv2;\n"
+          "or.pred %qv6, %qv6, %qv4;\n"
+          "and.pred %qv1, %qv1, %qv6;\n";
+      constexpr const char* absolute_rgb_errors =
+          "sub.f32 %qf6, %f115, %f119;\n"
+          "sub.f32 %qf7, %f116, %f120;\n"
+          "sub.f32 %qf8, %f117, %f121;\n"
+          "abs.f32 %qf6, %qf6;\n"
+          "abs.f32 %qf7, %qf7;\n"
+          "abs.f32 %qf8, %qf8;\n"
+          "add.f32 %qf6, %qf6, %qf7;\n"
+          "add.f32 %qf6, %qf6, %qf8;\n"
+          "sub.f32 %qf9, %f125, %f131;\n"
+          "sub.f32 %qf10, %f126, %f132;\n"
+          "sub.f32 %qf11, %f127, %f133;\n"
+          "abs.f32 %qf9, %qf9;\n"
+          "abs.f32 %qf10, %qf10;\n"
+          "abs.f32 %qf11, %qf11;\n"
+          "add.f32 %qf9, %qf9, %qf10;\n"
+          "add.f32 %qf9, %qf9, %qf11;\n";
+      const bool relative_photometric =
+          adaptive_v3 && g_adaptive_quality_v3_photometric;
+      const bool directional_border =
+          adaptive_v3 && g_adaptive_quality_v3_directional_border;
+      const char* smooth_confidence = relative_photometric
+                                          ? adaptivequalityv3::kSmoothWarpConfidence
+                                          : adaptivequalityv2::kSmoothWarpConfidence;
+      if (relative_photometric || directional_border) {
+        std::string error_program =
+            relative_photometric
+                ? adaptivequalityv3::kRelativePhotometricError
+                : absolute_rgb_errors;
+        if (directional_border) {
+          error_program =
+              std::string(adaptivequalityv3::kDirectionalBorderDistances) +
+              error_program;
+        }
+        if (!ReplaceOnce(program, absolute_rgb_errors, error_program, why))
+          return false;
+      }
+      std::string confidence_program = smooth_confidence;
+      if (directional_border && !relative_photometric) {
+        confidence_program =
+            "// MFGUNLOCK_V2_NATIVE_ANCHORS_FOR_DIRECTIONAL_BORDER_V3\n"
+            "add.sat.f32 %f174, %f148, 0f00000000;\n"
+            "add.sat.f32 %f175, %f149, 0f00000000;\n" +
+            confidence_program;
+      }
+      if (!ReplaceOnce(program, semantic_gates,
+                       adaptive_v3 ? "// MFGUNLOCK_SOFT_ELIGIBILITY_V3\n"
+                                   : "// MFGUNLOCK_SOFT_ELIGIBILITY_V2\n",
+                       why) ||
+          !ReplaceOnce(program, "// MFGUNLOCK_VALIDATED_WARP_BLEND_V1\n",
+                       adaptive_v3
+                           ? "// MFGUNLOCK_VALIDATED_WARP_BLEND_V3\n"
+                           : "// MFGUNLOCK_VALIDATED_WARP_BLEND_V2\n",
+                       why) ||
+          !ReplaceOnce(program, anchor,
+                       std::string(anchor) + confidence_program, why)) {
+        return false;
+      }
+      const char* insertion = smooth_confidence;
+      if (use_border) {
+        const char* border_confidence =
+            directional_border
+                ? adaptivequalityv3::kDirectionalBorderConfidence
+                : adaptivequalityv2::kBorderConfidence;
+        if (!ReplaceOnce(program, insertion,
+                         std::string(insertion) + border_confidence,
+                         why)) {
+          return false;
+        }
+        insertion = border_confidence;
+      }
+      const char* arbitration = relative_photometric
+                                    ? adaptivequalityv3::kCandidateArbitration
+                                    : adaptivequalityv2::kCandidateArbitration;
+      if (!ReplaceOnce(program, insertion,
+                       std::string(insertion) + arbitration,
+                       why)) {
+        return false;
+      }
+    } else {
+      if (!ReplaceOnce(program, anchor, std::string(anchor) +
+                       qualityrefinement::kBlendWeights, why)) return false;
+      if (use_border &&
+          !ReplaceOnce(program, qualityrefinement::kBlendWeights,
+                       std::string(qualityrefinement::kBlendWeights) +
+                           qualityborder::kBorderWeights, why)) return false;
+      if (g_adaptive_quality_enabled) {
+        const char* insertion = use_border
+                                    ? qualityborder::kBorderWeights
+                                    : qualityrefinement::kBlendWeights;
+        if (!ReplaceOnce(program, insertion,
+                         std::string(insertion) +
+                             adaptivequality::kCandidateArbitration,
+                         why)) return false;
+      }
+    }
+  }
+  return ReplaceOnce(ptx, kInsertion, program + kInsertion, why);
 }
 
 inline const ProviderProfile* MatchProvider(const IMAGE_NT_HEADERS64* nt) {
@@ -395,6 +545,7 @@ inline bool FindPtxEntry(const uint8_t* fatbin, size_t fatbin_size,
 inline bool BuildRedirectedFatbin(const uint8_t* fatbin, size_t fatbin_size,
                                   const PtxProfile& profile,
                                   std::vector<uint8_t>& rebuilt,
+                                   adaptivequality::ComponentVersion& version,
                                   std::string& why) {
   size_t entry = 0;
   std::vector<uint8_t> source;
@@ -405,7 +556,58 @@ inline bool BuildRedirectedFatbin(const uint8_t* fatbin, size_t fatbin_size,
     return false;
   }
   if (profile.mechanism == Mechanism::ValidatedWarpBlend) {
-    if (!RewriteValidatedWarpBlend(ptx, why)) return false;
+    const std::string original_ptx = ptx;
+    const auto requested = g_adaptive_quality_enabled
+                               ? g_adaptive_quality_profile
+                               : adaptivequality::Profile::kStableV1;
+    if (RewriteValidatedWarpBlend(ptx, requested, why)) {
+      version = !g_adaptive_quality_enabled
+                    ? adaptivequality::ComponentVersion::kNative
+                    : requested ==
+                              adaptivequality::Profile::kLuminanceDirectionalV3
+                          ? adaptivequality::ComponentVersion::kV3
+                          : requested ==
+                                    adaptivequality::Profile::kFlickerReducedV2
+                                ? adaptivequality::ComponentVersion::kV2
+                                : adaptivequality::ComponentVersion::kV1;
+    } else if (g_adaptive_quality_enabled &&
+               requested != adaptivequality::Profile::kStableV1) {
+      const std::string requested_failure = why;
+      const auto fallback =
+          requested == adaptivequality::Profile::kLuminanceDirectionalV3
+              ? adaptivequality::Profile::kFlickerReducedV2
+              : adaptivequality::Profile::kStableV1;
+      ptx = original_ptx;
+      std::string fallback_reason;
+      if (!RewriteValidatedWarpBlend(ptx, fallback, fallback_reason)) {
+        if (fallback == adaptivequality::Profile::kFlickerReducedV2) {
+          ptx = original_ptx;
+          std::string v1_reason;
+          if (!RewriteValidatedWarpBlend(
+                  ptx, adaptivequality::Profile::kStableV1, v1_reason)) {
+            why = requested_failure + "; V2 fallback failed: " +
+                  fallback_reason + "; V1 fallback failed: " + v1_reason;
+            return false;
+          }
+          version = adaptivequality::ComponentVersion::kV1;
+          why = "V3 rewrite unavailable; Stable V1 fallback applied";
+        } else {
+          why = requested_failure + "; V1 fallback failed: " +
+                fallback_reason;
+          return false;
+        }
+      } else {
+        version = fallback == adaptivequality::Profile::kFlickerReducedV2
+                      ? adaptivequality::ComponentVersion::kV2
+                      : adaptivequality::ComponentVersion::kV1;
+        why = requested ==
+                      adaptivequality::Profile::kLuminanceDirectionalV3
+                  ? "V3 rewrite unavailable; Flicker-Reduced V2 fallback applied"
+                  : "V2 rewrite unavailable; Stable V1 fallback applied";
+      }
+    } else {
+      return false;
+    }
   } else if (profile.mechanism == Mechanism::PreviousScatter) {
     if (!RewritePreviousScatter(ptx, why)) return false;
   } else {
@@ -506,12 +708,14 @@ inline bool LocateUniqueFatbin(HMODULE module, const PtxProfile& profile,
 }
 
 inline bool RedirectFatbin(HMODULE module, const PtxProfile& profile,
-                           Redirect& redirect, std::string& detail) {
+                            Redirect& redirect,
+                            adaptivequality::ComponentVersion& version,
+                            std::string& detail) {
   LocatedFatbin located;
   if (!LocateUniqueFatbin(module, profile, located, detail)) return false;
   std::vector<uint8_t> rebuilt;
   if (!BuildRedirectedFatbin(located.address, located.size, profile,
-                             rebuilt, detail)) {
+                              rebuilt, version, detail)) {
     return false;
   }
   void* allocation = VirtualAlloc(nullptr, rebuilt.size(),
@@ -672,10 +876,57 @@ inline bool Apply(HMODULE module, const Options& options,
     }
     Redirect redirect;
     if (!internal::RedirectFatbin(module, *profile, redirect,
+                                  mechanism_result->adaptive_version,
                                   mechanism_result->detail)) {
       return;
     }
     mechanism_result->applied = true;
+    if ((g_refinement_enabled || g_adaptive_quality_enabled) &&
+        mechanism == Mechanism::ValidatedWarpBlend &&
+        mechanism_result->adaptive_version ==
+            adaptivequality::ComponentVersion::kV1)
+      mechanism_result->detail += "; smooth confidence V1";
+    if ((g_adaptive_quality_enabled ||
+         (g_refinement_enabled && g_border_confidence_enabled)) &&
+        mechanism == Mechanism::ValidatedWarpBlend) {
+      if (mechanism_result->adaptive_version ==
+          adaptivequality::ComponentVersion::kV3) {
+        mechanism_result->detail +=
+            g_adaptive_quality_v3_directional_border
+                ? "; motion-directional two-pixel border confidence V3"
+                : "; symmetric border V2 selected by V3 A/B control";
+      } else {
+        mechanism_result->detail +=
+            mechanism_result->adaptive_version ==
+                    adaptivequality::ComponentVersion::kV2
+                ? "; continuous two-pixel border confidence V2"
+                : "; symmetric two-pixel border confidence trial";
+      }
+    }
+    if (g_adaptive_quality_enabled &&
+        mechanism == Mechanism::ValidatedWarpBlend) {
+      if (mechanism_result->adaptive_version ==
+          adaptivequality::ComponentVersion::kV3) {
+        mechanism_result->detail +=
+            g_adaptive_quality_v3_photometric
+                ? "; luminance-normalized luma/chroma confidence V3"
+                : "; absolute RGB confidence V2 selected by V3 A/B control";
+        mechanism_result->detail +=
+            "; native-anchored forward/inverse arbitration V3";
+      } else if (mechanism_result->adaptive_version ==
+          adaptivequality::ComponentVersion::kV2) {
+        mechanism_result->detail +=
+            "; frame-local continuous confidence and zero-anchored arbitration V2";
+      } else {
+        if (g_adaptive_quality_profile !=
+            adaptivequality::Profile::kStableV1)
+          mechanism_result->detail += "; requested profile unavailable, Stable V1 fallback";
+        mechanism_result->detail +=
+            "; confidence-weighted forward/inverse candidate arbitration";
+        mechanism_result->detail +=
+            "; saturated/interior/agreement workload fast paths V1";
+      }
+    }
     redirects.push_back(std::move(redirect));
   };
 

@@ -102,8 +102,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cwchar>
 #include <cstring>
+#include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -111,6 +114,7 @@
 
 #include <d3d11.h>
 #include <d3d12.h>
+#include <dxgi1_4.h>
 
 #include <nvsdk_ngx.h>
 
@@ -120,9 +124,13 @@
 #include "./framecount.hpp"
 #include "./loadhook.hpp"
 #include "./midpoint.hpp"
+#include "./nvapi_status.hpp"
 #include "./ngx_hook.hpp"
+#include "./cuda_temporal.hpp"
+#include "./quality_build_policy.hpp"
 #include "./pacing_policy.hpp"
 #include "./thin_geometry.hpp"
+#include "./validation_status.hpp"
 #include "./blackwell.hpp"
 
 namespace {
@@ -137,6 +145,44 @@ constexpr unsigned int kMinCount = 2;
 constexpr unsigned int kMaxCount = 5;
 
 std::atomic_bool g_enabled{true};
+std::atomic_bool g_quality_refinement{false};
+std::atomic_bool g_configured_quality_refinement{false};
+// Single user-facing switch for the coordinated quality path. New installs use
+// the validated unified profile, while LoadConfig still honors an explicit
+// saved opt-out from existing users.
+std::atomic_bool g_adaptive_quality{true};
+std::atomic_bool g_configured_adaptive_quality{true};
+std::atomic<unsigned int> g_adaptive_quality_profile{
+    static_cast<unsigned int>(mfgunlock::adaptivequality::kDefaultProfile)};
+std::atomic<unsigned int> g_configured_adaptive_quality_profile{
+    static_cast<unsigned int>(mfgunlock::adaptivequality::kDefaultProfile)};
+std::atomic_bool g_adaptive_quality_v3_photometric{true};
+std::atomic_bool g_configured_adaptive_quality_v3_photometric{true};
+std::atomic_bool g_adaptive_quality_v3_directional_border{true};
+std::atomic_bool g_configured_adaptive_quality_v3_directional_border{true};
+std::atomic_bool g_adaptive_quality_v3_oriented_geometry{true};
+std::atomic_bool g_configured_adaptive_quality_v3_oriented_geometry{true};
+std::atomic<unsigned int> g_adaptive_quality_v3_stability_mode{
+    mfgunlock::qualitybuild::StabilityMode(static_cast<unsigned int>(
+        mfgunlock::cudatemporal::StabilityMode::kTemporal))};
+std::atomic<unsigned int> g_configured_adaptive_quality_v3_stability_mode{
+    mfgunlock::qualitybuild::StabilityMode(static_cast<unsigned int>(
+        mfgunlock::cudatemporal::StabilityMode::kTemporal))};
+std::atomic<unsigned int> g_adaptive_quality_v3_inpaint_mode{
+    mfgunlock::qualitybuild::InpaintMode(static_cast<unsigned int>(
+        mfgunlock::cudatemporal::kDefaultInpaintMode))};
+std::atomic<unsigned int> g_configured_adaptive_quality_v3_inpaint_mode{
+    mfgunlock::qualitybuild::InpaintMode(static_cast<unsigned int>(
+        mfgunlock::cudatemporal::kDefaultInpaintMode))};
+std::atomic<unsigned int> g_source_cap_config_origin{
+    static_cast<unsigned int>(
+        mfgunlock::pacing::SourceCapConfigOrigin::kNone)};
+// Research-only attenuation of the refinement's extra blend weight near the
+// screen boundary. Never changes the provider's native candidate weight.
+std::atomic_bool g_border_confidence{false};
+std::atomic_bool g_configured_border_confidence{false};
+std::atomic_bool g_geometry_confidence_v2{false};
+std::atomic_bool g_configured_geometry_confidence_v2{false};
 std::atomic_bool g_configured_enabled{true};
 std::atomic<unsigned int> g_max_count{4};
 std::atomic_bool g_force_flip_meter_off{false};
@@ -185,7 +231,56 @@ enum class DetectedRenderApi : unsigned int {
 std::atomic<DetectedRenderApi> g_render_api{DetectedRenderApi::kUnknown};
 std::atomic<reshade::api::swapchain*> g_primary_swapchain{nullptr};
 std::atomic<uint64_t> g_primary_swapchain_area{0};
+std::atomic_bool g_latency_guard_dxgi_observed{false};
+std::atomic_bool g_latency_guard_waitable_swapchain{false};
+std::atomic<unsigned int> g_latency_guard_dxgi_max_latency{0};
+struct ReflexWaitableSwapchainControl {
+  SRWLOCK lock = SRWLOCK_INIT;
+  reshade::api::swapchain* owner = nullptr;
+  uint64_t generation = 1;
+  UINT native_maximum_latency = 0;
+  bool maximum_latency_forced = false;
+  bool fallback_latched = false;
+  bool last_requested = false;
+};
+ReflexWaitableSwapchainControl g_reflex_waitable;
+std::atomic<unsigned long long> g_vram_ui_heartbeat_ms{0};
+std::atomic_bool g_vram_capture_owned{false};
+std::atomic_bool g_vram_dxgi_seen{false};
+std::atomic<uint64_t> g_vram_local_usage{0};
+std::atomic<uint64_t> g_vram_local_budget{0};
+std::atomic<uint64_t> g_vram_local_available{0};
+std::atomic<uint64_t> g_vram_nonlocal_usage{0};
+std::atomic<uint64_t> g_vram_nonlocal_budget{0};
+std::atomic<unsigned int> g_vram_swapchain_buffers{0};
 HMODULE g_self_module = nullptr;
+bool g_is_star_wars_outlaws = false;
+bool g_is_monster_hunter_wilds = false;
+std::atomic_bool g_monster_hunter_restart_notice_pending{false};
+constexpr int kMonsterHunterRestartNoticeRevision = 1;
+
+void ClearDxgiDiagnostics() {
+  g_latency_guard_dxgi_observed.store(false, std::memory_order_release);
+  g_latency_guard_waitable_swapchain.store(false, std::memory_order_relaxed);
+  g_latency_guard_dxgi_max_latency.store(0, std::memory_order_relaxed);
+  g_vram_dxgi_seen.store(false, std::memory_order_release);
+  g_vram_local_usage.store(0, std::memory_order_relaxed);
+  g_vram_local_budget.store(0, std::memory_order_relaxed);
+  g_vram_local_available.store(0, std::memory_order_relaxed);
+  g_vram_nonlocal_usage.store(0, std::memory_order_relaxed);
+  g_vram_nonlocal_budget.store(0, std::memory_order_relaxed);
+  g_vram_swapchain_buffers.store(0, std::memory_order_relaxed);
+}
+
+bool CurrentProcessNameIs(const wchar_t* expected) {
+  if (expected == nullptr || expected[0] == L'\0') return false;
+  wchar_t process_path[MAX_PATH] = {};
+  const DWORD length = GetModuleFileNameW(nullptr, process_path, MAX_PATH);
+  if (length == 0 || length >= MAX_PATH) return false;
+  const wchar_t* basename = std::wcsrchr(process_path, L'\\');
+  return _wcsicmp(basename != nullptr ? basename + 1 : process_path,
+                  expected) == 0;
+}
 
 std::string SelfModuleFileName() {
   std::vector<char> path(32768);
@@ -773,6 +868,7 @@ std::vector<BlackwellModulePatch> g_blackwell_modules;
 std::vector<HMODULE> g_midpoint_rejected_modules;
 std::string g_midpoint_detail;
 std::string g_blackwell_detail;
+std::string g_blackwell_applied_detail;
 std::atomic<int> g_midpoint_attempts{0};
 
 struct ThinGeometryModulePatch {
@@ -782,13 +878,71 @@ struct ThinGeometryModulePatch {
   mfgunlock::thingeometry::Result result;
   mfgunlock::thingeometry::MechanismResult intermediate_scatter;
   mfgunlock::thingeometry::MechanismResult silhouette_boundary_guard;
+  bool geometry_confidence_v2_applied = false;
+  bool geometry_v3_redirected = false;
 };
+
+mfgunlock::blackwell::Result AggregateBlackwellResults(
+    const std::vector<BlackwellModulePatch>& modules) {
+  mfgunlock::blackwell::Result result{};
+  for (const auto& module : modules) {
+    result.motion_vector |= module.result.motion_vector;
+    result.inpaint |= module.result.inpaint;
+    result.inpaint_decision |= module.result.inpaint_decision;
+    result.intermediate_scatter |= module.result.intermediate_scatter;
+    result.silhouette_guard |= module.result.silhouette_guard;
+    result.refined_geometry |= module.result.refined_geometry;
+    result.geometry_confidence_v2 |= module.result.geometry_confidence_v2;
+    result.adaptive_quality_requested |= module.result.adaptive_quality_requested;
+    result.adaptive_geometry |= module.result.adaptive_geometry;
+    result.adaptive_geometry_redirected |=
+        module.result.adaptive_geometry_redirected;
+    result.adaptive_geometry_version =
+        mfgunlock::adaptivequality::MergeComponentVersions(
+            result.adaptive_geometry_version,
+            module.result.adaptive_geometry_version);
+    if (result.adaptive_geometry_variant ==
+        mfgunlock::blackwell::AdaptiveGeometryVariant::kNone) {
+      result.adaptive_geometry_variant =
+          module.result.adaptive_geometry_variant;
+    } else if (module.result.adaptive_geometry_variant !=
+                   mfgunlock::blackwell::AdaptiveGeometryVariant::kNone &&
+               result.adaptive_geometry_variant !=
+                   module.result.adaptive_geometry_variant) {
+      result.adaptive_geometry_variant =
+          mfgunlock::blackwell::AdaptiveGeometryVariant::kMixed;
+    }
+    result.adaptive_inpaint_decision |= module.result.adaptive_inpaint_decision;
+    result.adaptive_inpaint_version =
+        mfgunlock::adaptivequality::MergeComponentVersions(
+            result.adaptive_inpaint_version,
+            module.result.adaptive_inpaint_version);
+    result.adaptive_inpaint_redirected |=
+        module.result.adaptive_inpaint_redirected;
+    if (result.adaptive_inpaint_variant ==
+        mfgunlock::blackwell::AdaptiveInpaintVariant::kNone) {
+      result.adaptive_inpaint_variant =
+          module.result.adaptive_inpaint_variant;
+    } else if (module.result.adaptive_inpaint_variant !=
+                   mfgunlock::blackwell::AdaptiveInpaintVariant::kNone &&
+               result.adaptive_inpaint_variant !=
+                   module.result.adaptive_inpaint_variant) {
+      result.adaptive_inpaint_variant =
+          mfgunlock::blackwell::AdaptiveInpaintVariant::kMixed;
+    }
+    result.adaptive_directional_scatter |= module.result.adaptive_directional_scatter;
+    result.adaptive_fallback |= module.result.adaptive_fallback;
+    result.kernels += module.result.kernels;
+  }
+  return result;
+}
 std::vector<ThinGeometryModulePatch> g_thin_geometry_modules;
 std::atomic_bool g_thin_geometry_patched{false};
 std::atomic<int> g_thin_geometry_attempts{0};
 
 bool ThinGeometryRequested() {
-  return g_thin_geometry_validated_warp_blend.load(std::memory_order_relaxed) ||
+  return g_adaptive_quality.load(std::memory_order_relaxed) ||
+         g_thin_geometry_validated_warp_blend.load(std::memory_order_relaxed) ||
          g_thin_geometry_previous_scatter.load(std::memory_order_relaxed) ||
          g_thin_geometry_intermediate_scatter.load(std::memory_order_relaxed) ||
          g_silhouette_guard_mode.load(std::memory_order_relaxed) !=
@@ -820,24 +974,59 @@ bool PatchBlackwellInModule(HMODULE mod) {
   const bool supported_thin_geometry_provider =
       mfgunlock::thingeometry::IsSupportedProvider(
           mod, provider_version, provider_reason);
+  const bool adaptive_quality =
+      g_adaptive_quality.load(std::memory_order_relaxed);
   const bool enable_intermediate_scatter =
+      !adaptive_quality &&
       g_thin_geometry_intermediate_scatter.load(std::memory_order_relaxed) &&
       supported_thin_geometry_provider;
   const auto silhouette_guard_mode = supported_thin_geometry_provider
-                                         ? static_cast<mfgunlock::blackwell::SilhouetteGuardMode>(
-                                               g_silhouette_guard_mode.load(
-                                                   std::memory_order_relaxed))
+                                         ? (adaptive_quality
+                                                ? mfgunlock::blackwell::SilhouetteGuardMode::Balanced
+                                                : static_cast<mfgunlock::blackwell::SilhouetteGuardMode>(
+                                                      g_silhouette_guard_mode.load(
+                                                          std::memory_order_relaxed)))
                                          : mfgunlock::blackwell::SilhouetteGuardMode::Off;
   if (!mfgunlock::blackwell::Apply(mod, patches, allocations, result, detail,
                                    enable_intermediate_scatter,
-                                   silhouette_guard_mode)) {
+                                   silhouette_guard_mode,
+                                   adaptive_quality &&
+                                       supported_thin_geometry_provider)) {
     g_blackwell_detail = detail;
     return false;
   }
 
   g_blackwell_detail = detail;
+  g_blackwell_applied_detail = detail;
   g_blackwell_modules.push_back(
       {mod, std::move(patches), std::move(allocations), result});
+#if !defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+  if (supported_thin_geometry_provider && adaptive_quality &&
+      ((result.adaptive_geometry &&
+        result.adaptive_geometry_version ==
+            mfgunlock::adaptivequality::ComponentVersion::kV3 &&
+        result.adaptive_geometry_variant ==
+            mfgunlock::blackwell::AdaptiveGeometryVariant::kTemporal) ||
+       (result.adaptive_inpaint_decision &&
+        result.adaptive_inpaint_variant ==
+            mfgunlock::blackwell::AdaptiveInpaintVariant::kTemporal))) {
+    // Hook installation is intentionally deferred to a ReShade callback,
+    // outside the loader/provider-maintenance critical section.
+    mfgunlock::cudatemporal::AuthorizeExactProvider(true);
+  } else if (supported_thin_geometry_provider && adaptive_quality &&
+             result.adaptive_geometry_version ==
+                 mfgunlock::adaptivequality::ComponentVersion::kV3 &&
+             result.adaptive_geometry_variant ==
+                 mfgunlock::blackwell::AdaptiveGeometryVariant::kLocal &&
+             mfgunlock::cudatemporal::NormalizeMode(
+                 g_adaptive_quality_v3_stability_mode.load(
+                     std::memory_order_relaxed)) ==
+                 mfgunlock::cudatemporal::StabilityMode::kTemporal) {
+    mfgunlock::cudatemporal::SetDetail(
+        "Temporal Stable requested; dedicated Local cubin installed as fallback",
+        true);
+  }
+#endif
   g_blackwell_patched.store(true, std::memory_order_release);
   char module_path[MAX_PATH] = {};
   GetModuleFileNameA(mod, module_path, MAX_PATH);
@@ -879,20 +1068,27 @@ void PatchThinGeometryInModule(HMODULE mod) {
 
   ThinGeometryModulePatch module_result;
   module_result.module = mod;
+  const bool adaptive_quality =
+      g_adaptive_quality.load(std::memory_order_relaxed);
   const mfgunlock::thingeometry::Options options{
-      g_thin_geometry_validated_warp_blend.load(std::memory_order_relaxed),
-      g_thin_geometry_previous_scatter.load(std::memory_order_relaxed)};
+      adaptive_quality ||
+          g_thin_geometry_validated_warp_blend.load(std::memory_order_relaxed),
+      !adaptive_quality &&
+          g_thin_geometry_previous_scatter.load(std::memory_order_relaxed)};
   mfgunlock::thingeometry::Apply(mod, options, module_result.redirects,
                                 module_result.result,
                                 module_result.provider_version);
 
   const auto silhouette_guard_mode =
-      static_cast<mfgunlock::blackwell::SilhouetteGuardMode>(
-          g_silhouette_guard_mode.load(std::memory_order_relaxed));
+      g_adaptive_quality.load(std::memory_order_relaxed)
+          ? mfgunlock::blackwell::SilhouetteGuardMode::Balanced
+          : static_cast<mfgunlock::blackwell::SilhouetteGuardMode>(
+                g_silhouette_guard_mode.load(std::memory_order_relaxed));
   const bool silhouette_guard_requested =
       silhouette_guard_mode !=
       mfgunlock::blackwell::SilhouetteGuardMode::Off;
   module_result.intermediate_scatter.requested =
+      !adaptive_quality &&
       g_thin_geometry_intermediate_scatter.load(std::memory_order_relaxed) &&
       !silhouette_guard_requested;
   module_result.silhouette_boundary_guard.requested =
@@ -940,6 +1136,10 @@ void PatchThinGeometryInModule(HMODULE mod) {
             blackwell->result.silhouette_guard_fallback;
         module_result.silhouette_boundary_guard.applied =
             blackwell->result.silhouette_guard;
+        module_result.geometry_confidence_v2_applied =
+            blackwell->result.geometry_confidence_v2;
+        module_result.geometry_v3_redirected =
+            blackwell->result.adaptive_geometry_redirected;
         if (blackwell->result.silhouette_guard) {
           std::ostringstream detail;
           detail << "requested "
@@ -949,8 +1149,17 @@ void PatchThinGeometryInModule(HMODULE mod) {
                  << mfgunlock::blackwell::SilhouetteGuardName(
                         blackwell->result.silhouette_guard_mode_selected)
                  << " same-depth local-support variant";
+          if (blackwell->result.adaptive_geometry)
+            detail << "; asymmetric disocclusion confidence; native directional scatter gating";
+          else if (blackwell->result.geometry_confidence_v2)
+            detail << "; geometry confidence V2";
+          else if (blackwell->result.refined_geometry)
+            detail << "; refined confidence V1";
           if (blackwell->result.silhouette_guard_fallback) {
             detail << " as a compatibility fallback";
+          }
+          if (blackwell->result.adaptive_geometry_redirected) {
+            detail << "; full V3 ptxas cubin through exact fatbin descriptor redirect";
           }
           module_result.silhouette_boundary_guard.detail = detail.str();
         } else if (blackwell->result.silhouette_guard_fallback) {
@@ -990,7 +1199,9 @@ void PatchThinGeometryInModule(HMODULE mod) {
     LogThinGeometryMechanism(
         module_path, module_result.provider_version,
         "silhouette disocclusion guard",
-        "Blackwell EstimateIntermMvecsScatter same-depth local-support selection",
+        module_result.geometry_v3_redirected
+            ? "Blackwell EstimateIntermMvecsScatter oversized ptxas cubin descriptor redirect"
+            : "Blackwell EstimateIntermMvecsScatter same-depth local-support selection",
         module_result.silhouette_boundary_guard);
   }
 
@@ -1130,6 +1341,7 @@ void RestoreMidpoint() {
   g_midpoint_modules.clear();
   g_blackwell_modules.clear();
   g_midpoint_rejected_modules.clear();
+  g_blackwell_applied_detail.clear();
   g_midpoint_patched.store(false, std::memory_order_release);
   g_blackwell_patched.store(false, std::memory_order_release);
 }
@@ -1787,6 +1999,946 @@ void StartDiscoveryWorker() {
   CloseHandle(thread);
 }
 
+uint32_t DetectDisplayRefreshFps(reshade::api::swapchain* swapchain) {
+  if (swapchain == nullptr || swapchain->get_hwnd() == nullptr) return 0;
+  const HMONITOR monitor = MonitorFromWindow(
+      static_cast<HWND>(swapchain->get_hwnd()), MONITOR_DEFAULTTONEAREST);
+  if (monitor == nullptr) return 0;
+  static HMONITOR cached_monitor = nullptr;
+  static uint64_t cached_epoch = 0, checked_ms = 0;
+  static uint32_t cached_refresh = 0;
+  const auto epoch = mfgunlock::framecount::g_latency_guard_epoch.load(std::memory_order_acquire);
+  const auto now = GetTickCount64();
+  if (monitor == cached_monitor && epoch == cached_epoch && now - checked_ms < 5000)
+    return cached_refresh;
+  cached_monitor = monitor; cached_epoch = epoch; checked_ms = now; cached_refresh = 0;
+  MONITORINFOEXW info{};
+  info.cbSize = sizeof(info);
+  if (!GetMonitorInfoW(monitor, &info)) return 0;
+  DEVMODEW mode{};
+  mode.dmSize = sizeof(mode);
+  if (!EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode))
+    return 0;
+  cached_refresh = mode.dmDisplayFrequency > 1 && mode.dmDisplayFrequency <= 1000
+             ? mode.dmDisplayFrequency
+             : 0;
+  return cached_refresh;
+}
+
+void ObserveDxgiLatencyPolicy(reshade::api::swapchain* swapchain) {
+  auto* device = swapchain == nullptr ? nullptr : swapchain->get_device();
+  if (device == nullptr ||
+      (device->get_api() != reshade::api::device_api::d3d11 &&
+       device->get_api() != reshade::api::device_api::d3d12) ||
+      swapchain->get_native() == 0) {
+    g_latency_guard_dxgi_observed.store(false, std::memory_order_release);
+    g_latency_guard_waitable_swapchain.store(false,
+                                              std::memory_order_relaxed);
+    g_latency_guard_dxgi_max_latency.store(0, std::memory_order_relaxed);
+    return;
+  }
+  auto* native = reinterpret_cast<IUnknown*>(
+      static_cast<uintptr_t>(swapchain->get_native()));
+  IDXGISwapChain2* swapchain2 = nullptr;
+  if (FAILED(native->QueryInterface(IID_PPV_ARGS(&swapchain2))) ||
+      swapchain2 == nullptr)
+    return;
+
+  DXGI_SWAP_CHAIN_DESC1 desc{};
+  const bool desc_ok = SUCCEEDED(swapchain2->GetDesc1(&desc));
+  const bool waitable =
+      desc_ok &&
+      (desc.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0;
+  UINT maximum_latency = 0;
+  if (!waitable || FAILED(swapchain2->GetMaximumFrameLatency(&maximum_latency)))
+    maximum_latency = 0;
+  swapchain2->Release();
+
+  g_latency_guard_waitable_swapchain.store(waitable,
+                                            std::memory_order_relaxed);
+  g_latency_guard_dxgi_max_latency.store(maximum_latency,
+                                         std::memory_order_relaxed);
+  g_latency_guard_dxgi_observed.store(desc_ok, std::memory_order_release);
+}
+
+uint32_t DetectDisplayRefreshMilliHz(reshade::api::swapchain* swapchain) {
+  const uint32_t fallback_fps = DetectDisplayRefreshFps(swapchain);
+  const uint32_t fallback_millihz =
+      fallback_fps >= 10 && fallback_fps <= 1000 ? fallback_fps * 1000u : 0u;
+  if (swapchain != nullptr && swapchain->get_native() != 0) {
+    auto* native = reinterpret_cast<IUnknown*>(
+        static_cast<uintptr_t>(swapchain->get_native()));
+    IDXGISwapChain* dxgi_swapchain = nullptr;
+    if (SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&dxgi_swapchain))) &&
+        dxgi_swapchain != nullptr) {
+      DXGI_SWAP_CHAIN_DESC desc{};
+      const bool valid = SUCCEEDED(dxgi_swapchain->GetDesc(&desc)) &&
+          desc.BufferDesc.RefreshRate.Numerator != 0 &&
+          desc.BufferDesc.RefreshRate.Denominator != 0;
+      const uint64_t millihz = valid
+          ? (static_cast<uint64_t>(
+                 desc.BufferDesc.RefreshRate.Numerator) * 1000ull +
+             desc.BufferDesc.RefreshRate.Denominator / 2u) /
+                desc.BufferDesc.RefreshRate.Denominator
+          : 0;
+      dxgi_swapchain->Release();
+      if (millihz >= 10000 && millihz <= 1000000) {
+        // Flip-model borderless swapchains often retain a stale nominal
+        // BufferDesc refresh (commonly 60 Hz) on a 120-480 Hz desktop. Use the
+        // rational value only when it agrees with the active monitor mode.
+        const uint32_t rational = static_cast<uint32_t>(millihz);
+        const uint32_t difference = rational > fallback_millihz
+            ? rational - fallback_millihz
+            : fallback_millihz - rational;
+        if (fallback_millihz == 0 || difference <= 1500)
+          return rational;
+      }
+    }
+  }
+  return fallback_millihz;
+}
+
+const char* ReflexWaitableFallbackText(
+    mfgunlock::reflexpacing::FallbackReason reason) {
+  using Reason = mfgunlock::reflexpacing::FallbackReason;
+  switch (reason) {
+    case Reason::kNotRequested: return "Native sleep requested";
+    case Reason::kUnsupportedApi: return "Renderer is not D3D11/D3D12";
+    case Reason::kMfgInactive: return "MFG is not active at 2x-6x";
+    case Reason::kNoWaitableFlag: return "Swapchain has no waitable-object flag";
+    case Reason::kNoWaitableHandle: return "DXGI returned no waitable handle";
+    case Reason::kHandleDuplicationFailed: return "Waitable handle duplication failed";
+    case Reason::kMaximumLatencyQueryFailed: return "MaximumFrameLatency query failed";
+    case Reason::kMaximumLatencySetFailed: return "Could not set MaximumFrameLatency to 1";
+    case Reason::kSwapchainChanged: return "Primary swapchain changed";
+    case Reason::kTokenDuplicate: return "Duplicate Reflex frame token";
+    case Reason::kTokenRegressed: return "Regressing Reflex frame token";
+    case Reason::kConcurrentSleep: return "Concurrent slReflexSleep calls";
+    case Reason::kNativeSleepFailed: return "Native slReflexSleep failed during probe";
+    case Reason::kWaitTimeout: return "DXGI waitable object timed out";
+    case Reason::kWaitFailed: return "DXGI waitable-object wait failed";
+    default: return "None";
+  }
+}
+
+void RestoreReflexWaitableLocked(
+    reshade::api::swapchain* swapchain,
+    mfgunlock::reflexpacing::FallbackReason reason) {
+  const HANDLE duplicate = mfgunlock::reflexpacing::RetireWaitable(reason);
+  if (duplicate != nullptr) CloseHandle(duplicate);
+  if (g_reflex_waitable.maximum_latency_forced && swapchain != nullptr &&
+      swapchain == g_reflex_waitable.owner && swapchain->get_native() != 0) {
+    auto* native = reinterpret_cast<IUnknown*>(
+        static_cast<uintptr_t>(swapchain->get_native()));
+    IDXGISwapChain2* swapchain2 = nullptr;
+    if (SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&swapchain2))) &&
+        swapchain2 != nullptr) {
+      UINT current = 0;
+      if (SUCCEEDED(swapchain2->GetMaximumFrameLatency(&current)) &&
+          current == 1 && g_reflex_waitable.native_maximum_latency != 0) {
+        swapchain2->SetMaximumFrameLatency(
+            g_reflex_waitable.native_maximum_latency);
+      }
+      swapchain2->Release();
+    }
+  }
+  g_reflex_waitable.owner = nullptr;
+  g_reflex_waitable.native_maximum_latency = 0;
+  g_reflex_waitable.maximum_latency_forced = false;
+}
+
+bool PublishReflexWaitableLocked(reshade::api::swapchain* swapchain,
+                                 uint32_t refresh_millihz) {
+  using namespace mfgunlock::reflexpacing;
+  if (swapchain == nullptr || swapchain->get_native() == 0) {
+    SetFallback(FallbackReason::kNoWaitableHandle);
+    return false;
+  }
+  auto* device = swapchain->get_device();
+  if (device == nullptr ||
+      (device->get_api() != reshade::api::device_api::d3d11 &&
+       device->get_api() != reshade::api::device_api::d3d12)) {
+    SetFallback(FallbackReason::kUnsupportedApi);
+    return false;
+  }
+  auto* native = reinterpret_cast<IUnknown*>(
+      static_cast<uintptr_t>(swapchain->get_native()));
+  IDXGISwapChain2* swapchain2 = nullptr;
+  if (FAILED(native->QueryInterface(IID_PPV_ARGS(&swapchain2))) ||
+      swapchain2 == nullptr) {
+    SetFallback(FallbackReason::kNoWaitableHandle);
+    return false;
+  }
+  DXGI_SWAP_CHAIN_DESC1 desc{};
+  if (FAILED(swapchain2->GetDesc1(&desc)) ||
+      (desc.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) == 0) {
+    swapchain2->Release();
+    SetFallback(FallbackReason::kNoWaitableFlag);
+    return false;
+  }
+  const HANDLE borrowed = swapchain2->GetFrameLatencyWaitableObject();
+  if (borrowed == nullptr) {
+    swapchain2->Release();
+    SetFallback(FallbackReason::kNoWaitableHandle);
+    return false;
+  }
+  UINT maximum_latency = 0;
+  if (FAILED(swapchain2->GetMaximumFrameLatency(&maximum_latency)) ||
+      maximum_latency == 0) {
+    swapchain2->Release();
+    SetFallback(FallbackReason::kMaximumLatencyQueryFailed);
+    return false;
+  }
+  HANDLE duplicate = nullptr;
+  if (!DuplicateHandle(GetCurrentProcess(), borrowed, GetCurrentProcess(),
+                       &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+    swapchain2->Release();
+    SetFallback(FallbackReason::kHandleDuplicationFailed);
+    return false;
+  }
+  swapchain2->Release();
+  const uint32_t two_periods_ms = refresh_millihz != 0
+      ? static_cast<uint32_t>((2000000ull + refresh_millihz - 1ull) /
+                              refresh_millihz)
+      : 48u;
+  const uint32_t timeout_ms =
+      (std::clamp)(two_periods_ms + 2u, 8u, 50u);
+  const uint64_t generation = ++g_reflex_waitable.generation;
+  g_reflex_waitable.owner = swapchain;
+  g_reflex_waitable.native_maximum_latency = maximum_latency;
+  g_reflex_waitable.maximum_latency_forced = false;
+  PublishWaitable(duplicate, generation, timeout_ms, maximum_latency);
+  std::stringstream log;
+  log << "mfgunlock: DXGI Waitable probe started (generation " << generation
+      << ", native MaximumFrameLatency=" << maximum_latency
+      << ", timeout=" << timeout_ms << " ms).";
+  reshade::log::message(reshade::log::level::info, log.str().c_str());
+  return true;
+}
+
+void UpdateReflexPacingLab(reshade::api::swapchain* swapchain) {
+  using namespace mfgunlock;
+  if (swapchain == nullptr ||
+      swapchain != g_primary_swapchain.load(std::memory_order_acquire))
+    return;
+  static SRWLOCK update_lock = SRWLOCK_INIT;
+  if (!TryAcquireSRWLockExclusive(&update_lock)) return;
+  struct Unlock {
+    SRWLOCK* lock;
+    ~Unlock() { ReleaseSRWLockExclusive(lock); }
+  } unlock{&update_lock};
+
+  const uint32_t estimated_multiplier =
+      framecount::internal::ActiveMultiplierForEstimate();
+  reflexpacing::g_mfg_multiplier.store(estimated_multiplier,
+                                       std::memory_order_relaxed);
+
+  static ULONGLONG next_status_sample = 0;
+  const ULONGLONG now = GetTickCount64();
+  const bool addon_enabled =
+      framecount::g_addon_enabled.load(std::memory_order_relaxed);
+  const uint64_t ui_heartbeat = reflexpacing::g_ui_heartbeat_ms.load(
+      std::memory_order_acquire);
+  const bool measure_native = addon_enabled &&
+      (reflexpacing::g_headroom_enabled.load(std::memory_order_relaxed) ||
+       pacing::NormalizeReflexModeOverride(
+           reflexpacing::g_mode_override.load(std::memory_order_relaxed)) !=
+           pacing::ReflexModeOverride::kGame ||
+       (ui_heartbeat != 0 && now - ui_heartbeat <= 1500));
+  const bool fg_safe_off = addon_enabled &&
+      pacing::NormalizeReflexModeOverride(
+          reflexpacing::g_mode_override.load(std::memory_order_relaxed)) ==
+          pacing::ReflexModeOverride::kOff;
+  const auto next_dispatch =
+      addon_enabled && reflexpacing::WaitableRequested()
+          ? reflexpacing::SleepDispatch::kWaitable
+          : (fg_safe_off
+                 ? reflexpacing::SleepDispatch::kBypass
+                 : (measure_native
+                        ? reflexpacing::SleepDispatch::kMeasureNative
+                        : reflexpacing::SleepDispatch::kNative));
+  const auto previous_dispatch = reflexpacing::g_sleep_dispatch.exchange(
+      next_dispatch, std::memory_order_acq_rel);
+  if (previous_dispatch != next_dispatch &&
+      (previous_dispatch == reflexpacing::SleepDispatch::kBypass ||
+       next_dispatch == reflexpacing::SleepDispatch::kBypass)) {
+    reshade::log::message(
+        reshade::log::level::info,
+        next_dispatch == reflexpacing::SleepDispatch::kBypass
+            ? "mfgunlock: FG-safe Reflex Off active; Streamline mode remains On and slReflexSleep is bypassed."
+            : "mfgunlock: FG-safe Reflex sleep bypass released.");
+  }
+  const bool lab_requested = addon_enabled &&
+      (reflexpacing::WaitableRequested() ||
+       reflexpacing::g_headroom_enabled.load(std::memory_order_relaxed));
+  if (lab_requested && now >= next_status_sample) {
+    next_status_sample = now + 500;
+    bool vrr = false;
+    uint32_t driver_multiplier = 0;
+    if (auto* device = swapchain->get_device();
+        device != nullptr && device->get_native() != 0) {
+      nvapistatus::SleepStatus sleep{};
+      sleep.version = nvapistatus::StructVersion<nvapistatus::SleepStatus, 1>();
+      const auto get_sleep = nvapistatus::GetSleepStatus();
+      if (get_sleep != nullptr && nvapistatus::Initialize() ==
+                                      nvapistatus::kOk &&
+          get_sleep(reinterpret_cast<IUnknown*>(
+                        static_cast<uintptr_t>(device->get_native())),
+                    &sleep) == nvapistatus::kOk) {
+        vrr = sleep.fullscreen_vrr != 0;
+        driver_multiplier = sleep.frame_generation_multiplier;
+      }
+    }
+    reflexpacing::g_vrr_active.store(vrr, std::memory_order_relaxed);
+    if (driver_multiplier >= 2 && driver_multiplier <= 6)
+      reflexpacing::g_mfg_multiplier.store(driver_multiplier,
+                                           std::memory_order_relaxed);
+    const uint32_t refresh_millihz = DetectDisplayRefreshMilliHz(swapchain);
+    reflexpacing::g_refresh_millihz.store(refresh_millihz,
+                                          std::memory_order_relaxed);
+    const uint32_t headroom_limit =
+        addon_enabled &&
+                reflexpacing::g_headroom_enabled.load(
+                    std::memory_order_relaxed) &&
+                vrr
+            ? pacing::VrrHeadroomFrameLimitUs(
+                  refresh_millihz,
+                  pacing::NormalizeHeadroomBasisPoints(
+                      reflexpacing::g_headroom_basis_points.load(
+                          std::memory_order_relaxed)))
+            : 0;
+    const uint32_t previous = reflexpacing::g_headroom_limit_us.exchange(
+        headroom_limit, std::memory_order_acq_rel);
+    if (previous != headroom_limit) {
+      framecount::g_latency_guard_epoch.fetch_add(1,
+                                                   std::memory_order_acq_rel);
+      framecount::g_latency_guard_refresh_pending.store(
+          true, std::memory_order_release);
+    }
+  } else if (!lab_requested &&
+             reflexpacing::g_headroom_limit_us.exchange(
+                 0, std::memory_order_acq_rel) != 0) {
+    framecount::g_latency_guard_epoch.fetch_add(1, std::memory_order_acq_rel);
+    framecount::g_latency_guard_refresh_pending.store(
+        true, std::memory_order_release);
+  }
+
+  AcquireSRWLockExclusive(&g_reflex_waitable.lock);
+  const bool requested =
+      framecount::g_addon_enabled.load(std::memory_order_relaxed) &&
+      reflexpacing::WaitableRequested();
+  if (requested != g_reflex_waitable.last_requested) {
+    g_reflex_waitable.last_requested = requested;
+    g_reflex_waitable.fallback_latched = false;
+    if (requested) {
+      framecount::g_latency_guard_auto_cap_ready.store(
+          false, std::memory_order_release);
+      framecount::g_latency_guard_active_source_cap_fps.store(
+          0, std::memory_order_relaxed);
+      framecount::g_latency_guard_multiplier_override.store(
+          0, std::memory_order_release);
+      framecount::g_latency_guard_multiplier_trial_accepted.store(
+          false, std::memory_order_relaxed);
+      framecount::g_latency_guard_refresh_pending.store(
+          true, std::memory_order_release);
+    }
+    if (!requested && g_reflex_waitable.owner != nullptr)
+      RestoreReflexWaitableLocked(g_reflex_waitable.owner,
+                                  reflexpacing::FallbackReason::kNotRequested);
+  }
+  if (!requested) {
+    reflexpacing::g_waitable_state.store(
+        reflexpacing::WaitableState::kNative, std::memory_order_release);
+    ReleaseSRWLockExclusive(&g_reflex_waitable.lock);
+    return;
+  }
+  const uint32_t live_multiplier = reflexpacing::g_mfg_multiplier.load(
+      std::memory_order_relaxed);
+  if (live_multiplier < 2 || live_multiplier > 6) {
+    if (g_reflex_waitable.owner != nullptr) {
+      RestoreReflexWaitableLocked(
+          g_reflex_waitable.owner,
+          reflexpacing::FallbackReason::kNotRequested);
+    }
+    reflexpacing::g_fallback_reason.store(
+        reflexpacing::FallbackReason::kMfgInactive,
+        std::memory_order_relaxed);
+    reflexpacing::g_waitable_state.store(
+        reflexpacing::WaitableState::kWaitingForSwapchain,
+        std::memory_order_release);
+    g_reflex_waitable.fallback_latched = false;
+    ReleaseSRWLockExclusive(&g_reflex_waitable.lock);
+    return;
+  }
+  const auto state = reflexpacing::g_waitable_state.load(
+      std::memory_order_acquire);
+  if (state == reflexpacing::WaitableState::kFallback) {
+    const auto reason = reflexpacing::g_fallback_reason.load(
+        std::memory_order_relaxed);
+    if (g_reflex_waitable.owner != nullptr)
+      RestoreReflexWaitableLocked(g_reflex_waitable.owner, reason);
+    if (!g_reflex_waitable.fallback_latched) {
+      std::stringstream log;
+      log << "mfgunlock: DXGI Waitable fell back to native Reflex sleep: "
+          << ReflexWaitableFallbackText(reason) << ".";
+      reshade::log::message(reshade::log::level::warning,
+                            log.str().c_str());
+      g_reflex_waitable.fallback_latched = true;
+    }
+    ReleaseSRWLockExclusive(&g_reflex_waitable.lock);
+    return;
+  }
+  if (g_reflex_waitable.owner != nullptr &&
+      g_reflex_waitable.owner != swapchain) {
+    RestoreReflexWaitableLocked(g_reflex_waitable.owner,
+                                reflexpacing::FallbackReason::kSwapchainChanged);
+    g_reflex_waitable.fallback_latched = true;
+    ReleaseSRWLockExclusive(&g_reflex_waitable.lock);
+    return;
+  }
+  if (g_reflex_waitable.owner == nullptr &&
+      !g_reflex_waitable.fallback_latched) {
+    PublishReflexWaitableLocked(
+        swapchain,
+        reflexpacing::g_refresh_millihz.load(std::memory_order_relaxed));
+  } else if (state == reflexpacing::WaitableState::kActivationPending &&
+             g_reflex_waitable.owner == swapchain &&
+             swapchain->get_native() != 0) {
+    auto* native = reinterpret_cast<IUnknown*>(
+        static_cast<uintptr_t>(swapchain->get_native()));
+    IDXGISwapChain2* swapchain2 = nullptr;
+    bool success = false;
+    if (SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&swapchain2))) &&
+        swapchain2 != nullptr) {
+      success = g_reflex_waitable.native_maximum_latency == 1 ||
+                SUCCEEDED(swapchain2->SetMaximumFrameLatency(1));
+      swapchain2->Release();
+    }
+    g_reflex_waitable.maximum_latency_forced =
+        success && g_reflex_waitable.native_maximum_latency != 1;
+    reflexpacing::MarkActivationResult(g_reflex_waitable.generation, success);
+    if (success) {
+      reshade::log::message(
+          reshade::log::level::info,
+          "mfgunlock: DXGI Waitable probe passed; alternate pacing is active with MaximumFrameLatency=1.");
+    }
+  }
+  ReleaseSRWLockExclusive(&g_reflex_waitable.lock);
+}
+
+bool QueryVideoMemory(reshade::api::device* device,
+                      DXGI_MEMORY_SEGMENT_GROUP group,
+                      DXGI_QUERY_VIDEO_MEMORY_INFO& info) {
+  if (device == nullptr || device->get_native() == 0) return false;
+  IDXGIAdapter3* adapter3 = nullptr;
+  if (device->get_api() == reshade::api::device_api::d3d12) {
+    auto* d3d12 = reinterpret_cast<ID3D12Device*>(
+        static_cast<uintptr_t>(device->get_native()));
+    IDXGIFactory4* factory = nullptr;
+    using CreateFactoryFn = HRESULT(WINAPI*)(REFIID, void**);
+    const HMODULE dxgi = GetModuleHandleW(L"dxgi.dll");
+    const auto create_factory = dxgi == nullptr
+        ? nullptr
+        : reinterpret_cast<CreateFactoryFn>(
+              GetProcAddress(dxgi, "CreateDXGIFactory1"));
+    if (create_factory != nullptr &&
+        SUCCEEDED(create_factory(IID_PPV_ARGS(&factory))) &&
+        factory != nullptr) {
+      factory->EnumAdapterByLuid(d3d12->GetAdapterLuid(),
+                                 IID_PPV_ARGS(&adapter3));
+      factory->Release();
+    }
+  } else if (device->get_api() == reshade::api::device_api::d3d11) {
+    auto* native = reinterpret_cast<IUnknown*>(
+        static_cast<uintptr_t>(device->get_native()));
+    IDXGIDevice* dxgi_device = nullptr;
+    IDXGIAdapter* adapter = nullptr;
+    if (SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&dxgi_device))) &&
+        dxgi_device != nullptr) {
+      if (SUCCEEDED(dxgi_device->GetAdapter(&adapter)) && adapter != nullptr) {
+        adapter->QueryInterface(IID_PPV_ARGS(&adapter3));
+        adapter->Release();
+      }
+      dxgi_device->Release();
+    }
+  }
+  if (adapter3 == nullptr) return false;
+  const bool ok = SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, group, &info));
+  adapter3->Release();
+  return ok;
+}
+
+void UpdateVramDiagnostics(reshade::api::swapchain* swapchain) {
+  if (swapchain == nullptr ||
+      swapchain != g_primary_swapchain.load(std::memory_order_acquire))
+    return;
+  const ULONGLONG now = GetTickCount64();
+  const ULONGLONG heartbeat =
+      g_vram_ui_heartbeat_ms.load(std::memory_order_acquire);
+  if (heartbeat == 0 || now - heartbeat > 1500) {
+    if (g_vram_capture_owned.exchange(false, std::memory_order_acq_rel))
+      mfgunlock::inputdiag::g_enabled.store(false,
+                                            std::memory_order_release);
+    return;
+  }
+
+  static ULONGLONG next_sample = 0;
+  if (now < next_sample) return;
+  next_sample = now + 1000;
+
+  auto* device = swapchain->get_device();
+  const auto api = device == nullptr
+      ? mfgunlock::memorypolicy::GraphicsApi::kUnknown
+      : (device->get_api() == reshade::api::device_api::d3d11
+             ? mfgunlock::memorypolicy::GraphicsApi::kD3D11
+             : (device->get_api() == reshade::api::device_api::d3d12
+                    ? mfgunlock::memorypolicy::GraphicsApi::kD3D12
+                    : (device->get_api() == reshade::api::device_api::vulkan
+                           ? mfgunlock::memorypolicy::GraphicsApi::kVulkan
+                           : mfgunlock::memorypolicy::GraphicsApi::kUnknown)));
+  const bool supports_dxgi =
+      mfgunlock::memorypolicy::SupportsDxgiBudget(api);
+  if (!supports_dxgi) {
+    // Vulkan native handles are not COM objects. Clear any values retained
+    // from an earlier D3D swapchain, but leave provider/resource telemetry on.
+    ClearDxgiDiagnostics();
+  } else if (swapchain->get_native() != 0) {
+    auto* native = reinterpret_cast<IUnknown*>(
+        static_cast<uintptr_t>(swapchain->get_native()));
+    IDXGISwapChain1* swapchain1 = nullptr;
+    if (SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&swapchain1))) &&
+        swapchain1 != nullptr) {
+      DXGI_SWAP_CHAIN_DESC1 desc{};
+      if (SUCCEEDED(swapchain1->GetDesc1(&desc)))
+        g_vram_swapchain_buffers.store(desc.BufferCount,
+                                       std::memory_order_relaxed);
+      swapchain1->Release();
+    }
+  }
+
+  DXGI_QUERY_VIDEO_MEMORY_INFO local{}, nonlocal{};
+  const bool local_ok = supports_dxgi && QueryVideoMemory(
+      device, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, local);
+  const bool nonlocal_ok = supports_dxgi && QueryVideoMemory(
+      device, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, nonlocal);
+  if (local_ok) {
+    g_vram_local_usage.store(local.CurrentUsage, std::memory_order_relaxed);
+    g_vram_local_budget.store(local.Budget, std::memory_order_relaxed);
+    g_vram_local_available.store(local.AvailableForReservation,
+                                 std::memory_order_relaxed);
+    g_vram_dxgi_seen.store(true, std::memory_order_release);
+  }
+  if (nonlocal_ok) {
+    g_vram_nonlocal_usage.store(nonlocal.CurrentUsage,
+                                std::memory_order_relaxed);
+    g_vram_nonlocal_budget.store(nonlocal.Budget,
+                                 std::memory_order_relaxed);
+  }
+}
+
+mfgunlock::pacing::MarkerHealth AssessReflexMarkers(
+    const mfgunlock::nvapistatus::GuardObservation& observation) {
+  using mfgunlock::pacing::MarkerHealth;
+  if (observation.latency_status != mfgunlock::nvapistatus::kOk)
+    return MarkerHealth::kUnavailable;
+  if (observation.valid_latency_frames < 48)
+    return MarkerHealth::kWaiting;
+  const auto& frame = observation.latest;
+  const bool complete = frame.simulation_start_time != 0 &&
+                        frame.simulation_end_time != 0 &&
+                        frame.render_submit_start_time != 0 &&
+                        frame.render_submit_end_time != 0 &&
+                        frame.present_start_time != 0 &&
+                        frame.present_end_time != 0 &&
+                        frame.gpu_render_start_time != 0 &&
+                        frame.gpu_render_end_time != 0;
+  if (!complete) return MarkerHealth::kIncomplete;
+  const bool ordered =
+      frame.simulation_start_time <= frame.simulation_end_time &&
+      frame.render_submit_start_time <= frame.render_submit_end_time &&
+      frame.present_start_time <= frame.present_end_time &&
+      frame.gpu_render_start_time <= frame.gpu_render_end_time;
+  if (!ordered) return MarkerHealth::kInvalidOrder;
+  if (observation.sleep_status == mfgunlock::nvapistatus::kOk &&
+      observation.sleep.game_sleep == 0)
+    return MarkerHealth::kMissingSleep;
+  if (!observation.source_timing_confident)
+    return MarkerHealth::kUnstableTiming;
+  return MarkerHealth::kHealthy;
+}
+
+void UpdateLatencyGuard(reshade::api::swapchain* swapchain) {
+  using mfgunlock::pacing::LatencyGuardMode;
+  const auto configured_guard_mode = static_cast<LatencyGuardMode>(
+      mfgunlock::framecount::g_latency_guard_mode.load(
+          std::memory_order_relaxed));
+  const auto waitable_state =
+      mfgunlock::reflexpacing::g_waitable_state.load(
+          std::memory_order_acquire);
+  const bool waitable_controls_pacing =
+      waitable_state == mfgunlock::reflexpacing::WaitableState::kProbing ||
+      waitable_state ==
+          mfgunlock::reflexpacing::WaitableState::kActivationPending ||
+      waitable_state == mfgunlock::reflexpacing::WaitableState::kActive;
+  const auto guard_mode =
+      configured_guard_mode == LatencyGuardMode::kAutomatic &&
+              waitable_controls_pacing
+          ? LatencyGuardMode::kMonitor
+          : configured_guard_mode;
+
+  if (swapchain == nullptr ||
+      swapchain != g_primary_swapchain.load(std::memory_order_acquire)) return;
+  // Prevent two presenting threads from racing the sampler/controller.
+  static SRWLOCK sample_lock = SRWLOCK_INIT;
+  if (!TryAcquireSRWLockExclusive(&sample_lock)) return;
+  struct Unlock { ~Unlock() { ReleaseSRWLockExclusive(&sample_lock); } } unlock;
+  auto* device = swapchain->get_device();
+  if (device == nullptr ||
+      (device->get_api() != reshade::api::device_api::d3d11 &&
+       device->get_api() != reshade::api::device_api::d3d12) || device->get_native() == 0) {
+    if (mfgunlock::framecount::g_latency_guard_auto_cap_ready.exchange(false)) {
+      mfgunlock::framecount::g_latency_guard_active_source_cap_fps.store(0);
+      mfgunlock::framecount::g_latency_guard_epoch.fetch_add(1);
+      mfgunlock::framecount::g_latency_guard_refresh_pending.store(true);
+    }
+    return; // Never replay Reflex options through an unavailable device/session.
+  }
+  // Restoring the native Reflex options is also deferred to Present so the UI
+  // never invokes Streamline directly. This executes only on a mode/cap state
+  // transition, not once per frame.
+  const bool refresh_pending =
+      mfgunlock::framecount::g_latency_guard_refresh_pending.exchange(
+          false, std::memory_order_acq_rel);
+  if (refresh_pending) {
+    mfgunlock::framecount::internal::RefreshReflexTarget();
+  }
+  if (guard_mode == LatencyGuardMode::kOff || swapchain == nullptr ||
+      swapchain != g_primary_swapchain.load(std::memory_order_acquire))
+    return;
+
+  static ULONGLONG next_sample = 0;
+  const ULONGLONG now = GetTickCount64();
+  const ULONGLONG ui_heartbeat =
+      mfgunlock::framecount::g_latency_guard_ui_heartbeat_ms.load(
+          std::memory_order_acquire);
+  if (guard_mode == LatencyGuardMode::kMonitor &&
+      (ui_heartbeat == 0 || now - ui_heartbeat > 1500))
+    return;
+  if (now < next_sample) return;
+  next_sample = now + 500;
+
+  LARGE_INTEGER sample_begin{}, sample_end{};
+  const uint64_t sample_frequency =
+      mfgunlock::nvapistatus::QpcFrequency();
+  QueryPerformanceCounter(&sample_begin);
+  const auto observation = mfgunlock::nvapistatus::ObserveGuard(
+      reinterpret_cast<IUnknown*>(
+          static_cast<uintptr_t>(device->get_native())),
+      mfgunlock::framecount::g_latency_guard_epoch.load(std::memory_order_acquire));
+  QueryPerformanceCounter(&sample_end);
+  const uint32_t sample_cost_us = sample_frequency > 0 &&
+          sample_end.QuadPart >= sample_begin.QuadPart
+      ? static_cast<uint32_t>((std::min)(
+            uint64_t{UINT32_MAX},
+            static_cast<uint64_t>(sample_end.QuadPart - sample_begin.QuadPart) *
+                 1000000ull / sample_frequency))
+      : 0;
+  ObserveDxgiLatencyPolicy(swapchain);
+  const uint32_t refresh_fps = DetectDisplayRefreshFps(swapchain);
+  const bool sleep_available =
+      observation.sleep_status == mfgunlock::nvapistatus::kOk;
+  const uint32_t live_multiplier =
+      sleep_available ? observation.sleep.frame_generation_multiplier : 0;
+  const bool vsync_active =
+      sleep_available && observation.sleep.control_panel_vsync != 0;
+  const auto marker_health = AssessReflexMarkers(observation);
+  const uint32_t queue_wait_us = observation.median_queue_wait_us;
+  const uint32_t gpu_frame_time_us = observation.median_gpu_frame_time_us;
+  const uint32_t pipeline_latency_us =
+      observation.median_pipeline_latency_us;
+  const uint32_t observed_source_interval_us =
+      observation.source_interval_us;
+  const bool queue_action_timing_confident =
+      observation.source_timing_confident &&
+      observation.queue_timing_confident;
+
+  const auto recommendation =
+      mfgunlock::pacing::BuildLatencyGuardRecommendation(
+          vsync_active, refresh_fps,
+          mfgunlock::framecount::g_dynamic_applied.load(std::memory_order_relaxed)
+              ? mfgunlock::framecount::g_dynamic_target_fps.load(std::memory_order_relaxed) : 0,
+          sleep_available ? observation.sleep.dynamic_frame_time_target_us : 0,
+          live_multiplier, observed_source_interval_us, queue_wait_us,
+          queue_action_timing_confident);
+
+  mfgunlock::framecount::g_latency_guard_units.store(
+      static_cast<unsigned int>(observation.timestamp_units), std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_new_frames.store(observation.new_frames, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_display_refresh_fps.store(
+      refresh_fps, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_live_multiplier.store(
+      live_multiplier, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_output_target_fps.store(
+      recommendation.output_target_fps, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_recommended_source_cap_fps.store(
+      recommendation.source_cap_fps, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_estimated_source_fps.store(
+      recommendation.estimated_source_fps, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_simulation_fps.store(
+      mfgunlock::pacing::FrameLimitUsToFps(
+          observation.simulation_interval_us),
+      std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_projected_output_fps.store(
+      recommendation.projected_output_fps, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_suggested_multiplier.store(
+      recommendation.suggested_total_multiplier, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_multiplier_high.store(
+      recommendation.multiplier_may_be_higher_than_needed,
+      std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_marker_health.store(
+      static_cast<unsigned int>(marker_health), std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_queue_wait_us.store(
+      queue_wait_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_queue_p95_us.store(
+      observation.p95_queue_wait_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_gpu_frame_time_us.store(
+      gpu_frame_time_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_gpu_frame_p95_us.store(
+      observation.p95_gpu_frame_time_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_gpu_active_us.store(
+      observation.median_gpu_active_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_pipeline_latency_us.store(
+      pipeline_latency_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_pipeline_p95_us.store(
+      observation.p95_pipeline_latency_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_input_to_gpu_end_us.store(
+      observation.median_input_to_gpu_end_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_input_to_simulation_us.store(
+      observation.median_input_to_simulation_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_simulation_cpu_us.store(
+      observation.median_simulation_cpu_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_submit_cpu_us.store(
+      observation.median_submit_cpu_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_ai_frame_time_us.store(
+      observation.median_ai_frame_time_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_sample_cost_us.store(
+      sample_cost_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_iflip_known.store(
+      sleep_available, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_iflip_active.store(
+      sleep_available && observation.sleep.fullscreen_independent_flip != 0,
+      std::memory_order_relaxed);
+  const auto latency_bottleneck =
+      mfgunlock::pacing::ClassifyLatencyBottleneck(
+          observation.source_timing_confident,
+          recommendation.source_oversubscribed,
+          observation.queue_timing_confident
+              ? observation.p95_queue_wait_us : 0,
+          observed_source_interval_us,
+          observation.median_gpu_active_us,
+          observation.median_ai_frame_time_us);
+  mfgunlock::framecount::g_latency_guard_bottleneck.store(
+      static_cast<unsigned int>(latency_bottleneck),
+      std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_timing_samples.store(
+      observation.consecutive_timing_samples, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_timing_confident.store(
+      observation.source_timing_confident, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_queue_timing_confident.store(
+      observation.queue_timing_confident, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_timing_issue_mask.store(
+      observation.source_timing_issue_mask, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_oversubscribed.store(
+      recommendation.source_oversubscribed, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_sample_seen.store(
+      true, std::memory_order_release);
+
+  const bool pressure_candidate =
+      mfgunlock::pacing::ShouldApplyAutomaticLatencyCap(
+          guard_mode, marker_health,
+          mfgunlock::framecount::g_reflex_hooked.load(
+              std::memory_order_acquire),
+          mfgunlock::framecount::g_reflex_options_seen.load(
+              std::memory_order_acquire),
+          recommendation);
+  static mfgunlock::latency::QueueTrial trial;
+  static mfgunlock::latency::MultiplierTrial multiplier_trial;
+  const uint32_t configured_multiplier =
+      mfgunlock::framecount::g_force_multiplier.load(std::memory_order_relaxed);
+  const unsigned int current_limit_source =
+      mfgunlock::framecount::g_reflex_limit_source.load(
+          std::memory_order_relaxed);
+  const auto user_source_cap_state =
+      mfgunlock::framecount::internal::ResolveUserSourceCapState();
+  const bool user_source_cap_requested = user_source_cap_state.requested;
+  const bool user_source_cap_ready =
+      mfgunlock::framecount::internal::UserSourceCapReady();
+  const bool user_source_cap_rejected =
+      user_source_cap_state.status ==
+      mfgunlock::framecount::internal::UserSourceCapStatus::kRejected;
+  if (user_source_cap_requested && !user_source_cap_ready &&
+      !user_source_cap_rejected) {
+    // Apply the user-requested final/output cap once at the established safe
+    // Reflex boundary. It is invariant across multiplier trials, so later
+    // 6x->5x->4x->3x transitions never need another Reflex replay.
+    mfgunlock::framecount::g_latency_guard_refresh_pending.store(
+        true, std::memory_order_release);
+    mfgunlock::framecount::internal::RefreshReflexTarget();
+  }
+  const bool base_safe = guard_mode == LatencyGuardMode::kAutomatic &&
+      marker_health == mfgunlock::pacing::MarkerHealth::kHealthy &&
+      observation.source_timing_confident && sleep_available &&
+      observation.sleep.game_sleep &&
+      !observation.sleep.dynamic_frame_generation_control &&
+      !mfgunlock::framecount::g_dynamic_applied.load(std::memory_order_relaxed) &&
+      mfgunlock::framecount::g_reflex_options_seen.load(std::memory_order_acquire) &&
+      mfgunlock::forcepolicy::IsFixedMultiplier(configured_multiplier);
+  const uint32_t old_multiplier_override =
+      mfgunlock::framecount::g_latency_guard_multiplier_override.load(
+          std::memory_order_relaxed);
+  const bool multiplier_safe = base_safe &&
+      mfgunlock::framecount::g_latency_guard_active_source_cap_fps.load(
+          std::memory_order_relaxed) == 0;
+  const auto responsive_reason = multiplier_safe
+      ? mfgunlock::latency::ClassifyResponsiveTrialReason(
+            recommendation.source_oversubscribed,
+            observed_source_interval_us,
+            observation.queue_timing_confident
+                ? observation.p95_queue_wait_us : 0,
+            observation.median_input_to_gpu_end_us,
+            pipeline_latency_us,
+            observation.median_gpu_active_us,
+            observation.median_ai_frame_time_us)
+      : mfgunlock::latency::ResponsiveTrialReason::kNone;
+
+  using mfgunlock::latency::ResponsiveTrialBlocker;
+  ResponsiveTrialBlocker trial_blocker = ResponsiveTrialBlocker::kNone;
+  if (guard_mode != LatencyGuardMode::kAutomatic) {
+    trial_blocker = ResponsiveTrialBlocker::kMonitorOnly;
+  } else if (marker_health ==
+                 mfgunlock::pacing::MarkerHealth::kUnstableTiming ||
+             (marker_health == mfgunlock::pacing::MarkerHealth::kHealthy &&
+              !observation.source_timing_confident)) {
+    trial_blocker = ResponsiveTrialBlocker::kSourceTimingUnverified;
+  } else if (marker_health != mfgunlock::pacing::MarkerHealth::kHealthy) {
+    trial_blocker = ResponsiveTrialBlocker::kReflexUnhealthy;
+  } else if (!sleep_available ||
+             observation.sleep.dynamic_frame_generation_control ||
+             mfgunlock::framecount::g_dynamic_applied.load(
+                 std::memory_order_relaxed)) {
+    trial_blocker = ResponsiveTrialBlocker::kDynamicActive;
+  } else if (configured_multiplier < 4 || configured_multiplier > 6) {
+    trial_blocker = ResponsiveTrialBlocker::kFixedMultiplierRequired;
+  } else if (multiplier_trial.phase ==
+                 mfgunlock::latency::MultiplierTrialPhase::kIdle &&
+             live_multiplier != configured_multiplier) {
+    trial_blocker = ResponsiveTrialBlocker::kLiveMultiplierUnconfirmed;
+  } else if (!mfgunlock::framecount::g_reflex_options_seen.load(
+                 std::memory_order_acquire)) {
+    trial_blocker = ResponsiveTrialBlocker::kReflexOptionsUnavailable;
+  } else if (user_source_cap_rejected) {
+    trial_blocker = ResponsiveTrialBlocker::kUserCapRejected;
+  } else if (user_source_cap_requested && !user_source_cap_ready) {
+    trial_blocker = ResponsiveTrialBlocker::kUserCapPending;
+  } else if (responsive_reason ==
+             mfgunlock::latency::ResponsiveTrialReason::kNone) {
+    trial_blocker = ResponsiveTrialBlocker::kNoTrigger;
+  }
+  mfgunlock::framecount::g_latency_guard_trial_blocker.store(
+      static_cast<unsigned int>(trial_blocker), std::memory_order_relaxed);
+  const mfgunlock::latency::MultiplierTrialSample multiplier_sample{
+      observed_source_interval_us,
+      queue_wait_us,
+      observation.p95_queue_wait_us,
+      pipeline_latency_us,
+      observation.p95_pipeline_latency_us,
+      observation.median_ai_frame_time_us};
+  const uint32_t multiplier_override = multiplier_trial.Update(
+      now,
+      mfgunlock::framecount::g_latency_guard_epoch.load(
+          std::memory_order_acquire),
+      configured_multiplier, live_multiplier, multiplier_safe,
+      responsive_reason, multiplier_sample, user_source_cap_ready);
+  mfgunlock::framecount::g_latency_guard_multiplier_override.store(
+      multiplier_override, std::memory_order_release);
+  mfgunlock::framecount::g_latency_guard_multiplier_trial_accepted.store(
+      multiplier_trial.accepted, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_multiplier_trial_phase.store(
+      static_cast<unsigned int>(multiplier_trial.phase),
+      std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_multiplier_trial_reason.store(
+      static_cast<unsigned int>(multiplier_trial.reason),
+      std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_multiplier_approved.store(
+      multiplier_trial.approved_multiplier, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_multiplier_candidate.store(
+      multiplier_trial.candidate_multiplier, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_multiplier_baseline_samples.store(
+      static_cast<unsigned int>(multiplier_trial.baseline_window.count),
+      std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_multiplier_trial_samples.store(
+      static_cast<unsigned int>(multiplier_trial.candidate_window.count),
+      std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_multiplier_baseline_pipeline_us.store(
+      multiplier_trial.last_compared_baseline.samples != 0
+          ? multiplier_trial.last_compared_baseline.pipeline_us
+          : multiplier_trial.baseline.pipeline_us,
+      std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_multiplier_baseline_p95_us.store(
+      multiplier_trial.last_compared_baseline.samples != 0
+          ? multiplier_trial.last_compared_baseline.pipeline_p95_us
+          : multiplier_trial.baseline.pipeline_p95_us,
+      std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_multiplier_trial_pipeline_us.store(
+      multiplier_trial.latest_trial.pipeline_us, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_multiplier_trial_p95_us.store(
+      multiplier_trial.latest_trial.pipeline_p95_us,
+      std::memory_order_relaxed);
+  if (old_multiplier_override != multiplier_override) {
+    // The next normal game SetOptions submission picks up (or releases) the
+    // bounded runtime override. The user output-FPS cap is unchanged, so do
+    // not replay Reflex or add a second reconfiguration at this transition.
+    mfgunlock::framecount::g_force_failed_for.store(0,
+                                                    std::memory_order_relaxed);
+  }
+  const bool multiplier_fallback_allowed = multiplier_override == 0 &&
+      multiplier_trial.attempted &&
+      multiplier_trial.phase ==
+          mfgunlock::latency::MultiplierTrialPhase::kCooldown;
+  const bool multiplier_sequence_active =
+      multiplier_trial.phase !=
+          mfgunlock::latency::MultiplierTrialPhase::kIdle &&
+      multiplier_trial.phase !=
+          mfgunlock::latency::MultiplierTrialPhase::kCooldown;
+  const bool queue_trim_safe = base_safe &&
+      observation.queue_timing_confident && !user_source_cap_requested &&
+      mfgunlock::framecount::g_reflex_native_limit_us.load(
+          std::memory_order_relaxed) == 0 &&
+      (observation.sleep.sleep_interval_us == 0 ||
+       current_limit_source == static_cast<unsigned int>(
+           mfgunlock::framecount::internal::ReflexTargetSource::kLatencyGuard));
+  const auto old_cap = mfgunlock::framecount::g_latency_guard_active_source_cap_fps.load(std::memory_order_relaxed);
+  const auto cap = trial.Update(now,
+      mfgunlock::framecount::g_latency_guard_epoch.load(std::memory_order_acquire), live_multiplier,
+      queue_trim_safe && multiplier_override == 0 && !multiplier_sequence_active &&
+          (responsive_reason ==
+               mfgunlock::latency::ResponsiveTrialReason::kNone ||
+           multiplier_fallback_allowed),
+      pressure_candidate && multiplier_override == 0 &&
+              !multiplier_sequence_active &&
+              (responsive_reason ==
+                   mfgunlock::latency::ResponsiveTrialReason::kNone ||
+               multiplier_fallback_allowed)
+          ? recommendation.source_cap_fps : 0,
+      observed_source_interval_us, queue_wait_us, pipeline_latency_us);
+  mfgunlock::framecount::g_latency_guard_active_source_cap_fps.store(cap, std::memory_order_relaxed);
+  mfgunlock::framecount::g_latency_guard_auto_cap_ready.store(cap != 0, std::memory_order_release);
+  if (cap != old_cap) {
+    mfgunlock::framecount::g_latency_guard_refresh_pending.store(true, std::memory_order_release);
+    mfgunlock::framecount::internal::RefreshReflexTarget();
+  }
+}
+
 // ReShade may unload and reload addons while it probes temporary D3D devices.
 // Starting a self-pinned worker from those callbacks keeps the first addon
 // instance alive and makes its eventual worker exit unregister the instance
@@ -1827,8 +2979,15 @@ void OnPresentStartDiscovery(reshade::api::command_queue* /*queue*/,
             break;
         }
         g_render_api.store(detected, std::memory_order_relaxed);
+        if (detected != DetectedRenderApi::kD3D11 &&
+            detected != DetectedRenderApi::kD3D12)
+          ClearDxgiDiagnostics();
         mfgunlock::framecount::NotifyDynamicD3D12(
-            detected == DetectedRenderApi::kD3D12);
+            detected == DetectedRenderApi::kD3D12,
+            detected == DetectedRenderApi::kVulkan,
+            detected == DetectedRenderApi::kD3D11 ||
+                detected == DetectedRenderApi::kD3D12 ||
+                detected == DetectedRenderApi::kVulkan);
       }
       mfgunlock::framecount::NotifySwapchainTransition();
     }
@@ -1837,13 +2996,38 @@ void OnPresentStartDiscovery(reshade::api::command_queue* /*queue*/,
       swapchain == g_primary_swapchain.load(std::memory_order_acquire)) {
     const auto color_space = swapchain->get_color_space();
     if (color_space != reshade::api::color_space::unknown) {
+      if (mfgunlock::inputdiag::g_enabled.load(std::memory_order_relaxed)) {
+        if (auto* device = swapchain->get_device(); device != nullptr) {
+          const auto back_buffer = swapchain->get_back_buffer(0);
+          const auto desc = device->get_resource_desc(back_buffer);
+          mfgunlock::inputdiag::ObserveOutput(
+              desc.texture.width, desc.texture.height,
+              static_cast<uint32_t>(desc.texture.format),
+              static_cast<uint32_t>(color_space));
+        }
+      }
       const bool hdr = color_space == reshade::api::color_space::scrgb ||
                        color_space == reshade::api::color_space::hdr10_pq ||
                        color_space == reshade::api::color_space::hdr10_hlg;
       mfgunlock::framecount::NotifyHdrState(hdr);
     }
   }
+  UpdateReflexPacingLab(swapchain);
+  UpdateLatencyGuard(swapchain);
+  UpdateVramDiagnostics(swapchain);
   StartDiscoveryWorker();
+#if !defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+  if (g_render_api.load(std::memory_order_relaxed) ==
+      DetectedRenderApi::kD3D12)
+    mfgunlock::cudatemporal::TryInstall();
+#endif
+}
+
+void OnFinishPresent(reshade::api::command_queue* /*queue*/,
+                     reshade::api::swapchain* swapchain) {
+  if (swapchain != nullptr &&
+      swapchain == g_primary_swapchain.load(std::memory_order_acquire))
+    mfgunlock::reflexpacing::RecordPresent();
 }
 
 void OnInitSwapchain(reshade::api::swapchain* swapchain, bool /*resize*/) {
@@ -1876,8 +3060,15 @@ void OnInitSwapchain(reshade::api::swapchain* swapchain, bool /*resize*/) {
             break;
         }
         g_render_api.store(detected, std::memory_order_relaxed);
+        if (detected != DetectedRenderApi::kD3D11 &&
+            detected != DetectedRenderApi::kD3D12)
+          ClearDxgiDiagnostics();
         mfgunlock::framecount::NotifyDynamicD3D12(
-            detected == DetectedRenderApi::kD3D12);
+            detected == DetectedRenderApi::kD3D12,
+            detected == DetectedRenderApi::kVulkan,
+            detected == DetectedRenderApi::kD3D11 ||
+                detected == DetectedRenderApi::kD3D12 ||
+                detected == DetectedRenderApi::kVulkan);
         const auto color_space = swapchain->get_color_space();
         if (color_space != reshade::api::color_space::unknown) {
           const bool hdr = color_space == reshade::api::color_space::scrgb ||
@@ -1889,17 +3080,50 @@ void OnInitSwapchain(reshade::api::swapchain* swapchain, bool /*resize*/) {
       }
     }
   }
-  if (primary_transition) mfgunlock::framecount::NotifySwapchainTransition();
+  if (primary_transition) {
+    AcquireSRWLockExclusive(&g_reflex_waitable.lock);
+    g_reflex_waitable.fallback_latched = false;
+    if (mfgunlock::reflexpacing::WaitableRequested()) {
+      mfgunlock::reflexpacing::g_fallback_reason.store(
+          mfgunlock::reflexpacing::FallbackReason::kNone,
+          std::memory_order_relaxed);
+      mfgunlock::reflexpacing::g_waitable_state.store(
+          mfgunlock::reflexpacing::WaitableState::kWaitingForSwapchain,
+          std::memory_order_release);
+    }
+    ReleaseSRWLockExclusive(&g_reflex_waitable.lock);
+    mfgunlock::framecount::NotifySwapchainTransition();
+#if !defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+    mfgunlock::cudatemporal::RequestHistoryReset();
+#endif
+  }
 }
 
 void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool /*resize*/) {
+  AcquireSRWLockExclusive(&g_reflex_waitable.lock);
+  if (swapchain != nullptr && swapchain == g_reflex_waitable.owner) {
+    RestoreReflexWaitableLocked(
+        swapchain, mfgunlock::reflexpacing::FallbackReason::kNotRequested);
+    mfgunlock::reflexpacing::g_fallback_reason.store(
+        mfgunlock::reflexpacing::FallbackReason::kSwapchainChanged,
+        std::memory_order_relaxed);
+    mfgunlock::reflexpacing::g_waitable_state.store(
+        mfgunlock::reflexpacing::WaitableState::kWaitingForSwapchain,
+        std::memory_order_release);
+    g_reflex_waitable.fallback_latched = false;
+  }
+  ReleaseSRWLockExclusive(&g_reflex_waitable.lock);
   reshade::api::swapchain* expected = swapchain;
   if (g_primary_swapchain.compare_exchange_strong(
           expected, nullptr, std::memory_order_acq_rel)) {
     g_primary_swapchain_area.store(0, std::memory_order_relaxed);
     g_render_api.store(DetectedRenderApi::kUnknown, std::memory_order_relaxed);
-    mfgunlock::framecount::NotifyDynamicD3D12(false);
+    ClearDxgiDiagnostics();
+    mfgunlock::framecount::NotifyDynamicD3D12(false, false, false);
     mfgunlock::framecount::NotifySwapchainTransition();
+#if !defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+    mfgunlock::cudatemporal::RequestHistoryReset();
+#endif
   }
 }
 
@@ -1925,7 +3149,11 @@ void OnInitDevice(reshade::api::device* device) {
         g_primary_swapchain.load(std::memory_order_acquire) == nullptr;
     if (no_primary) {
       mfgunlock::framecount::NotifyDynamicD3D12(
-          detected == DetectedRenderApi::kD3D12);
+          detected == DetectedRenderApi::kD3D12,
+          detected == DetectedRenderApi::kVulkan,
+          detected == DetectedRenderApi::kD3D11 ||
+              detected == DetectedRenderApi::kD3D12 ||
+              detected == DetectedRenderApi::kVulkan);
     }
 
     const DetectedRenderApi previous = no_primary
@@ -1956,6 +3184,11 @@ void OnInitCommandQueue(reshade::api::command_queue* /*queue*/) {
   if (g_force_flip_meter_off.load(std::memory_order_relaxed)) TryPatchFlipMetering();
   mfgunlock::framecount::TryInstall();
   mfgunlock::loadhook::TryInstall();
+#if !defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+  if (g_render_api.load(std::memory_order_relaxed) ==
+      DetectedRenderApi::kD3D12)
+    mfgunlock::cudatemporal::TryInstall();
+#endif
 }
 
 // ---------------------------------------------------------------- overlay
@@ -1976,12 +3209,547 @@ void HelpMarker(const char* text) {
   ImGui::EndTooltip();
 }
 
+void SetNextItemWidthWithHelp(const char* visible_label) {
+  const ImGuiStyle& style = ImGui::GetStyle();
+  const float trailing_width =
+      ImGui::CalcTextSize(visible_label).x + style.ItemInnerSpacing.x +
+      style.ItemSpacing.x + ImGui::CalcTextSize("[?]").x;
+  ImGui::SetNextItemWidth(
+      (std::max)(1.0f, ImGui::GetContentRegionAvail().x - trailing_width));
+}
+
+void TextDisabledWrapped(const char* text) {
+  ImGui::PushStyleColor(ImGuiCol_Text,
+                        ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+  ImGui::TextWrapped("%s", text);
+  ImGui::PopStyleColor();
+}
+
 void StatusRow(const char* label, const char* value, const ImVec4& color) {
   ImGui::TableNextRow();
   ImGui::TableNextColumn();
   ImGui::TextDisabled("%s", label);
   ImGui::TableNextColumn();
-  ImGui::TextColored(color, "%s", value);
+  ImGui::PushStyleColor(ImGuiCol_Text, color);
+  ImGui::TextWrapped("%s", value);
+  ImGui::PopStyleColor();
+}
+
+void StatusSectionRow(const char* label) {
+  ImGui::TableNextRow();
+  ImGui::TableNextColumn();
+  ImGui::TextDisabled("%s", label);
+  ImGui::TableNextColumn();
+  ImGui::Separator();
+}
+
+const char* SourceCapConfigOriginText(
+    mfgunlock::pacing::SourceCapConfigOrigin origin) {
+  using Origin = mfgunlock::pacing::SourceCapConfigOrigin;
+  switch (origin) {
+    case Origin::kConfigured:
+      return "Reflex output cap (compatibility key ReflexSourceFpsCap)";
+    case Origin::kLegacyDynamic:
+      return "migrated in memory from DynamicReflexSourceCap";
+    case Origin::kLegacyFixedOutput:
+      return "migrated in memory from FixedOutputFpsCap";
+    default:
+      return "default/off";
+  }
+}
+
+const char* UserSourceCapStatusText(
+    mfgunlock::framecount::internal::UserSourceCapStatus status) {
+  using Status =
+      mfgunlock::framecount::internal::UserSourceCapStatus;
+  switch (status) {
+    case Status::kInactiveGameControlled:
+      return "Inactive: select fixed MFG or enable Dynamic MFG";
+    case Status::kWaitingForDynamic:
+      return "Waiting for Dynamic MFG to become active";
+    case Status::kWaitingForReflex:
+      return "Pending: game has not exposed Reflex options";
+    case Status::kPending:
+      return "Pending application at the next safe Reflex update";
+    case Status::kActive:
+      return "Active";
+    case Status::kNativeLimitStricter:
+      return "Active; the game's stricter native cap wins";
+    case Status::kRejected:
+      return "Rejected by Reflex; native settings restored";
+    default:
+      return "Off";
+  }
+}
+
+const ImVec4& UserSourceCapColor(
+    mfgunlock::framecount::internal::UserSourceCapStatus status) {
+  using Status =
+      mfgunlock::framecount::internal::UserSourceCapStatus;
+  if (status == Status::kActive ||
+      status == Status::kNativeLimitStricter)
+    return kUiPositive;
+  if (status == Status::kRejected) return kUiError;
+  if (status == Status::kOff) return kUiMuted;
+  return kUiWarning;
+}
+
+std::string UserSourceCapSummary(
+    const mfgunlock::framecount::internal::UserSourceCapState& state) {
+  if (state.configured_fps == 0) return "0 is Off.";
+  std::ostringstream summary;
+  summary << "Targets up to ~" << state.configured_fps
+          << " displayed FPS";
+  if (state.estimated_multiplier >= 2 &&
+      state.estimated_multiplier <= 6) {
+    const float estimated_source =
+        static_cast<float>(state.configured_fps) /
+        static_cast<float>(state.estimated_multiplier);
+    summary << "; ~" << std::fixed << std::setprecision(1)
+            << estimated_source << " game-rendered FPS at "
+            << state.estimated_multiplier << "x";
+  } else {
+    summary << "; base FPS depends on the active multiplier";
+  }
+  return summary.str();
+}
+
+std::string AdaptiveComponentStatus(
+    mfgunlock::adaptivequality::ComponentVersion expected,
+    mfgunlock::adaptivequality::ComponentVersion actual, bool applied) {
+  using Version = mfgunlock::adaptivequality::ComponentVersion;
+  if (!applied || actual == Version::kNative) return "Native / not applied";
+  if (actual == Version::kMixed)
+    return "Mixed versions across providers; execution unverified";
+  const std::string version =
+      mfgunlock::adaptivequality::ComponentVersionName(actual);
+  return version + (actual == expected ? " applied; execution unverified"
+                                       : " fallback; execution unverified");
+}
+
+const ImVec4& AdaptiveComponentColor(
+    mfgunlock::adaptivequality::ComponentVersion expected,
+    mfgunlock::adaptivequality::ComponentVersion actual, bool applied) {
+  using Version = mfgunlock::adaptivequality::ComponentVersion;
+  if (!applied || actual == Version::kNative || actual == Version::kMixed)
+    return kUiWarning;
+  return actual == expected ? kUiPositive : kUiWarning;
+}
+
+const char* InputFormatApiName(uint32_t api) {
+  switch (api) {
+    case 1: return "DXGI";
+    case 2: return "Vulkan";
+    default: return "Unknown";
+  }
+}
+
+const char* InputNativeApiName(mfgunlock::inputdiag::NativeApi api) {
+  switch (api) {
+    case mfgunlock::inputdiag::NativeApi::D3D11: return "D3D11";
+    case mfgunlock::inputdiag::NativeApi::D3D12: return "D3D12";
+    case mfgunlock::inputdiag::NativeApi::Vulkan: return "Vulkan";
+    default: return "Unknown";
+  }
+}
+
+const char* InputColorSpaceName(uint32_t value) {
+  switch (static_cast<reshade::api::color_space>(value)) {
+    case reshade::api::color_space::srgb: return "sRGB";
+    case reshade::api::color_space::scrgb: return "scRGB linear";
+    case reshade::api::color_space::hdr10_pq: return "HDR10 PQ";
+    case reshade::api::color_space::hdr10_hlg: return "HDR10 HLG";
+    default: return "Unknown";
+  }
+}
+
+const char* InputBooleanName(int value) {
+  switch (value) {
+    case 0: return "No";
+    case 1: return "Yes";
+    default: return "Unspecified";
+  }
+}
+
+const char* InputDlssgModeName(uint32_t value) {
+  switch (static_cast<sl::DLSSGMode>(value)) {
+    case sl::DLSSGMode::eOff: return "Off";
+    case sl::DLSSGMode::eOn: return "On";
+    case sl::DLSSGMode::eAuto: return "Auto";
+    case sl::DLSSGMode::eDynamic: return "Dynamic";
+    default: return "Unknown";
+  }
+}
+
+const char* InputLifecycleName(uint32_t value) {
+  switch (value) {
+    case sl::eOnlyValidNow: return "Now";
+    case sl::eValidUntilPresent: return "Until Present";
+    case sl::eValidUntilEvaluate: return "Until Evaluate";
+    default: return "Unknown";
+  }
+}
+
+bool KnownInputFloat(float value) {
+  return std::isfinite(value) && value != sl::INVALID_FLOAT;
+}
+
+std::string FormatMemoryBytes(uint64_t bytes) {
+  if (bytes == 0) return "Not reported";
+  std::ostringstream stream;
+  stream << std::fixed << std::setprecision(bytes >= (1ull << 30) ? 2 : 0)
+         << (bytes >= (1ull << 30)
+                 ? static_cast<double>(bytes) / static_cast<double>(1ull << 30)
+                 : static_cast<double>(bytes) / static_cast<double>(1ull << 20))
+         << (bytes >= (1ull << 30) ? " GiB" : " MiB");
+  return stream.str();
+}
+
+const char* VramReadinessText(mfgunlock::memorypolicy::EstimateReadiness value) {
+  using mfgunlock::memorypolicy::EstimateReadiness;
+  switch (value) {
+    case EstimateReadiness::kReady: return "Ready";
+    case EstimateReadiness::kMissingOptions: return "Waiting for DLSS-G options";
+    case EstimateReadiness::kMissingColor: return "Waiting for output metadata";
+    case EstimateReadiness::kMissingMotionVectors: return "Waiting for motion-vector metadata";
+    case EstimateReadiness::kMissingDepth: return "Waiting for depth metadata";
+    case EstimateReadiness::kMissingBackBuffers: return "Waiting for swapchain metadata";
+    case EstimateReadiness::kMissingUiInputs: return "Waiting for UI resource metadata";
+    default: return "Waiting for inputs";
+  }
+}
+
+mfgunlock::memorypolicy::TextureInfo MemoryTextureInfo(
+    const mfgunlock::inputdiag::TagSummary& tag) {
+  mfgunlock::memorypolicy::TextureInfo result{};
+  result.present = tag.has_resource;
+  result.width = tag.native_desc_seen ? tag.native_desc_width
+                                      : (tag.width != 0 ? tag.width
+                                                        : tag.resource_width);
+  result.height = tag.native_desc_seen ? tag.native_desc_height
+                                       : (tag.height != 0 ? tag.height
+                                                          : tag.resource_height);
+  result.format = tag.native_desc_seen ? tag.native_desc_format
+                                       : tag.native_format;
+  result.lifecycle = tag.lifecycle;
+  return result;
+}
+
+void QueueProviderVramEstimateFromCapture() {
+  // NVIDIA documents this as an occasional, relatively expensive query. Keep
+  // it user-visible and exact-stack-only; never run it continuously in Present.
+  if (g_is_star_wars_outlaws ||
+      !mfgunlock::framecount::g_dlssg_310_9_1_seen.load(
+          std::memory_order_acquire) ||
+      !mfgunlock::framecount::g_streamline_2_14_1_active.load(
+          std::memory_order_acquire)) {
+    mfgunlock::framecount::g_vram_estimate_status.store(
+        static_cast<unsigned int>(
+            mfgunlock::framecount::VramEstimateStatus::kUnsupported),
+        std::memory_order_release);
+    return;
+  }
+
+  std::array<mfgunlock::inputdiag::ViewportSnapshot,
+             mfgunlock::inputdiag::kMaxViewports> snapshots{};
+  const size_t count = mfgunlock::inputdiag::SnapshotAll(snapshots);
+  mfgunlock::inputdiag::OutputSnapshot output{};
+  const bool output_valid = mfgunlock::inputdiag::SnapshotOutput(output);
+  for (size_t index = 0; index < count; ++index) {
+    const auto& snapshot = snapshots[index];
+    const auto& options = snapshot.forwarded_options;
+    if (!options.valid || options.calls == 0) continue;
+    mfgunlock::memorypolicy::EstimateInputs input{};
+    input.viewport = snapshot.viewport;
+    input.options_valid = true;
+    input.mode = options.mode;
+    input.generated_frames = options.generated_frames;
+    input.flags = options.flags;
+    input.dynamic_width = options.dynamic_width;
+    input.dynamic_height = options.dynamic_height;
+    input.back_buffers = options.back_buffers != 0
+        ? options.back_buffers
+        : g_vram_swapchain_buffers.load(std::memory_order_relaxed);
+    input.mvec_depth_width = options.mvec_depth_width;
+    input.mvec_depth_height = options.mvec_depth_height;
+    input.color_width = options.color_width;
+    input.color_height = options.color_height;
+    input.color_format = options.color_format;
+    input.mvec_format = options.mvec_format;
+    input.depth_format = options.depth_format;
+    input.hudless_format = options.hudless_format;
+    input.ui_format = options.ui_format;
+    input.queue_parallelism_mode = options.queue_parallelism_mode;
+    input.ui_recomposition = options.ui_recomposition;
+    input.dynamic_target_fps = KnownInputFloat(options.dynamic_target_fps)
+        ? options.dynamic_target_fps : 0.0f;
+    if (output_valid) {
+      input.swapchain = {output.width, output.height, output.format,
+                         static_cast<uint32_t>(sl::eValidUntilPresent), true};
+    }
+    input.motion = MemoryTextureInfo(snapshot.tags[
+        static_cast<size_t>(mfgunlock::inputdiag::Kind::MotionVectors)]);
+    input.depth = MemoryTextureInfo(snapshot.tags[
+        static_cast<size_t>(mfgunlock::inputdiag::Kind::Depth)]);
+    input.hudless = MemoryTextureInfo(snapshot.tags[
+        static_cast<size_t>(mfgunlock::inputdiag::Kind::Hudless)]);
+    input.ui = MemoryTextureInfo(snapshot.tags[
+        static_cast<size_t>(mfgunlock::inputdiag::Kind::UiColorAlpha)]);
+    if (!input.ui.present) {
+      input.ui = MemoryTextureInfo(snapshot.tags[
+          static_cast<size_t>(mfgunlock::inputdiag::Kind::UiAlpha)]);
+    }
+    const auto plan = mfgunlock::memorypolicy::BuildEstimatePlan(input);
+    if (plan.readiness == mfgunlock::memorypolicy::EstimateReadiness::kReady)
+      mfgunlock::framecount::QueueVramEstimate(snapshot.viewport, plan);
+    else
+      mfgunlock::framecount::SetVramEstimateWaiting(plan.readiness,
+                                                    plan.volatile_inputs);
+    return;
+  }
+  mfgunlock::framecount::SetVramEstimateWaiting(
+      mfgunlock::memorypolicy::EstimateReadiness::kMissingOptions);
+}
+
+void AppendInputDiagnosticsReport(std::ostringstream& report) {
+  report << "Streamline input resource capture: "
+         << (mfgunlock::inputdiag::g_enabled.load(std::memory_order_relaxed)
+                 ? "Enabled" : "Disabled")
+         << " (original game tags before addon filtering; no pixel data)\n";
+  std::array<mfgunlock::inputdiag::ViewportSnapshot,
+             mfgunlock::inputdiag::kMaxViewports> snapshots{};
+  const size_t count = mfgunlock::inputdiag::SnapshotAll(snapshots);
+  report << "Input capture skipped/truncated: "
+         << mfgunlock::inputdiag::g_dropped_contention.load(std::memory_order_relaxed)
+         << '/' << mfgunlock::inputdiag::g_truncated_batches.load(
+                        std::memory_order_relaxed) << '\n';
+  mfgunlock::inputdiag::OutputSnapshot output{};
+  if (mfgunlock::inputdiag::SnapshotOutput(output)) {
+    report << "Primary swapchain: " << output.width << 'x' << output.height
+           << ", format " << output.format << ", color space "
+           << InputColorSpaceName(output.color_space) << " ("
+           << output.color_space << "), samples/changes " << output.samples
+           << '/' << output.changes << '\n';
+  } else {
+    report << "Primary swapchain: no complete sample\n";
+  }
+  for (size_t viewport = 0; viewport < count; ++viewport) {
+    const auto& snapshot = snapshots[viewport];
+    if (snapshot.tag_batches == 0 && snapshot.constants.calls == 0) continue;
+    report << "Input viewport " << snapshot.viewport << " ("
+           << InputNativeApiName(snapshot.native_api) << "; "
+           << InputFormatApiName(snapshot.format_api) << " formats): "
+           << snapshot.tag_batches << " tag batches, "
+           << snapshot.frame_aware_batches << " frame-aware\n";
+    const auto append_options = [&report](
+        const char* label,
+        const mfgunlock::inputdiag::OptionsSummary& options) {
+      if (options.calls == 0) return;
+      report << "  " << label << " DLSS-G options: " << options.calls
+             << " calls, " << options.changes << " changes, "
+             << options.invalid_base_metadata << " invalid";
+      if (!options.valid) {
+        report << ", no valid sample\n";
+        return;
+      }
+      report << ", struct v" << options.struct_version
+             << ", mode " << InputDlssgModeName(options.mode)
+             << ", generated frames " << options.generated_frames
+             << " (" << (options.generated_frames + 1) << "x)"
+             << ", flags 0x" << std::hex << options.flags << std::dec
+             << ", color " << options.color_width << 'x'
+             << options.color_height << " format " << options.color_format
+             << ", MV/depth " << options.mvec_depth_width << 'x'
+             << options.mvec_depth_height
+             << ", formats MV/depth/HUD-less/UI "
+             << options.mvec_format << '/' << options.depth_format << '/'
+             << options.hudless_format << '/' << options.ui_format
+             << ", UI recomposition "
+             << InputBooleanName(options.ui_recomposition);
+      if (KnownInputFloat(options.dynamic_target_fps))
+        report << ", dynamic target " << options.dynamic_target_fps;
+      report << '\n';
+    };
+    append_options("Game", snapshot.game_options);
+    append_options("Forwarded", snapshot.forwarded_options);
+    for (size_t index = 0; index < mfgunlock::inputdiag::kKindCount; ++index) {
+      const auto& tag = snapshot.tags[index];
+      if (tag.sets == 0 && tag.clears == 0) continue;
+      report << "  " << mfgunlock::inputdiag::KindName(
+          static_cast<mfgunlock::inputdiag::Kind>(index)) << ": "
+          << "tag extent " << tag.width << 'x' << tag.height
+          << ", Streamline resource " << tag.resource_width << 'x'
+          << tag.resource_height << " format " << tag.native_format;
+      if (tag.native_desc_seen) {
+        report << ", native desc " << tag.native_desc_width << 'x'
+               << tag.native_desc_height << " format "
+               << tag.native_desc_format;
+      } else {
+        report << ", native desc unavailable";
+      }
+      report << ", lifecycle " << InputLifecycleName(tag.lifecycle)
+          << ", last state " << (tag.has_resource ? "set" : "cleared")
+          << ", sets/clears " << tag.sets << '/' << tag.clears
+          << ", invalid base metadata " << tag.invalid_base_metadata
+          << ", metadata/native-desc/identity changes "
+          << tag.metadata_changes << '/' << tag.native_desc_changes << '/'
+          << tag.native_identity_changes;
+      if (tag.frame_known) report << ", last frame " << tag.last_frame;
+      report << '\n';
+    }
+    const auto& constants = snapshot.constants;
+    if (constants.calls != 0) {
+      report << "  Constants: " << constants.calls << " calls, game resets "
+             << constants.game_reset_true << ", invalid base metadata "
+             << constants.invalid_base_metadata
+             << ", struct v" << constants.struct_version
+             << ", last frame " << constants.last_frame
+             << ", depth inverted " << InputBooleanName(constants.depth_inverted)
+             << ", camera motion " << InputBooleanName(constants.camera_motion_included)
+             << ", MV 3D/dilated/jittered "
+             << InputBooleanName(constants.motion_vectors_3d) << '/'
+             << InputBooleanName(constants.motion_vectors_dilated) << '/'
+             << InputBooleanName(constants.motion_vectors_jittered) << '\n';
+      if (KnownInputFloat(constants.mvec_scale_x) &&
+          KnownInputFloat(constants.mvec_scale_y))
+        report << "  Motion-vector scale: " << constants.mvec_scale_x
+               << ", " << constants.mvec_scale_y << '\n';
+      if (KnownInputFloat(constants.jitter_x) &&
+          KnownInputFloat(constants.jitter_y))
+        report << "  Jitter: " << constants.jitter_x << ", "
+               << constants.jitter_y << '\n';
+    }
+  }
+}
+
+void DrawInputDiagnosticsPanel() {
+  if (!ImGui::TreeNode("Streamline input resources (read-only)")) return;
+  bool enabled = mfgunlock::inputdiag::g_enabled.load(std::memory_order_relaxed);
+  if (ImGui::Checkbox("Capture resource metadata this session", &enabled)) {
+    if (enabled) mfgunlock::inputdiag::Clear();
+    mfgunlock::inputdiag::g_enabled.store(enabled, std::memory_order_release);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Clear input samples")) mfgunlock::inputdiag::Clear();
+  ImGui::TextDisabled(
+      "Game submissions before Quality Guard; no pixel reads or saved addresses.");
+  ImGui::TextDisabled(
+      "Relevant tag types may also be used by other Streamline features.");
+  ImGui::TextDisabled(
+      "Native format is API-specific and does not establish scRGB, PQ or SDR encoding.");
+  ImGui::TextDisabled("Skipped lock/truncated batches: %llu / %llu.",
+      mfgunlock::inputdiag::g_dropped_contention.load(std::memory_order_relaxed),
+      mfgunlock::inputdiag::g_truncated_batches.load(std::memory_order_relaxed));
+  mfgunlock::inputdiag::OutputSnapshot output{};
+  if (mfgunlock::inputdiag::SnapshotOutput(output)) {
+    ImGui::TextDisabled(
+        "Primary swapchain: %ux%u, format %u, %s; samples/changes %llu/%llu.",
+        output.width, output.height, output.format,
+        InputColorSpaceName(output.color_space), output.samples,
+        output.changes);
+  } else {
+    ImGui::TextDisabled("Primary swapchain: waiting for a complete sample.");
+  }
+  if (mfgunlock::inputdiag::g_viewport_overflow.load(std::memory_order_relaxed))
+    ImGui::TextColored(kUiWarning, "More than eight viewports; capture incomplete.");
+  std::array<mfgunlock::inputdiag::ViewportSnapshot,
+             mfgunlock::inputdiag::kMaxViewports> snapshots{};
+  const size_t count = mfgunlock::inputdiag::SnapshotAll(snapshots);
+  for (size_t viewport = 0; viewport < count; ++viewport) {
+    const auto& snapshot = snapshots[viewport];
+    if (snapshot.tag_batches == 0 && snapshot.constants.calls == 0) continue;
+    ImGui::PushID(static_cast<int>(snapshot.viewport));
+    if (ImGui::TreeNode("viewport", "Viewport %u (%s; %s formats): %llu tag batches",
+                        snapshot.viewport,
+                        InputNativeApiName(snapshot.native_api),
+                        InputFormatApiName(snapshot.format_api),
+                        snapshot.tag_batches)) {
+      ImGui::TextDisabled("Frame-aware tag batches: %llu", snapshot.frame_aware_batches);
+      const auto draw_options = [](
+          const char* label,
+          const mfgunlock::inputdiag::OptionsSummary& options) {
+        if (options.calls == 0) return;
+        if (!options.valid) {
+          ImGui::TextDisabled("%s options: %llu calls; no valid sample (%llu invalid).",
+                              label, options.calls,
+                              options.invalid_base_metadata);
+          return;
+        }
+        ImGui::Text(
+            "%s options v%u: %s, %u generated (%ux), flags 0x%X",
+            label, options.struct_version, InputDlssgModeName(options.mode),
+            options.generated_frames, options.generated_frames + 1,
+            options.flags);
+        ImGui::TextDisabled(
+            "Color %ux%u fmt %u | MV/depth %ux%u | formats MV/depth/HUD/UI %u/%u/%u/%u",
+            options.color_width, options.color_height, options.color_format,
+            options.mvec_depth_width, options.mvec_depth_height,
+            options.mvec_format, options.depth_format,
+            options.hudless_format, options.ui_format);
+        ImGui::TextDisabled(
+            "UI recomposition %s | calls %llu | changes %llu | invalid %llu",
+            InputBooleanName(options.ui_recomposition), options.calls,
+            options.changes, options.invalid_base_metadata);
+        if (KnownInputFloat(options.dynamic_target_fps))
+          ImGui::TextDisabled("Dynamic target: %.4g FPS",
+                              options.dynamic_target_fps);
+      };
+      draw_options("Game", snapshot.game_options);
+      draw_options("Forwarded", snapshot.forwarded_options);
+      for (size_t index = 0; index < mfgunlock::inputdiag::kKindCount; ++index) {
+        const auto& tag = snapshot.tags[index];
+        if (tag.sets == 0 && tag.clears == 0) continue;
+        ImGui::Separator();
+        ImGui::Text("%s: tag %ux%u; Streamline resource %ux%u, format %u",
+                    mfgunlock::inputdiag::KindName(
+                        static_cast<mfgunlock::inputdiag::Kind>(index)),
+                    tag.width, tag.height, tag.resource_width,
+                    tag.resource_height, tag.native_format);
+        if (tag.native_desc_seen) {
+          ImGui::TextDisabled("Native desc: %ux%u, format %u",
+                              tag.native_desc_width, tag.native_desc_height,
+                              tag.native_desc_format);
+        } else {
+          ImGui::TextDisabled("Native desc unavailable for this API/resource.");
+        }
+        ImGui::TextDisabled(
+            "Sets %llu | clears %llu | last state %s | lifecycle %s | base concerns %llu",
+            tag.sets, tag.clears, tag.has_resource ? "set" : "cleared",
+            InputLifecycleName(tag.lifecycle), tag.invalid_base_metadata);
+        ImGui::TextDisabled(
+            "Metadata changes %llu | native-desc changes %llu | native identity changes %llu",
+            tag.metadata_changes, tag.native_desc_changes,
+            tag.native_identity_changes);
+        if (tag.frame_known)
+          ImGui::TextDisabled("Last frame token: %u", tag.last_frame);
+      }
+      const auto& constants = snapshot.constants;
+      if (constants.calls != 0) {
+        ImGui::Separator();
+        ImGui::Text("Constants v%u: %llu calls, %llu game reset flags",
+                    constants.struct_version, constants.calls,
+                    constants.game_reset_true);
+        ImGui::TextDisabled(
+            "Frame %u | depth inverted %s | camera motion %s | MV 3D/dilated/jittered %s/%s/%s",
+            constants.last_frame, InputBooleanName(constants.depth_inverted),
+            InputBooleanName(constants.camera_motion_included),
+            InputBooleanName(constants.motion_vectors_3d),
+            InputBooleanName(constants.motion_vectors_dilated),
+            InputBooleanName(constants.motion_vectors_jittered));
+        if (KnownInputFloat(constants.mvec_scale_x) &&
+            KnownInputFloat(constants.mvec_scale_y))
+          ImGui::TextDisabled("MV scale: %.4g, %.4g", constants.mvec_scale_x,
+                              constants.mvec_scale_y);
+        if (KnownInputFloat(constants.jitter_x) &&
+            KnownInputFloat(constants.jitter_y))
+          ImGui::TextDisabled("Jitter: %.4g, %.4g", constants.jitter_x,
+                              constants.jitter_y);
+      }
+      ImGui::TreePop();
+    }
+    ImGui::PopID();
+  }
+  ImGui::TreePop();
 }
 
 void SettingLabel(const char* label, const char* summary, const char* tooltip,
@@ -2004,6 +3772,862 @@ std::string PackedVersionString(uint64_t version, bool seen) {
          << ((version >> 16u) & 0xffffu) << '.'
          << (version & 0xffffu);
   return stream.str();
+}
+
+const mfgunlock::nvapistatus::Snapshot& ObserveNvapiUiStatus(
+    reshade::api::effect_runtime* runtime) {
+  static mfgunlock::nvapistatus::Snapshot cached{};
+  static ULONGLONG next_sample = 0;
+  const ULONGLONG now = GetTickCount64();
+  if (now < next_sample) return cached;
+  next_sample = now + 500;
+
+  IUnknown* native_device = nullptr;
+  if (runtime != nullptr) {
+    if (auto* device = runtime->get_device(); device != nullptr) {
+      const auto api = device->get_api();
+      if ((api == reshade::api::device_api::d3d11 ||
+           api == reshade::api::device_api::d3d12) &&
+          device->get_native() != 0) {
+        native_device = reinterpret_cast<IUnknown*>(
+            static_cast<uintptr_t>(device->get_native()));
+      }
+    }
+  }
+  cached = mfgunlock::nvapistatus::Observe(native_device,
+                                            GetCurrentProcessId());
+  return cached;
+}
+
+std::string NgxPresetText(uint32_t preset) {
+  std::string result;
+  if (preset >= 1 && preset <= 26) {
+    result = "Preset ";
+    result.push_back(static_cast<char>('A' + preset - 1));
+  } else if (preset == 0x00fffffeu) {
+    result = "Default preset";
+  } else if (preset == 0x00ffffffu) {
+    result = "Latest preset";
+  } else if (preset == 0) {
+    result = "Game/provider controlled";
+  } else {
+    result = "Unknown (" + std::to_string(preset) + ')';
+  }
+  return result;
+}
+
+const char* NgxPerformanceModeText(uint32_t mode) {
+  switch (mode) {
+    case 0:
+      return "Performance";
+    case 1:
+      return "Balanced";
+    case 2:
+      return "Quality";
+    case 3:
+      return "Game controlled";
+    case 4:
+      return "DLAA";
+    case 5:
+      return "Ultra Performance";
+    case 6:
+      return "Custom";
+    default:
+      return "Unknown mode";
+  }
+}
+
+std::string ReconstructionPresetText(
+    const mfgunlock::nvapistatus::Snapshot& status, bool ray_reconstruction) {
+  using namespace mfgunlock::nvapistatus;
+  if (status.ngx_override_status != kOk) return "Not reported";
+
+  const uint64_t feedback = ray_reconstruction
+                                ? status.ngx.feedback_ray_reconstruction
+                                : status.ngx.feedback_super_resolution;
+  if (feedback == 0) return "Not detected";
+  const bool active = NgxFeatureActive(feedback);
+  const bool configured = NgxFeatureConfigured(feedback);
+  if (!active && !configured) return "Not active";
+
+  std::ostringstream stream;
+  bool wrote_detail = false;
+  if (!active) {
+    stream << "Configured";
+    wrote_detail = true;
+  }
+  if ((feedback & kNgxOverridePerformanceMode) != 0) {
+    stream << NgxPerformanceModeText(status.ngx.performance_mode);
+    wrote_detail = true;
+  }
+  if ((feedback & kNgxOverrideScalingRatio) != 0 &&
+      std::isfinite(status.ngx.scaling_ratio) &&
+      status.ngx.scaling_ratio > 0.0f) {
+    if (wrote_detail) stream << " | ";
+    stream << std::fixed << std::setprecision(1)
+           << status.ngx.scaling_ratio * 100.0f << "% render scale";
+    wrote_detail = true;
+  }
+  if ((feedback & kNgxOverridePreset) != 0) {
+    if (wrote_detail) stream << " | ";
+    stream << NgxPresetText(status.ngx.render_preset)
+           << " (NVIDIA override)";
+    wrote_detail = true;
+  }
+  if (!wrote_detail) return "Active; game/provider controlled";
+  return stream.str();
+}
+
+std::string FrameGenerationPresetText(
+    const mfgunlock::nvapistatus::Snapshot& status, bool dlssg_seen) {
+  using namespace mfgunlock::nvapistatus;
+  if (status.ngx_override_status != kOk) return "Not reported";
+
+  const uint64_t feedback = status.ngx.feedback_frame_generation;
+  if (feedback == 0 && !dlssg_seen) return "Not detected";
+  if ((feedback & kNgxOverridePreset) == 0) {
+    if (NgxFeatureActive(feedback) || dlssg_seen)
+      return "Game/provider controlled";
+    return NgxFeatureConfigured(feedback)
+               ? "Configured; waiting for Frame Generation"
+               : "Not detected";
+  }
+
+  return NgxPresetText(status.ngx.frame_generation_preset) +
+         " (NVIDIA override)";
+}
+
+std::string DynamicMultiplierText(
+    const mfgunlock::nvapistatus::Snapshot& status,
+    unsigned int maximum_generated_frames) {
+  if (status.sleep_status != mfgunlock::nvapistatus::kOk ||
+      status.sleep.frame_generation_multiplier < 2) {
+    return "Dynamic (waiting for live multiplier)";
+  }
+  std::string result =
+      std::to_string(status.sleep.frame_generation_multiplier) + "x live";
+  if (maximum_generated_frames != 0) {
+    result += " / " + std::to_string(maximum_generated_frames + 1) +
+              "x max";
+  }
+  return result;
+}
+
+void DrawAdvancedQualityControls(bool adaptive_quality_managed) {
+  constexpr const char* kDepthEdgeModes[] = {
+      "Game Default", "Mild", "Balanced", "Strong", "Aggressive"};
+  int depth_edge_level = static_cast<int>(
+      mfgunlock::framecount::g_depth_edge_guard_level.load(
+          std::memory_order_relaxed));
+  SetNextItemWidthWithHelp("Depth-edge compatibility");
+  if (ImGui::Combo("Depth-edge compatibility", &depth_edge_level,
+                   kDepthEdgeModes,
+                   static_cast<int>(std::size(kDepthEdgeModes)))) {
+    mfgunlock::framecount::g_depth_edge_guard_level.store(
+        static_cast<unsigned int>(depth_edge_level),
+        std::memory_order_relaxed);
+    mfgunlock::framecount::NotifyDepthEdgeTuningChanged();
+    reshade::set_config_value(nullptr, kConfigSection,
+                              "DepthEdgeGuardLevel", depth_edge_level);
+  }
+  HelpMarker(
+      "Optional compatibility override for the game's linear-depth separation. Leave on Game Default unless a specific game shows unresolved depth-edge artifacts; stronger values may hurt pacing or thin-detail stability.");
+
+  const auto configured_profile =
+      mfgunlock::adaptivequality::NormalizeProfile(
+          g_configured_adaptive_quality_profile.load(
+              std::memory_order_relaxed));
+  if (adaptive_quality_managed &&
+      configured_profile ==
+          mfgunlock::adaptivequality::Profile::kLuminanceDirectionalV3 &&
+      ImGui::TreeNode("Adaptive Quality V3 A/B controls")) {
+    ImGui::TextDisabled(
+        "Developer comparisons inside the single V3 profile. Requires restart.");
+    bool photometric =
+        g_configured_adaptive_quality_v3_photometric.load(
+            std::memory_order_relaxed);
+    if (ImGui::Checkbox("Relative luma/chroma confidence", &photometric)) {
+      g_configured_adaptive_quality_v3_photometric.store(
+          photometric, std::memory_order_relaxed);
+      reshade::set_config_value(nullptr, kConfigSection,
+                                "AdaptiveQualityV3Photometric",
+                                photometric ? 1 : 0);
+    }
+    HelpMarker(
+        "Off retains V2 absolute-RGB confidence and arbitration while the rest of V3 remains available.");
+
+    bool directional_border =
+        g_configured_adaptive_quality_v3_directional_border.load(
+            std::memory_order_relaxed);
+    if (ImGui::Checkbox("Motion-directional border taper",
+                        &directional_border)) {
+      g_configured_adaptive_quality_v3_directional_border.store(
+          directional_border, std::memory_order_relaxed);
+      reshade::set_config_value(nullptr, kConfigSection,
+                                "AdaptiveQualityV3DirectionalBorder",
+                                directional_border ? 1 : 0);
+    }
+    HelpMarker(
+        "Off returns the warp path to V2's symmetric two-pixel border taper.");
+
+    bool oriented_geometry =
+        g_configured_adaptive_quality_v3_oriented_geometry.load(
+            std::memory_order_relaxed);
+    if (ImGui::Checkbox("Motion-oriented diagonal geometry",
+                        &oriented_geometry)) {
+      g_configured_adaptive_quality_v3_oriented_geometry.store(
+          oriented_geometry, std::memory_order_relaxed);
+      reshade::set_config_value(nullptr, kConfigSection,
+                                "AdaptiveQualityV3OrientedGeometry",
+                                oriented_geometry ? 1 : 0);
+    }
+    HelpMarker(
+        "Off deliberately requests the validated V2 geometry cubin. No additional texture or shared-memory reads are introduced when enabled.");
+
+#if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+    ImGui::TextWrapped(
+        "Local low-overhead build: Local Stable geometry + V2 Compatibility inpaint. "
+        "Confidence history and launch hooks are disabled. Saved temporal research settings are preserved but ignored.");
+#else
+    constexpr const char* kStabilityModes[] = {
+        "Local Stable (3x3 tile)", "Temporal Stable (confidence history)"};
+    int stability_mode = static_cast<int>(
+        mfgunlock::cudatemporal::NormalizeMode(
+            g_configured_adaptive_quality_v3_stability_mode.load(
+                std::memory_order_relaxed))) - 1;
+    SetNextItemWidthWithHelp("V3.2 silhouette stability");
+    if (ImGui::Combo("V3.2 silhouette stability", &stability_mode,
+                     kStabilityModes,
+                     static_cast<int>(std::size(kStabilityModes)))) {
+      const auto selected = mfgunlock::cudatemporal::NormalizeMode(
+          static_cast<unsigned int>(stability_mode + 1));
+      g_configured_adaptive_quality_v3_stability_mode.store(
+          static_cast<unsigned int>(selected), std::memory_order_relaxed);
+      reshade::set_config_value(
+          nullptr, kConfigSection, "AdaptiveQualityV3StabilityMode",
+          static_cast<int>(selected));
+    }
+    HelpMarker(
+        "Temporal Stable stores only one byte of geometry confidence per pixel, direction and symmetric phase bucket. It starts in read-only probe mode and automatically falls back to Local Stable on any CUDA API, module, phase, stream, allocation or 64 MiB validation failure. Requires restart.");
+    if (g_configured_adaptive_quality_v3_stability_mode.load(
+            std::memory_order_relaxed) !=
+        g_adaptive_quality_v3_stability_mode.load(
+            std::memory_order_relaxed)) {
+      ImGui::TextDisabled("Saved for next launch; restart the game.");
+    }
+
+    constexpr const char* kInpaintModes[] = {
+        "V2 Compatibility", "Local V3", "Temporal V3"};
+    int inpaint_mode = static_cast<int>(
+        mfgunlock::cudatemporal::NormalizeInpaintMode(
+            g_configured_adaptive_quality_v3_inpaint_mode.load(
+                std::memory_order_relaxed)));
+    SetNextItemWidthWithHelp("V3.4 inpaint stability");
+    if (ImGui::Combo("V3.4 inpaint stability", &inpaint_mode,
+                     kInpaintModes,
+                     static_cast<int>(std::size(kInpaintModes)))) {
+      const auto selected =
+          mfgunlock::cudatemporal::NormalizeInpaintMode(
+              static_cast<unsigned int>(inpaint_mode));
+      g_configured_adaptive_quality_v3_inpaint_mode.store(
+          static_cast<unsigned int>(selected), std::memory_order_relaxed);
+      reshade::set_config_value(
+          nullptr, kConfigSection, "AdaptiveQualityV3InpaintMode",
+          static_cast<int>(selected));
+    }
+    HelpMarker(
+        "Temporal V3 is the default when no saved setting exists. Local V3 separates hard rejects without history. Temporal V3 stores one confidence byte per pixel, direction and symmetric phase bucket; color always comes from the current frame. Invalid saved values fall back to V2 Compatibility. Requires restart.");
+    if (g_configured_adaptive_quality_v3_inpaint_mode.load(
+            std::memory_order_relaxed) !=
+        g_adaptive_quality_v3_inpaint_mode.load(
+            std::memory_order_relaxed)) {
+      ImGui::TextDisabled("Inpaint mode saved for next launch; restart the game.");
+    }
+#endif
+    ImGui::TreePop();
+  }
+
+  if (!ImGui::TreeNode("Legacy quality A/B controls")) return;
+  ImGui::TextDisabled(
+      "For regression testing only. Adaptive Quality preserves these saved choices but ignores them while it is enabled.");
+  if (adaptive_quality_managed) {
+    ImGui::TextColored(kUiPositive,
+                       "Managed by Adaptive Quality Suite");
+    ImGui::BeginDisabled();
+  }
+
+  bool refined =
+      g_configured_quality_refinement.load(std::memory_order_relaxed);
+  if (ImGui::Checkbox("Legacy smooth-confidence refinement", &refined)) {
+    g_configured_quality_refinement.store(refined,
+                                          std::memory_order_relaxed);
+    reshade::set_config_value(nullptr, kConfigSection,
+                              "ExperimentalQualityRefinement",
+                              refined ? 1 : 0);
+  }
+  HelpMarker(
+      "Earlier smooth-confidence experiment retained for A/B comparisons. Requires restart.");
+
+  bool intermediate =
+      g_configured_thin_geometry_intermediate_scatter.load(
+          std::memory_order_relaxed);
+  if (ImGui::Checkbox("Intermediate scatter retention", &intermediate)) {
+    g_configured_thin_geometry_intermediate_scatter.store(
+        intermediate, std::memory_order_relaxed);
+    reshade::set_config_value(nullptr, kConfigSection,
+                              "ThinGeometryIntermediateScatter",
+                              intermediate ? 1 : 0);
+  }
+  HelpMarker(
+      "Legacy unconditional retention for fences, foliage and other thin geometry. It can increase trails or flicker and is superseded by Adaptive Quality. Requires restart.");
+
+  int boundary_mode = static_cast<int>(
+      g_configured_silhouette_guard_mode.load(std::memory_order_relaxed));
+  constexpr const char* kBoundaryModes[] = {"Off", "Balanced", "Aggressive"};
+  SetNextItemWidthWithHelp("Boundary mitigation A/B");
+  if (ImGui::Combo("Boundary mitigation A/B", &boundary_mode,
+                   kBoundaryModes,
+                   static_cast<int>(std::size(kBoundaryModes)))) {
+    g_configured_silhouette_guard_mode.store(
+        static_cast<unsigned int>(boundary_mode),
+        std::memory_order_relaxed);
+    reshade::set_config_value(nullptr, kConfigSection,
+                              "BoundaryArtifactMitigationMode",
+                              boundary_mode);
+  }
+  HelpMarker(
+      "Standalone legacy boundary experiment. Adaptive Quality always uses its integrated Balanced asymmetric path instead. Requires restart.");
+
+  bool validated =
+      g_configured_thin_geometry_validated_warp_blend.load(
+          std::memory_order_relaxed);
+  if (ImGui::Checkbox("Validated warp blend A/B", &validated)) {
+    g_configured_thin_geometry_validated_warp_blend.store(
+        validated, std::memory_order_relaxed);
+    reshade::set_config_value(nullptr, kConfigSection,
+                              "ThinGeometryValidatedWarpBlend",
+                              validated ? 1 : 0);
+  }
+  HelpMarker(
+      "Standalone legacy warp validation. Adaptive Quality uses an integrated version with smooth confidence, border safety and candidate arbitration. Requires restart.");
+
+  bool geometry_v2 =
+      g_configured_geometry_confidence_v2.load(std::memory_order_relaxed);
+  if (ImGui::Checkbox("Geometry confidence V2 A/B", &geometry_v2)) {
+    g_configured_geometry_confidence_v2.store(geometry_v2,
+                                              std::memory_order_relaxed);
+    reshade::set_config_value(nullptr, kConfigSection,
+                              "ExperimentalGeometryConfidenceV2",
+                              geometry_v2 ? 1 : 0);
+  }
+  HelpMarker(
+      "Developer comparison for the prior symmetric geometry-confidence path. Requires the legacy refinement and Balanced boundary settings. Requires restart.");
+
+  bool border =
+      g_configured_border_confidence.load(std::memory_order_relaxed);
+  if (ImGui::Checkbox("Border confidence A/B", &border)) {
+    g_configured_border_confidence.store(border, std::memory_order_relaxed);
+    reshade::set_config_value(nullptr, kConfigSection,
+                              "ExperimentalBorderConfidence",
+                              border ? 1 : 0);
+  }
+  HelpMarker(
+      "Developer comparison for the previous standalone two-pixel screen-border taper. Requires restart.");
+
+  bool previous =
+      g_configured_thin_geometry_previous_scatter.load(
+          std::memory_order_relaxed);
+  if (ImGui::Checkbox("Previous-to-current scatter (unstable)", &previous)) {
+    g_configured_thin_geometry_previous_scatter.store(
+        previous, std::memory_order_relaxed);
+    reshade::set_config_value(nullptr, kConfigSection,
+                              "ThinGeometryPreviousScatter",
+                              previous ? 1 : 0);
+  }
+  HelpMarker(
+      "Unstable research path retained only for regression testing. It crashed after restart in earlier testing and is never combined with Adaptive Quality. Requires restart.");
+
+  if (adaptive_quality_managed) ImGui::EndDisabled();
+  ImGui::TreePop();
+}
+
+void DrawLatencyGuardControl() {
+  int mode = static_cast<int>(
+      mfgunlock::framecount::g_latency_guard_mode.load(
+          std::memory_order_relaxed));
+  constexpr const char* kModes[] = {
+      "Off", "Monitor Only (Recommended)",
+      "Automatic Latency Guard (Advanced)"};
+
+  if (ImGui::BeginTable("##latency_guard_control", 2,
+                        ImGuiTableFlags_SizingStretchProp)) {
+    ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthStretch,
+                            0.62f);
+    ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthStretch,
+                            0.38f);
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    SettingLabel(
+        "Latency Guard",
+        mode == static_cast<int>(
+                    mfgunlock::pacing::LatencyGuardMode::kAutomatic)
+            ? "Tests 6x -> 5x -> 4x -> 3x one step at a time when justified."
+            : (mode == static_cast<int>(
+                          mfgunlock::pacing::LatencyGuardMode::kMonitor)
+                   ? "Read-only Reflex and render-queue monitoring."
+                   : "No latency sampling or automatic cap."),
+        "Monitor Only is read-only and remains the recommended default. Automatic mode requires healthy, fresh Reflex timing and starts only for sustained queue pressure, output saturation, significant DLSS-G workload or at least 60 ms of marker-to-GPU pipeline time. That 60-ms signal is not end-to-end display latency and only starts a measured trial. With an addon-forced 4x-6x selection it tests one lower multiplier at a time, never below 3x, and keeps only measured improvements. DLSS-G provider reconfiguration can cause a brief hitch whenever a trial or periodic recheck changes the multiplier. A small source-FPS trim remains a queue-only fallback. The saved multiplier, Reflex mode, VSync, G-SYNC, Dynamic MFG and Reflex markers are never rewritten.",
+        mode == static_cast<int>(
+                    mfgunlock::pacing::LatencyGuardMode::kAutomatic)
+            ? "Advanced"
+            : nullptr,
+        kUiWarning);
+    ImGui::TableNextColumn();
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::Combo("##latency_guard", &mode, kModes,
+                     static_cast<int>(std::size(kModes)))) {
+      mfgunlock::framecount::g_latency_guard_mode.store(
+          static_cast<unsigned int>(mode), std::memory_order_relaxed);
+      mfgunlock::framecount::g_latency_guard_stable_samples.store(
+          0, std::memory_order_relaxed);
+      mfgunlock::framecount::g_latency_guard_clear_samples.store(
+          0, std::memory_order_relaxed);
+      mfgunlock::framecount::g_latency_guard_candidate_cap_fps.store(
+          0, std::memory_order_relaxed);
+      mfgunlock::framecount::g_latency_guard_active_source_cap_fps.store(
+          0, std::memory_order_relaxed);
+      mfgunlock::framecount::g_latency_guard_multiplier_override.store(
+          0, std::memory_order_release);
+      mfgunlock::framecount::g_latency_guard_multiplier_trial_accepted.store(
+          false, std::memory_order_relaxed);
+      mfgunlock::framecount::g_latency_guard_auto_cap_ready.store(
+          false, std::memory_order_release);
+      mfgunlock::framecount::g_latency_guard_refresh_pending.store(
+          true, std::memory_order_release);
+      mfgunlock::framecount::g_latency_guard_epoch.fetch_add(
+          1, std::memory_order_acq_rel);
+      reshade::set_config_value(nullptr, kConfigSection, "LatencyGuardMode",
+                                mode);
+    }
+    ImGui::EndTable();
+  }
+}
+
+const char* ReflexWaitableStateText(
+    mfgunlock::reflexpacing::WaitableState state) {
+  using State = mfgunlock::reflexpacing::WaitableState;
+  switch (state) {
+    case State::kWaitingForSwapchain: return "Waiting for compatible swapchain";
+    case State::kProbing: return "Native-sleep probe";
+    case State::kActivationPending: return "Probe passed; activation pending";
+    case State::kActive: return "DXGI Waitable active";
+    case State::kFallback: return "Native-sleep fallback";
+    default: return "Native Reflex sleep";
+  }
+}
+
+const char* ReflexModeText(uint32_t mode) {
+  switch (mode) {
+    case static_cast<uint32_t>(sl::ReflexMode::eOff): return "Off";
+    case static_cast<uint32_t>(sl::ReflexMode::eLowLatency): return "On";
+    case static_cast<uint32_t>(sl::ReflexMode::eLowLatencyWithBoost):
+      return "On + Boost";
+    default: return "Unknown";
+  }
+}
+
+void NotifyReflexPacingSettingChanged() {
+  mfgunlock::reflexpacing::ResetCadence();
+  mfgunlock::framecount::g_latency_guard_epoch.fetch_add(
+      1, std::memory_order_acq_rel);
+  mfgunlock::framecount::g_latency_guard_refresh_pending.store(
+      true, std::memory_order_release);
+}
+
+void DrawReflexPacingLabControl() {
+  using namespace mfgunlock;
+  reflexpacing::g_ui_heartbeat_ms.store(GetTickCount64(),
+                                        std::memory_order_release);
+  constexpr const char* kModeOverrides[] = {
+      "Game controlled", "Off (FG-safe sleep bypass)", "Force On",
+      "Force On + Boost"};
+  int mode_override = static_cast<int>(pacing::NormalizeReflexModeOverride(
+      reflexpacing::g_mode_override.load(std::memory_order_relaxed)));
+  SetNextItemWidthWithHelp("Reflex mode override");
+  if (ImGui::Combo("Reflex mode override", &mode_override, kModeOverrides,
+                   static_cast<int>(std::size(kModeOverrides)))) {
+    reflexpacing::g_mode_override.store(
+        static_cast<uint32_t>(mode_override), std::memory_order_relaxed);
+    reflexpacing::g_mode_rejected.store(false, std::memory_order_relaxed);
+    NotifyReflexPacingSettingChanged();
+    reshade::set_config_value(nullptr, kConfigSection, "ReflexModeOverride",
+                              mode_override);
+  }
+  HelpMarker(
+      "FG-safe Off keeps Streamline's internal Reflex mode On because several DLSS-G integrations disable Frame Generation when mode Off is submitted. It bypasses slReflexSleep instead, while preserving frame tokens and markers. With DXGI Waitable selected, the waitable pacer replaces that sleep after its safety probe. On + Boost may improve clock stability at the cost of power and temperature.");
+
+  constexpr const char* kPacingMethods[] = {
+      "Native Reflex Sleep", "DXGI Waitable (Experimental)"};
+  int pacing_method = static_cast<int>(pacing::NormalizeReflexPacingMethod(
+      reflexpacing::g_pacing_method.load(std::memory_order_relaxed)));
+  SetNextItemWidthWithHelp("Pacing method");
+  if (ImGui::Combo("Pacing method", &pacing_method, kPacingMethods,
+                   static_cast<int>(std::size(kPacingMethods)))) {
+    reflexpacing::g_pacing_method.store(
+        static_cast<uint32_t>(pacing_method), std::memory_order_release);
+    NotifyReflexPacingSettingChanged();
+    reshade::set_config_value(nullptr, kConfigSection, "ReflexPacingMethod",
+                              pacing_method);
+  }
+  HelpMarker(
+      "Waitable mode activates only after a 120-frame native probe and only when the game already created a D3D11/D3D12 waitable swapchain. It never injects the flag or recreates the swapchain.");
+
+  bool headroom =
+      reflexpacing::g_headroom_enabled.load(std::memory_order_relaxed);
+  if (ImGui::Checkbox("VRR headroom cap", &headroom)) {
+    reflexpacing::g_headroom_enabled.store(headroom,
+                                           std::memory_order_relaxed);
+    if (!headroom)
+      reflexpacing::g_headroom_limit_us.store(0,
+                                              std::memory_order_relaxed);
+    NotifyReflexPacingSettingChanged();
+    reshade::set_config_value(nullptr, kConfigSection,
+                              "ReflexVrrHeadroomEnabled", headroom ? 1 : 0);
+  }
+  int basis_points = static_cast<int>(pacing::NormalizeHeadroomBasisPoints(
+      reflexpacing::g_headroom_basis_points.load(std::memory_order_relaxed)));
+  float headroom_percent = static_cast<float>(basis_points) / 100.0f;
+  if (!headroom) ImGui::BeginDisabled();
+  SetNextItemWidthWithHelp("VRR headroom");
+  if (ImGui::SliderFloat("VRR headroom", &headroom_percent, 0.5f, 3.0f,
+                         "%.1f%%")) {
+    basis_points = std::clamp(
+        static_cast<int>(std::lround(headroom_percent * 100.0f)), 50, 300);
+    reflexpacing::g_headroom_basis_points.store(
+        static_cast<uint32_t>(basis_points), std::memory_order_relaxed);
+    NotifyReflexPacingSettingChanged();
+    reshade::set_config_value(nullptr, kConfigSection,
+                              "ReflexVrrHeadroomBasisPoints", basis_points);
+  }
+  if (!headroom) ImGui::EndDisabled();
+  HelpMarker(
+      "Uses Reflex's final/output limiter and preserves every stricter game, user or Latency Guard cap. It activates only while NVAPI reports VRR/G-SYNC.");
+
+  const auto state = reflexpacing::g_waitable_state.load(
+      std::memory_order_acquire);
+  const auto reason = reflexpacing::g_fallback_reason.load(
+      std::memory_order_relaxed);
+  const auto sleep_intervals = reflexpacing::g_sleep_intervals.Stats();
+  const auto sleep_durations = reflexpacing::g_sleep_durations.Stats();
+  const auto present_intervals = reflexpacing::g_present_intervals.Stats();
+  ImGui::Spacing();
+  if (ImGui::BeginTable("##reflex_pacing_lab_status", 2,
+                        ImGuiTableFlags_SizingStretchProp |
+                            ImGuiTableFlags_RowBg)) {
+    ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_WidthStretch, 0.45f);
+    ImGui::TableSetupColumn("Effective", ImGuiTableColumnFlags_WidthStretch,
+                            0.55f);
+    const bool fg_safe_off =
+        pacing::NormalizeReflexModeOverride(
+            reflexpacing::g_mode_override.load(std::memory_order_relaxed)) ==
+        pacing::ReflexModeOverride::kOff;
+    const auto sleep_dispatch = reflexpacing::g_sleep_dispatch.load(
+        std::memory_order_relaxed);
+    std::string pacing_status = ReflexWaitableStateText(state);
+    if (sleep_dispatch == reflexpacing::SleepDispatch::kBypass) {
+      pacing_status = "FG-safe Reflex sleep bypass active";
+    } else if (sleep_dispatch == reflexpacing::SleepDispatch::kWaitable &&
+               fg_safe_off &&
+               (state == reflexpacing::WaitableState::kNative ||
+                state == reflexpacing::WaitableState::kWaitingForSwapchain ||
+                state == reflexpacing::WaitableState::kFallback)) {
+      pacing_status += "; FG-safe bypass while waitable unavailable";
+    }
+    StatusRow("Pacing", pacing_status.c_str(),
+              state == reflexpacing::WaitableState::kActive
+                  ? kUiPositive
+                  : (sleep_dispatch == reflexpacing::SleepDispatch::kBypass
+                         ? kUiPositive
+                         : (state == reflexpacing::WaitableState::kFallback
+                         ? kUiWarning
+                         : kUiMuted)));
+    const uint32_t native_mode = reflexpacing::g_native_mode.load(
+        std::memory_order_relaxed);
+    const uint32_t forwarded_mode = reflexpacing::g_forwarded_mode.load(
+        std::memory_order_relaxed);
+    const std::string reflex_mode = fg_safe_off
+        ? std::string(ReflexModeText(native_mode)) + " -> " +
+              ReflexModeText(forwarded_mode) +
+              " internally; Reflex sleep bypass requested"
+        : std::string(ReflexModeText(native_mode)) + " -> " +
+              ReflexModeText(forwarded_mode) +
+              (reflexpacing::g_mode_rejected.load(std::memory_order_relaxed)
+                   ? " (override rejected)"
+                   : "");
+    StatusRow("Reflex game -> effective", reflex_mode.c_str(),
+              reflexpacing::g_mode_rejected.load(std::memory_order_relaxed)
+                  ? kUiWarning
+                  : (reflexpacing::g_mode_applied.load(
+                         std::memory_order_relaxed)
+                         ? kUiPositive
+                         : kUiMuted));
+    if (state == reflexpacing::WaitableState::kFallback)
+      StatusRow("Fallback reason", ReflexWaitableFallbackText(reason),
+                kUiWarning);
+    const std::string probe = std::to_string(
+        reflexpacing::g_probe_samples.load(std::memory_order_relaxed)) +
+        "/120";
+    StatusRow("Waitable probe", probe.c_str(), kUiMuted);
+    const std::string dxgi_latency = std::to_string(
+        reflexpacing::g_native_maximum_latency.load(
+            std::memory_order_relaxed)) +
+        " -> " + std::to_string(
+            reflexpacing::g_effective_maximum_latency.load(
+                std::memory_order_relaxed));
+    StatusRow("DXGI MaximumFrameLatency", dxgi_latency.c_str(), kUiMuted);
+    const std::string wait_health =
+        std::string(reflexpacing::g_waitable_handle.load(
+                        std::memory_order_acquire) != nullptr
+                        ? "Handle ready"
+                        : "No active handle") +
+        "; timeouts=" +
+        std::to_string(reflexpacing::g_timeout_count.load(
+            std::memory_order_relaxed)) +
+        "; failures=" +
+        std::to_string(reflexpacing::g_wait_failure_count.load(
+            std::memory_order_relaxed));
+    StatusRow("Waitable health", wait_health.c_str(), kUiMuted);
+    const uint32_t refresh = reflexpacing::g_refresh_millihz.load(
+        std::memory_order_relaxed);
+    std::ostringstream display;
+    display << std::fixed << std::setprecision(2)
+            << static_cast<double>(refresh) / 1000.0 << " Hz; VRR "
+            << (reflexpacing::g_vrr_active.load(std::memory_order_relaxed)
+                    ? "active"
+                    : "inactive/unavailable");
+    StatusRow("Display", display.str().c_str(), kUiMuted);
+    const uint32_t headroom_limit = reflexpacing::g_headroom_limit_us.load(
+        std::memory_order_relaxed);
+    const std::string cap = headroom_limit == 0
+        ? "Inactive"
+        : std::to_string(headroom_limit) + " us (" +
+              std::to_string(pacing::FrameLimitUsToFps(headroom_limit)) +
+              " FPS approx.)";
+    StatusRow("VRR headroom", cap.c_str(),
+              headroom_limit != 0 ? kUiPositive : kUiMuted);
+    auto cadence_text = [](const reflexpacing::SampleStats& stats) {
+      if (stats.count == 0) return std::string("No samples");
+      std::ostringstream text;
+      text << stats.median_us / 1000.0 << "/" << stats.p95_us / 1000.0
+           << "/" << stats.p99_us / 1000.0 << " ms; delta "
+           << stats.mean_delta_us / 1000.0 << " ms; n=" << stats.count;
+      return text.str();
+    };
+    const auto sleep_interval_text = cadence_text(sleep_intervals);
+    const auto sleep_duration_text = cadence_text(sleep_durations);
+    const auto present_interval_text = cadence_text(present_intervals);
+    StatusRow("Sleep interval med/p95/p99", sleep_interval_text.c_str(),
+              kUiMuted);
+    StatusRow("Sleep duration med/p95/p99", sleep_duration_text.c_str(),
+              kUiMuted);
+    StatusRow("App Present med/p95/p99", present_interval_text.c_str(),
+              kUiMuted);
+    ImGui::EndTable();
+  }
+  ImGui::TextDisabled(
+      "These are application-cadence proxies, not generated/displayed frames. Validate final output with PresentMon or FrameView.");
+}
+
+const char* MarkerHealthText(mfgunlock::pacing::MarkerHealth health) {
+  using mfgunlock::pacing::MarkerHealth;
+  switch (health) {
+    case MarkerHealth::kWaiting:
+      return "Waiting for latency frames";
+    case MarkerHealth::kHealthy:
+      return "Healthy";
+    case MarkerHealth::kMissingSleep:
+      return "Game is not calling Reflex sleep";
+    case MarkerHealth::kIncomplete:
+      return "Incomplete Reflex markers";
+    case MarkerHealth::kInvalidOrder:
+      return "Invalid marker order";
+    case MarkerHealth::kUnstableTiming:
+      return "Source timing validation failed";
+    default:
+      return "Unavailable";
+  }
+}
+
+const char* TimingValidationText(uint32_t issues) {
+  using namespace mfgunlock::latency;
+  if (issues == kTimingOk) return "Verified from simulation + Present markers";
+  if ((issues & kTimingUnitsUnknown) != 0)
+    return "Timestamp scale could not be validated";
+  if ((issues & kTimingSimulationCadenceInvalid) != 0)
+    return "Simulation cadence is missing or outside the valid range";
+  if ((issues & kTimingPresentCadenceMissing) != 0)
+    return "Not enough consecutive Present markers";
+  if ((issues & kTimingPresentCadenceMismatch) != 0)
+    return "Present cadence does not match simulation cadence";
+  if ((issues & kTimingSimulationCadenceUnstable) != 0)
+    return "Simulation cadence is too unstable for automatic control";
+  if ((issues & kTimingPresentCadenceUnstable) != 0)
+    return "Present cadence is too unstable for automatic control";
+  if ((issues & kTimingInsufficientConsecutiveFrames) != 0)
+    return "Waiting for 49 consecutive Reflex frames";
+  if ((issues & kTimingNotFresh) != 0)
+    return "No sufficiently fresh completed-frame window";
+  return "Unclassified timing validation failure";
+}
+
+const char* ValidationStageName(mfgunlock::validation::Stage stage) {
+  using mfgunlock::validation::Stage;
+  switch (stage) {
+    case Stage::kNativeRequestObserved:
+      return "native request observed";
+    case Stage::kRequestAccepted:
+      return "request accepted";
+    case Stage::kDriverMultiplierActive:
+      return "driver multiplier active";
+    case Stage::kProviderOutputConfirmed:
+      return "provider output confirmed";
+    case Stage::kRequestRejected:
+      return "request rejected; native fallback preserved";
+    case Stage::kRuntimeError:
+      return "runtime error";
+    case Stage::kWaitingForGameRequest:
+    default:
+      return "waiting for game request";
+  }
+}
+
+std::string ValidationStatusText(mfgunlock::validation::Stage stage,
+                                 bool dynamic_accepted,
+                                 bool effective_seen,
+                                 unsigned int effective_multiplier,
+                                 unsigned int driver_multiplier,
+                                 unsigned int provider_presentations) {
+  using mfgunlock::validation::Stage;
+  switch (stage) {
+    case Stage::kRuntimeError:
+      return "DLSS-G runtime reported an error";
+    case Stage::kRequestRejected:
+      return "Addon request rejected; game fallback preserved";
+    case Stage::kProviderOutputConfirmed:
+      return std::to_string(provider_presentations) +
+             " presentation(s) reported by provider";
+    case Stage::kDriverMultiplierActive:
+      return std::to_string(driver_multiplier) +
+             "x live reported by driver";
+    case Stage::kRequestAccepted:
+      if (dynamic_accepted)
+        return "Dynamic request accepted; output telemetry unavailable";
+      if (effective_seen)
+        return std::to_string(effective_multiplier) +
+               "x request accepted; output telemetry unavailable";
+      return "Request accepted; output telemetry unavailable";
+    case Stage::kNativeRequestObserved:
+      return "Game request observed; waiting for runtime result";
+    case Stage::kWaitingForGameRequest:
+    default:
+      return "Waiting for game Frame Generation request";
+  }
+}
+
+const char* LatencyBottleneckText(
+    mfgunlock::pacing::LatencyBottleneck bottleneck) {
+  using mfgunlock::pacing::LatencyBottleneck;
+  switch (bottleneck) {
+    case LatencyBottleneck::kBalanced:
+      return "No dominant avoidable stage observed";
+    case LatencyBottleneck::kDisplayOversubscription:
+      return "Output oversubscription + render queue";
+    case LatencyBottleneck::kRenderQueue:
+      return "Render queue";
+    case LatencyBottleneck::kFrameGeneration:
+      return "DLSS-G workload";
+    case LatencyBottleneck::kGpuWork:
+      return "Base GPU workload";
+    case LatencyBottleneck::kCpuOrSource:
+      return "CPU/source-frame interval";
+    default:
+      return "Insufficient fresh timing data";
+  }
+}
+
+const char* ResponsiveTrialReasonText(
+    mfgunlock::latency::ResponsiveTrialReason reason) {
+  using mfgunlock::latency::ResponsiveTrialReason;
+  switch (reason) {
+    case ResponsiveTrialReason::kDisplayOversubscription:
+      return "Output saturation";
+    case ResponsiveTrialReason::kRenderQueue:
+      return "Sustained render queue";
+    case ResponsiveTrialReason::kHighInputLatency:
+      return "Input-to-GPU latency at or above 60 ms";
+    case ResponsiveTrialReason::kHighPipelineLatency:
+      return "Estimated marker-to-GPU pipeline at or above 60 ms";
+    case ResponsiveTrialReason::kGpuSaturatedLatencyProxy:
+      return "GPU saturation + long marker pipeline proxy";
+    case ResponsiveTrialReason::kFrameGenerationWorkload:
+      return "Significant DLSS-G workload";
+    default:
+      return "No responsive trial requested";
+  }
+}
+
+const char* ResponsiveTrialBlockerText(
+    mfgunlock::latency::ResponsiveTrialBlocker blocker) {
+  using mfgunlock::latency::ResponsiveTrialBlocker;
+  switch (blocker) {
+    case ResponsiveTrialBlocker::kNone:
+      return "Eligible; collecting a stable trigger";
+    case ResponsiveTrialBlocker::kMonitorOnly:
+      return "Automatic mode is not enabled";
+    case ResponsiveTrialBlocker::kReflexUnhealthy:
+      return "Waiting for 48 healthy Reflex timing frames";
+    case ResponsiveTrialBlocker::kSourceTimingUnverified:
+      return "Source timing is stale or unverified";
+    case ResponsiveTrialBlocker::kDynamicActive:
+      return "Dynamic MFG is active or driver-controlled";
+    case ResponsiveTrialBlocker::kFixedMultiplierRequired:
+      return "Select a fixed 4x, 5x or 6x multiplier";
+    case ResponsiveTrialBlocker::kLiveMultiplierUnconfirmed:
+      return "Waiting for the driver to confirm the fixed multiplier";
+    case ResponsiveTrialBlocker::kReflexOptionsUnavailable:
+      return "The game has not exposed slReflexSetOptions";
+    case ResponsiveTrialBlocker::kUserCapPending:
+      return "Waiting for the Reflex output cap to be applied once";
+    case ResponsiveTrialBlocker::kUserCapRejected:
+      return "Output-FPS cap was rejected; native Reflex settings restored";
+    case ResponsiveTrialBlocker::kNoTrigger:
+      return "No sustained latency, saturation, queue or workload trigger";
+    default:
+      return "Eligibility unavailable";
+  }
+}
+
+const char* MultiplierTrialPhaseText(
+    mfgunlock::latency::MultiplierTrialPhase phase) {
+  using mfgunlock::latency::MultiplierTrialPhase;
+  switch (phase) {
+    case MultiplierTrialPhase::kCollectingBaseline:
+      return "Collecting current-multiplier baseline";
+    case MultiplierTrialPhase::kWaitingForCandidate:
+      return "Waiting for the next lower multiplier";
+    case MultiplierTrialPhase::kMeasuringCandidate:
+      return "Measuring the next lower multiplier";
+    case MultiplierTrialPhase::kAccepted:
+      return "Last lower multiplier measured beneficial";
+    case MultiplierTrialPhase::kWaitingForOriginal:
+      return "Restoring saved multiplier for periodic check";
+    case MultiplierTrialPhase::kMeasuringOriginal:
+      return "Rechecking the saved multiplier";
+    case MultiplierTrialPhase::kCooldown:
+      return "No benefit measured; cooldown active";
+    default:
+      return "Monitoring; no responsive trial active";
+  }
 }
 
 ThinGeometryModulePatch SelectRelevantThinGeometryResult(
@@ -2031,12 +4655,17 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
   size_t thin_geometry_provider_count = 0;
   std::string midpoint_detail;
   std::string blackwell_detail;
+  std::string blackwell_applied_detail;
+  mfgunlock::blackwell::Result blackwell_active_result{};
   ThinGeometryModulePatch thin_geometry_last;
   bool ceiling_patched = false;
   unsigned int ceiling_compiled = 0;
   unsigned int ceiling_effective = 0;
   size_t flip_meter_site_count = 0;
-  AcquireSRWLockShared(&g_provider_maintenance_lock);
+  if (!TryAcquireSRWLockShared(&g_provider_maintenance_lock)) {
+    ImGui::TextDisabled("Diagnostics updating; retry next frame.");
+    return;
+  }
   gate_patched = g_gate_patched.load(std::memory_order_relaxed);
   midpoint_patched = g_midpoint_patched.load(std::memory_order_relaxed);
   blackwell_patched = g_blackwell_patched.load(std::memory_order_relaxed);
@@ -2048,10 +4677,15 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
   thin_geometry_provider_count = g_thin_geometry_modules.size();
   midpoint_detail = g_midpoint_detail;
   blackwell_detail = g_blackwell_detail;
+  blackwell_applied_detail = g_blackwell_applied_detail;
+  blackwell_active_result = AggregateBlackwellResults(g_blackwell_modules);
   thin_geometry_last =
       SelectRelevantThinGeometryResult(g_thin_geometry_modules);
   ReleaseSRWLockShared(&g_provider_maintenance_lock);
-  AcquireSRWLockShared(&g_streamline_maintenance_lock);
+  if (!TryAcquireSRWLockShared(&g_streamline_maintenance_lock)) {
+    ImGui::TextDisabled("Diagnostics updating; retry next frame.");
+    return;
+  }
   ceiling_patched = g_ceiling_patched.load(std::memory_order_relaxed);
   ceiling_compiled = g_ceiling_compiled;
   ceiling_effective = g_ceiling_effective;
@@ -2311,7 +4945,8 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
   if (mfgunlock::framecount::g_quality_viewport_capacity_exhausted.load(
           std::memory_order_relaxed)) {
     ImGui::TextDisabled(
-        "More than eight Streamline viewports were seen; extra viewports use conservative fallback.");
+        "More than %zu Streamline viewports were seen; extra viewports use conservative fallback.",
+        mfgunlock::framecount::kMaxQualityViewports);
   }
   const auto reset_count = mfgunlock::framecount::g_quality_resets_injected.load(
       std::memory_order_relaxed);
@@ -2443,46 +5078,25 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
         "The active DLSS-G runtime reports VSync unavailable; this can indicate\n"
         "an older/mismatched runtime or an unsupported presentation mode.");
   }
-  bool reflex_source_cap =
-      mfgunlock::framecount::g_dynamic_reflex_source_cap.load(
-          std::memory_order_relaxed);
-  if (ImGui::Checkbox("Advanced: cap application-rendered FPS with Reflex",
-                      &reflex_source_cap)) {
-    mfgunlock::framecount::g_dynamic_reflex_source_cap.store(
-        reflex_source_cap, std::memory_order_relaxed);
-    mfgunlock::framecount::NotifyDynamicModeChanged();
+  int source_cap = static_cast<int>(
+      mfgunlock::framecount::g_reflex_source_fps_cap.load(
+          std::memory_order_relaxed));
+  if (ImGui::InputInt("Output FPS Cap (Reflex)", &source_cap, 1, 10)) {
+    source_cap = source_cap <= 0 ? 0 : std::clamp(source_cap, 10, 1000);
+    mfgunlock::framecount::g_reflex_source_fps_cap.store(
+        static_cast<unsigned int>(source_cap), std::memory_order_relaxed);
+    g_source_cap_config_origin.store(
+        static_cast<unsigned int>(
+            mfgunlock::pacing::SourceCapConfigOrigin::kConfigured),
+        std::memory_order_relaxed);
+    mfgunlock::framecount::NotifySourceFpsCapChanged();
     reshade::set_config_value(nullptr, kConfigSection,
-                              "DynamicReflexSourceCap",
-                              reflex_source_cap ? 1 : 0);
+                              "ReflexSourceFpsCap", source_cap);
   }
-  ImGui::TextDisabled(
-      "This is a source-frame limiter, not a final-output target. Leave it off unless\n"
-      "you intentionally calculated a rendered-FPS cap for your multiplier/refresh setup.");
-  if (dynamic_mfg && dynamic_target != 0 && reflex_source_cap) {
-    if (mfgunlock::framecount::g_reflex_limit_applied.load(
-            std::memory_order_acquire)) {
-      const unsigned int effective_us =
-          mfgunlock::framecount::g_reflex_effective_limit_us.load(
-              std::memory_order_relaxed);
-      ImGui::Text("Reflex source-frame cap active: %u us (~%u rendered FPS); game requested %u us.",
-                  effective_us,
-                  effective_us == 0 ? 0u : (1000000u + effective_us / 2u) / effective_us,
-                  mfgunlock::framecount::g_reflex_native_limit_us.load(
-                      std::memory_order_relaxed));
-    } else if (!mfgunlock::framecount::g_reflex_hooked.load(
-                   std::memory_order_acquire)) {
-      ImGui::TextDisabled(
-          "The game has not exposed slReflexSetOptions; the advanced source cap is unavailable.");
-    } else if (!mfgunlock::framecount::g_reflex_options_seen.load(
-                   std::memory_order_acquire)) {
-      ImGui::TextDisabled(
-          "Reflex source-cap hook is ready; waiting for the game's Reflex options.");
-    } else {
-      ImGui::TextDisabled("Reflex source-frame cap pending (last result: %u).",
-                          mfgunlock::framecount::g_reflex_limit_result.load(
-                              std::memory_order_relaxed));
-    }
-  }
+  const auto source_cap_state =
+      mfgunlock::framecount::internal::ResolveUserSourceCapState();
+  ImGui::TextDisabled("%s", UserSourceCapSummary(source_cap_state).c_str());
+  ImGui::TextDisabled("%s", UserSourceCapStatusText(source_cap_state.status));
 
   int force = static_cast<int>(
       mfgunlock::framecount::g_force_multiplier.load(std::memory_order_relaxed));
@@ -2778,9 +5392,20 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
   if (blackwell_patched) {
     ImGui::Text("Blackwell framework kernels active: %zu provider(s).",
                 blackwell_provider_count);
-    if (!blackwell_detail.empty()) {
+    ImGui::TextDisabled(
+        "Patched roles: motion-vector %s, inpaint %s, decision %s (%zu slots).",
+        blackwell_active_result.motion_vector ? "yes" : "no",
+        blackwell_active_result.inpaint ? "yes" : "no",
+        blackwell_active_result.inpaint_decision ? "yes" : "no",
+        blackwell_active_result.kernels);
+    if (!blackwell_applied_detail.empty()) {
+      ImGui::TextDisabled("Applied provider result: %s.",
+                          blackwell_applied_detail.c_str());
+    }
+    if (!blackwell_detail.empty() &&
+        blackwell_detail != blackwell_applied_detail) {
       ImGui::TextDisabled(
-          "Last inspected candidate (not necessarily active): %s.",
+          "Separate rejected candidate (does not replace the result above): %s.",
           blackwell_detail.c_str());
     }
   } else if (midpoint_patched) {
@@ -2829,6 +5454,8 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
 }
 
 void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
+  mfgunlock::framecount::g_latency_guard_ui_heartbeat_ms.store(
+      GetTickCount64(), std::memory_order_release);
   const bool enabled = g_enabled.load(std::memory_order_relaxed);
   bool configured_enabled =
       g_configured_enabled.load(std::memory_order_relaxed);
@@ -2868,15 +5495,18 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
       streamline_seen && dlssg_seen && !dynamic_versions_ready;
   const bool dynamic_provider_blocked =
       dynamic_support_seen && !dynamic_supported;
+  const bool dynamic_game_blocked =
+      mfgunlock::framecount::g_dynamic_game_compat_blocked.load(
+          std::memory_order_relaxed);
   const bool dynamic_hard_unavailable =
       dynamic_renderer_blocked || dynamic_version_blocked ||
-      dynamic_provider_blocked;
+      dynamic_provider_blocked || dynamic_game_blocked;
   const bool dynamic_enabled =
       mfgunlock::framecount::g_dynamic_mfg_enabled.load(
           std::memory_order_relaxed);
   const bool dynamic_available =
       render_api == DetectedRenderApi::kD3D12 && dynamic_versions_ready &&
-      dynamic_support_seen && dynamic_supported;
+      dynamic_support_seen && dynamic_supported && !dynamic_game_blocked;
 
   const bool state_seen =
       mfgunlock::framecount::g_state_seen.load(std::memory_order_acquire);
@@ -2902,6 +5532,38 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
       mfgunlock::framecount::g_hdr_state_seen.load(std::memory_order_acquire);
   const bool hdr_active =
       mfgunlock::framecount::g_hdr_active.load(std::memory_order_relaxed);
+  const auto& nvapi_status = ObserveNvapiUiStatus(runtime);
+  const bool sleep_status_available =
+      nvapi_status.sleep_status == mfgunlock::nvapistatus::kOk;
+  const unsigned int driver_multiplier =
+      sleep_status_available
+          ? nvapi_status.sleep.frame_generation_multiplier
+          : 0;
+  const bool driver_vsync_active =
+      sleep_status_available && nvapi_status.sleep.control_panel_vsync != 0;
+  const bool gsync_active =
+      sleep_status_available && nvapi_status.sleep.fullscreen_vrr != 0;
+  const std::string frame_generation_preset =
+      FrameGenerationPresetText(nvapi_status, dlssg_seen);
+  const std::string super_resolution_preset =
+      ReconstructionPresetText(nvapi_status, false);
+  const std::string ray_reconstruction_preset =
+      ReconstructionPresetText(nvapi_status, true);
+  const bool super_resolution_active =
+      mfgunlock::nvapistatus::NgxFeatureActive(
+          nvapi_status.ngx.feedback_super_resolution);
+  const bool super_resolution_configured =
+      mfgunlock::nvapistatus::NgxFeatureConfigured(
+          nvapi_status.ngx.feedback_super_resolution);
+  const bool ray_reconstruction_active =
+      mfgunlock::nvapistatus::NgxFeatureActive(
+          nvapi_status.ngx.feedback_ray_reconstruction);
+  const bool ray_reconstruction_configured =
+      mfgunlock::nvapistatus::NgxFeatureConfigured(
+          nvapi_status.ngx.feedback_ray_reconstruction);
+  const unsigned int dynamic_max_generated =
+      mfgunlock::framecount::g_advertised_max_generated.load(
+          std::memory_order_relaxed);
 
   const bool restart_pending =
       configured_enabled != enabled ||
@@ -2912,6 +5574,32 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
       g_configured_blackwell_framework_kernels.load(
           std::memory_order_relaxed) !=
           g_blackwell_framework_kernels.load(std::memory_order_relaxed) ||
+      g_configured_adaptive_quality.load(std::memory_order_relaxed) !=
+          g_adaptive_quality.load(std::memory_order_relaxed) ||
+      g_configured_adaptive_quality_profile.load(
+          std::memory_order_relaxed) !=
+          g_adaptive_quality_profile.load(std::memory_order_relaxed) ||
+      g_configured_adaptive_quality_v3_photometric.load(
+          std::memory_order_relaxed) !=
+          g_adaptive_quality_v3_photometric.load(std::memory_order_relaxed) ||
+      g_configured_adaptive_quality_v3_directional_border.load(
+          std::memory_order_relaxed) !=
+          g_adaptive_quality_v3_directional_border.load(
+              std::memory_order_relaxed) ||
+      g_configured_adaptive_quality_v3_oriented_geometry.load(
+          std::memory_order_relaxed) !=
+          g_adaptive_quality_v3_oriented_geometry.load(
+              std::memory_order_relaxed) ||
+      g_configured_adaptive_quality_v3_stability_mode.load(
+          std::memory_order_relaxed) !=
+          g_adaptive_quality_v3_stability_mode.load(
+              std::memory_order_relaxed) ||
+      g_configured_quality_refinement.load(std::memory_order_relaxed) !=
+          g_quality_refinement.load(std::memory_order_relaxed) ||
+      g_configured_geometry_confidence_v2.load(std::memory_order_relaxed) !=
+          g_geometry_confidence_v2.load(std::memory_order_relaxed) ||
+      g_configured_border_confidence.load(std::memory_order_relaxed) !=
+          g_border_confidence.load(std::memory_order_relaxed) ||
       g_configured_thin_geometry_validated_warp_blend.load(
           std::memory_order_relaxed) !=
           g_thin_geometry_validated_warp_blend.load(
@@ -2929,26 +5617,105 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
           mfgunlock::framecount::g_runtime_selection_mode.load(
               std::memory_order_relaxed);
 
+  const auto fixed_status =
+      static_cast<mfgunlock::forcepolicy::FixedOverrideStatus>(
+          mfgunlock::framecount::g_fixed_override_status.load(
+              std::memory_order_acquire));
+  const bool dynamic_accepted =
+      mfgunlock::framecount::g_dynamic_applied.load(
+          std::memory_order_acquire);
+  const bool request_rejected =
+      fixed_status ==
+          mfgunlock::forcepolicy::FixedOverrideStatus::kRejected ||
+      mfgunlock::framecount::g_dynamic_runtime_declined.load(
+          std::memory_order_acquire);
   const bool runtime_error = state_seen && dlssg_status != 0;
-  const bool mfg_confirmed = state_seen && dlssg_status == 0 &&
-                             observed_presentations > 1;
+  const auto validation_stage = mfgunlock::validation::Classify({
+      game_request_seen,
+      effective_seen || dynamic_accepted,
+      request_rejected,
+      runtime_error,
+      sleep_status_available,
+      driver_multiplier,
+      state_seen && dlssg_status == 0,
+      observed_presentations});
+  const std::string validation_text = ValidationStatusText(
+      validation_stage, dynamic_accepted, effective_seen,
+      effective_multiplier, driver_multiplier, observed_presentations);
+  const bool mfg_confirmed =
+      validation_stage ==
+      mfgunlock::validation::Stage::kProviderOutputConfirmed;
+  const bool mfg_live =
+      mfgunlock::validation::HasLiveRuntimeEvidence(validation_stage);
+  const bool mfg_request_accepted =
+      mfgunlock::validation::HasAcceptedRequest(validation_stage);
   const bool provider_ready =
       g_gate_patched.load(std::memory_order_acquire) &&
       mfgunlock::framecount::g_hooked.load(std::memory_order_acquire);
 
+  if (g_is_monster_hunter_wilds &&
+      g_monster_hunter_restart_notice_pending.load(
+          std::memory_order_acquire)) {
+    constexpr const char* kPopup =
+        "Monster Hunter Wilds first-launch notice";
+    if (!ImGui::IsPopupOpen(kPopup)) ImGui::OpenPopup(kPopup);
+    ImGui::SetNextWindowSize(ImVec2(520.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal(kPopup, nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextColored(kUiWarning, "Restart once after shader compilation");
+      ImGui::PushTextWrapPos(ImGui::GetFontSize() * 42.0f);
+      ImGui::TextWrapped(
+          "Monster Hunter Wilds may build shader.cache2 on the first launch "
+          "after installing or updating the addon. Let the game's shader "
+          "compilation finish, close the game completely, and launch it again "
+          "before evaluating frame pacing or image quality.");
+      ImGui::Spacing();
+      ImGui::TextDisabled(
+          "Do not restart while the shader compilation is still running. The "
+          "addon does not delete or modify the game's cache.");
+      ImGui::PopTextWrapPos();
+      ImGui::Spacing();
+      if (ImGui::Button("I understand", ImVec2(150.0f, 0.0f))) {
+        reshade::set_config_value(nullptr, kConfigSection,
+                                  "MonsterHunterRestartNoticeRevision",
+                                  kMonsterHunterRestartNoticeRevision);
+        g_monster_hunter_restart_notice_pending.store(
+            false, std::memory_order_release);
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+  }
+
   ImGui::TextUnformatted("MFG Unlock");
   ImGui::Separator();
-  if (runtime_error) {
+  if (validation_stage == mfgunlock::validation::Stage::kRuntimeError) {
     ImGui::TextColored(kUiError, "Compatibility issue");
   } else if (!enabled) {
     ImGui::TextColored(kUiMuted, "Inactive this session");
   } else if (dynamic_enabled && dynamic_hard_unavailable) {
     ImGui::TextColored(kUiWarning,
                        "Dynamic MFG unavailable - fixed fallback remains active");
-  } else if (mfg_confirmed) {
+  } else if (validation_stage ==
+             mfgunlock::validation::Stage::kProviderOutputConfirmed) {
     ImGui::TextColored(kUiPositive, "Working correctly");
+  } else if (validation_stage ==
+             mfgunlock::validation::Stage::kDriverMultiplierActive) {
+    ImGui::TextColored(kUiPositive, "%ux live reported by driver",
+                       driver_multiplier);
+  } else if (validation_stage ==
+             mfgunlock::validation::Stage::kRequestAccepted) {
+    ImGui::TextColored(kUiPositive, "%s", validation_text.c_str());
+  } else if (validation_stage ==
+             mfgunlock::validation::Stage::kRequestRejected) {
+    ImGui::TextColored(kUiWarning,
+                       "Override rejected - game fallback remains active");
+  } else if (validation_stage ==
+             mfgunlock::validation::Stage::kNativeRequestObserved) {
+    ImGui::TextColored(kUiWarning,
+                       "Game request observed - waiting for runtime result");
   } else if (provider_ready) {
-    ImGui::TextColored(kUiWarning, "Ready - waiting for generated output");
+    ImGui::TextColored(kUiWarning, "Ready - waiting for game request");
   } else {
     ImGui::TextColored(kUiWarning, "Waiting for DLSS Frame Generation");
   }
@@ -2958,16 +5725,30 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
                             ImGuiTableFlags_RowBg)) {
     ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthStretch, 0.45f);
     ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 0.55f);
-    const std::string multiplier_text =
+    const bool dynamic_applied =
         mfgunlock::framecount::g_dynamic_applied.load(
-            std::memory_order_relaxed)
-            ? "Dynamic"
+            std::memory_order_relaxed);
+    const std::string multiplier_text =
+        dynamic_applied
+            ? DynamicMultiplierText(nvapi_status, dynamic_max_generated)
             : (effective_seen ? std::to_string(effective_multiplier) + "x"
                               : (game_request_seen
                                      ? std::to_string(game_multiplier) + "x (game)"
                                      : "Not observed"));
+    const std::string sync_text =
+        !sleep_status_available
+            ? "Not reported by NVAPI"
+            : (driver_vsync_active && gsync_active
+                   ? "Driver VSync + G-SYNC active"
+                   : (driver_vsync_active
+                          ? "Driver VSync active"
+                          : (gsync_active ? "G-SYNC active; driver VSync off"
+                                          : "Driver VSync/G-SYNC inactive")));
     StatusRow("MFG", multiplier_text.c_str(),
-              mfg_confirmed ? kUiPositive : kUiMuted);
+              mfg_live || mfg_request_accepted
+                  ? kUiPositive
+                  : (runtime_error || request_rejected ? kUiWarning
+                                                       : kUiMuted));
     StatusRow("Renderer", RenderApiName(render_api),
               render_api == DetectedRenderApi::kUnknown ? kUiMuted
                                                         : kUiPositive);
@@ -2976,16 +5757,30 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     StatusRow("Streamline", streamline_text.c_str(),
               streamline_seen ? kUiPositive : kUiMuted);
     const char* dynamic_status =
-        dynamic_available
+        dynamic_game_blocked
+            ? "Blocked for this game"
+            : (dynamic_available
             ? (mfgunlock::framecount::g_dynamic_applied.load(
                    std::memory_order_relaxed)
                    ? "Active"
                    : "Available")
-            : (dynamic_hard_unavailable ? "Unavailable" : "Checking");
+            : (dynamic_hard_unavailable ? "Unavailable" : "Checking"));
     StatusRow("Dynamic MFG", dynamic_status,
               dynamic_available
                   ? kUiPositive
                   : (dynamic_hard_unavailable ? kUiError : kUiWarning));
+    const auto overview_source_cap =
+        mfgunlock::framecount::internal::ResolveUserSourceCapState();
+    if (overview_source_cap.configured_fps != 0) {
+      const std::string cap_overview =
+          std::to_string(overview_source_cap.configured_fps) +
+          " final/output FPS; " +
+          UserSourceCapStatusText(overview_source_cap.status);
+      StatusRow("Output FPS cap", cap_overview.c_str(),
+                UserSourceCapColor(overview_source_cap.status));
+    }
+    StatusRow("Display sync", sync_text.c_str(),
+              driver_vsync_active ? kUiWarning : kUiMuted);
     StatusRow("HDR", hdr_seen ? (hdr_active ? "Detected" : "Off")
                               : "Not observed",
               hdr_active ? kUiPositive : kUiMuted);
@@ -2998,7 +5793,14 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     ImGui::TextWrapped(
         "One or more saved changes will take effect after restarting the game.");
   }
-  if (dynamic_hard_unavailable) {
+  if (dynamic_game_blocked) {
+    ImGui::TextColored(
+        kUiWarning,
+        "Dynamic MFG is disabled for Star Wars Outlaws compatibility.");
+    ImGui::TextWrapped(
+        "Fixed and game-controlled MFG remain available. The saved Dynamic "
+        "preference is preserved for other games.");
+  } else if (dynamic_hard_unavailable) {
     ImGui::TextColored(
         kUiWarning,
         "Dynamic MFG requires DLSS-G 310.9.1 + Streamline 2.14.1.");
@@ -3019,10 +5821,207 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
         "Toggle Frame Generation off and on in the game to apply the latest runtime change.");
   }
 
-  ImGui::Spacing();
-  ImGui::TextDisabled("FRAME GENERATION");
-  ImGui::Separator();
-  if (ImGui::BeginTable("##frame_generation_settings", 2,
+  enum class UiPage { General, DlssInfo, Latency, Support };
+  static UiPage page = UiPage::General;
+  if (ImGui::BeginTabBar("##mfg_unlock_pages")) {
+    if (ImGui::BeginTabItem("General")) {
+      page = UiPage::General;
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("DLSS Info")) {
+      page = UiPage::DlssInfo;
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Latency")) {
+      page = UiPage::Latency;
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Support")) {
+      page = UiPage::Support;
+      ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
+  }
+
+  if (page == UiPage::DlssInfo) {
+    g_vram_ui_heartbeat_ms.store(GetTickCount64(),
+                                 std::memory_order_release);
+    if (!mfgunlock::inputdiag::g_enabled.load(std::memory_order_acquire)) {
+      mfgunlock::inputdiag::Clear();
+      mfgunlock::inputdiag::g_enabled.store(true,
+                                            std::memory_order_release);
+      g_vram_capture_owned.store(true, std::memory_order_release);
+    }
+    QueueProviderVramEstimateFromCapture();
+    ImGui::Spacing();
+    ImGui::TextDisabled("DLSS RUNTIME INFORMATION");
+    ImGui::Separator();
+    if (ImGui::BeginTable("##dlss_information", 2,
+                          ImGuiTableFlags_SizingStretchProp |
+                              ImGuiTableFlags_RowBg)) {
+      ImGui::TableSetupColumn("Feature", ImGuiTableColumnFlags_WidthStretch,
+                              0.42f);
+      ImGui::TableSetupColumn("Active mode", ImGuiTableColumnFlags_WidthStretch,
+                              0.58f);
+      StatusRow("Super Resolution", super_resolution_preset.c_str(),
+                super_resolution_active
+                    ? kUiPositive
+                    : (super_resolution_configured ? kUiWarning : kUiMuted));
+      StatusRow("Frame Generation", frame_generation_preset.c_str(),
+                dlssg_seen ? kUiPositive : kUiMuted);
+      StatusRow("Ray Reconstruction", ray_reconstruction_preset.c_str(),
+                ray_reconstruction_active
+                    ? kUiPositive
+                    : (ray_reconstruction_configured ? kUiWarning : kUiMuted));
+      StatusRow("DLSS-G runtime", dlssg_text.c_str(),
+                dlssg_seen ? kUiPositive : kUiMuted);
+      StatusRow("Streamline runtime", streamline_text.c_str(),
+                streamline_seen ? kUiPositive : kUiMuted);
+      ImGui::EndTable();
+    }
+    ImGui::TextDisabled(
+        "Read-only information reported by NVIDIA. Game-controlled modes may not expose a preset name.");
+    HelpMarker(
+        "NVIDIA exposes one shared preset/mode field for Super Resolution and Ray Reconstruction. The addon displays it only when the corresponding feature reports active or configured feedback, and never changes the selected model or render resolution.");
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("VRAM / RESOURCE HEALTH");
+    ImGui::Separator();
+    if (ImGui::BeginTable("##vram_information", 2,
+                          ImGuiTableFlags_SizingStretchProp |
+                              ImGuiTableFlags_RowBg)) {
+      ImGui::TableSetupColumn("Metric", ImGuiTableColumnFlags_WidthStretch,
+                              0.42f);
+      ImGui::TableSetupColumn("Observation",
+                              ImGuiTableColumnFlags_WidthStretch, 0.58f);
+      if (g_vram_dxgi_seen.load(std::memory_order_acquire)) {
+        const uint64_t usage =
+            g_vram_local_usage.load(std::memory_order_relaxed);
+        const uint64_t budget =
+            g_vram_local_budget.load(std::memory_order_relaxed);
+        const std::string usage_text =
+            FormatMemoryBytes(usage) + " / " + FormatMemoryBytes(budget);
+        const uint64_t headroom = budget > usage ? budget - usage : 0;
+        const std::string headroom_text = FormatMemoryBytes(headroom);
+        StatusRow("Process local VRAM", usage_text.c_str(),
+                  budget != 0 && usage * 100ull >= budget * 90ull
+                      ? kUiWarning : kUiMuted);
+        StatusRow("Budget headroom", headroom_text.c_str(),
+                  budget != 0 && usage * 100ull >= budget * 90ull
+                      ? kUiWarning : kUiMuted);
+        const std::string reservation_text = FormatMemoryBytes(
+            g_vram_local_available.load(std::memory_order_relaxed));
+        StatusRow("Available for reservation", reservation_text.c_str(),
+                  kUiMuted);
+        const uint64_t shared_usage =
+            g_vram_nonlocal_usage.load(std::memory_order_relaxed);
+        if (shared_usage != 0) {
+          const std::string shared_text =
+              FormatMemoryBytes(shared_usage) + " / " +
+              FormatMemoryBytes(
+                  g_vram_nonlocal_budget.load(std::memory_order_relaxed));
+          StatusRow("Process shared GPU memory", shared_text.c_str(),
+                    kUiMuted);
+        }
+      } else {
+        StatusRow(
+            "Process local VRAM",
+            g_render_api.load(std::memory_order_relaxed) ==
+                    DetectedRenderApi::kVulkan
+                ? "DXGI budget unavailable on Vulkan"
+                : "Waiting for DXGI budget",
+            kUiMuted);
+      }
+
+      const auto estimate_status =
+          static_cast<mfgunlock::framecount::VramEstimateStatus>(
+              mfgunlock::framecount::g_vram_estimate_status.load(
+                  std::memory_order_acquire));
+      std::string estimate_text;
+      ImVec4 estimate_color = kUiMuted;
+      switch (estimate_status) {
+        case mfgunlock::framecount::VramEstimateStatus::kReady:
+          estimate_text = FormatMemoryBytes(
+              mfgunlock::framecount::g_vram_estimate_bytes.load(
+                  std::memory_order_relaxed));
+          break;
+        case mfgunlock::framecount::VramEstimateStatus::kPending:
+          estimate_text = "Waiting for next DLSS-G state query";
+          break;
+        case mfgunlock::framecount::VramEstimateStatus::kUnsupported:
+          estimate_text = "Unavailable on this runtime/game";
+          break;
+        case mfgunlock::framecount::VramEstimateStatus::kFailed:
+          estimate_text = "Provider did not return an estimate";
+          estimate_color = kUiWarning;
+          break;
+        default:
+          estimate_text = VramReadinessText(
+              static_cast<mfgunlock::memorypolicy::EstimateReadiness>(
+                  mfgunlock::framecount::g_vram_estimate_readiness.load(
+                      std::memory_order_relaxed)));
+          break;
+      }
+      StatusRow("DLSS-G estimated VRAM", estimate_text.c_str(),
+                estimate_color);
+
+      const bool native_ready =
+          mfgunlock::framecount::g_vram_native_estimate_ready.load(
+              std::memory_order_acquire);
+      const bool ui_ready =
+          mfgunlock::framecount::g_vram_ui_estimate_ready.load(
+              std::memory_order_acquire);
+      if (native_ready && ui_ready) {
+        const uint64_t native_bytes =
+            mfgunlock::framecount::g_vram_native_estimate_bytes.load(
+                std::memory_order_relaxed);
+        const uint64_t ui_bytes =
+            mfgunlock::framecount::g_vram_ui_estimate_bytes.load(
+                std::memory_order_relaxed);
+        const int64_t delta = static_cast<int64_t>(ui_bytes) -
+                              static_cast<int64_t>(native_bytes);
+        const uint64_t delta_bytes =
+            static_cast<uint64_t>(delta >= 0 ? delta : -delta);
+        const std::string delta_text =
+            std::string(delta >= 0 ? "+" : "-") +
+            (delta_bytes == 0 ? "0 MiB" : FormatMemoryBytes(delta_bytes)) +
+            " with UI composition";
+        StatusRow("Measured UI-composition delta", delta_text.c_str(),
+                  kUiMuted);
+      }
+
+      const unsigned int volatile_inputs =
+          mfgunlock::framecount::g_vram_volatile_input_count.load(
+              std::memory_order_relaxed);
+      const std::string lifecycle_text = volatile_inputs == 0
+          ? "Optimized: relevant inputs valid until Present"
+          : std::to_string(volatile_inputs) +
+                " input(s) may require transient copies";
+      StatusRow("Input lifetimes", lifecycle_text.c_str(),
+                volatile_inputs == 0 ? kUiPositive : kUiWarning);
+      const unsigned int flags =
+          mfgunlock::framecount::g_vram_estimate_flags.load(
+              std::memory_order_relaxed);
+      const bool retained_while_off =
+          (flags & static_cast<unsigned int>(
+                       sl::DLSSGFlags::eRetainResourcesWhenOff)) != 0;
+      StatusRow("Resources while FG is off",
+                retained_while_off ? "Retained by game request"
+                                   : "Not retained by game request",
+                retained_while_off ? kUiWarning : kUiMuted);
+      ImGui::EndTable();
+    }
+    ImGui::TextDisabled(
+        "Read-only diagnostics. Process usage includes the whole game; the provider estimate is approximate.");
+    HelpMarker(
+        "This page temporarily captures resource dimensions, formats and lifetimes only; it never reads pixels or stores resource addresses. The addon does not reserve VRAM, rewrite resource lifetimes, or disable the game's retain-resources flag. Close this page to stop metadata capture.");
+  }
+
+  if (page == UiPage::General) {
+    ImGui::Spacing();
+    ImGui::TextDisabled("FRAME GENERATION");
+    ImGui::Separator();
+    if (ImGui::BeginTable("##frame_generation_settings", 2,
                         ImGuiTableFlags_SizingStretchProp)) {
     ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthStretch, 0.62f);
     ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthStretch, 0.38f);
@@ -3065,19 +6064,22 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
                                 force);
     }
 
-    bool dynamic_mfg = dynamic_enabled;
+    bool dynamic_mfg = dynamic_enabled && !dynamic_game_blocked;
+
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     SettingLabel(
         "NVIDIA Dynamic MFG",
-        dynamic_available ? "Runtime support detected."
-                          : (dynamic_hard_unavailable
-                                 ? "Required runtime is unavailable."
-                                 : "Waiting for runtime detection."),
-        "Lets NVIDIA's native scheduler choose the generated-frame count. Requires D3D12, driver 595.41 or newer, DLSS-G 310.9.1 and Streamline 2.14.1. Toggle Frame Generation off/on after changing it.");
+        dynamic_game_blocked
+            ? "Disabled for this game's compatibility."
+            : (dynamic_available ? "Runtime support detected."
+                                 : (dynamic_hard_unavailable
+                                        ? "Required runtime is unavailable."
+                                        : "Waiting for runtime detection.")),
+        "Lets NVIDIA's native scheduler choose the generated-frame count. Requires D3D12, driver 595.41 or newer, DLSS-G 310.9.1 and Streamline 2.14.1. Star Wars Outlaws is kept on fixed/game-controlled MFG because its integration breaks on the Dynamic path. Toggle Frame Generation off/on after changing it.");
     ImGui::TableNextColumn();
     const bool block_dynamic_enable =
-        dynamic_hard_unavailable && !dynamic_mfg;
+        dynamic_game_blocked || (dynamic_hard_unavailable && !dynamic_mfg);
     if (block_dynamic_enable) ImGui::BeginDisabled();
     if (ImGui::Checkbox("##dynamic_mfg", &dynamic_mfg)) {
       mfgunlock::framecount::g_dynamic_mfg_enabled.store(
@@ -3088,34 +6090,468 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     }
     if (block_dynamic_enable) ImGui::EndDisabled();
 
-    int dynamic_target = static_cast<int>(
-        mfgunlock::framecount::g_dynamic_target_fps.load(
-            std::memory_order_relaxed));
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    SettingLabel(
-        "Target Output FPS", "0 follows the display refresh rate.",
-        "Sets Dynamic MFG's requested output target. With VSync active, Streamline follows the display refresh rate and may ignore a non-zero target. This is not the optional Reflex source-frame cap.");
-    ImGui::TableNextColumn();
-    if (!dynamic_mfg || dynamic_hard_unavailable) ImGui::BeginDisabled();
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::InputInt("##dynamic_target", &dynamic_target, 1, 10)) {
-      dynamic_target = std::clamp(dynamic_target, 0, 1000);
-      mfgunlock::framecount::g_dynamic_target_fps.store(
-          static_cast<unsigned int>(dynamic_target),
-          std::memory_order_relaxed);
-      mfgunlock::framecount::NotifyDynamicModeChanged();
-      reshade::set_config_value(nullptr, kConfigSection,
-                                "DynamicTargetFPS", dynamic_target);
+    if (dynamic_mfg) {
+      int dynamic_target = static_cast<int>(
+          mfgunlock::framecount::g_dynamic_target_fps.load(
+              std::memory_order_relaxed));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      SettingLabel(
+          "Dynamic Output Target", "0 follows the display refresh rate.",
+          "Sets Dynamic MFG's requested final/output target. With VSync active, Streamline follows the display refresh rate and may ignore a non-zero target. This scheduler target is separate from Output FPS Cap (Reflex).");
+      ImGui::TableNextColumn();
+      if (dynamic_hard_unavailable) ImGui::BeginDisabled();
+      ImGui::SetNextItemWidth(-1.0f);
+      if (ImGui::InputInt("##dynamic_target", &dynamic_target, 1, 10)) {
+        dynamic_target = std::clamp(dynamic_target, 0, 1000);
+        mfgunlock::framecount::g_dynamic_target_fps.store(
+            static_cast<unsigned int>(dynamic_target),
+            std::memory_order_relaxed);
+        mfgunlock::framecount::NotifyDynamicModeChanged();
+        reshade::set_config_value(nullptr, kConfigSection,
+                                  "DynamicTargetFPS", dynamic_target);
+      }
+      if (dynamic_hard_unavailable) ImGui::EndDisabled();
+
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      SettingLabel(
+          "VSync / G-SYNC behavior",
+          driver_vsync_active && gsync_active
+              ? "Detected: driver VSync + G-SYNC active."
+              : (driver_vsync_active
+                     ? "Detected: driver VSync active."
+                     : (gsync_active
+                            ? "Detected: G-SYNC active; driver VSync is off."
+                            : "Check the rule before choosing a target.")),
+          "With VSync active, Streamline ignores Dynamic Output Target and follows the active display refresh rate. G-SYNC does not change that VSync rule. Output FPS Cap (Reflex) remains a separate final-output ceiling.");
+      ImGui::TableNextColumn();
+      if (driver_vsync_active) {
+        ImGui::TextColored(kUiWarning, "Output target ignored; follows refresh");
+      } else {
+        ImGui::TextWrapped("Custom output target available when VSync is off");
+      }
     }
-    if (!dynamic_mfg || dynamic_hard_unavailable) ImGui::EndDisabled();
+
     ImGui::EndTable();
   }
 
-  ImGui::Spacing();
-  ImGui::TextDisabled("IMAGE QUALITY");
-  ImGui::Separator();
-  if (ImGui::BeginTable("##image_quality_settings", 2,
+    ImGui::Spacing();
+    ImGui::TextDisabled("FRAME RATE CONTROLS");
+    ImGui::Separator();
+    if (ImGui::BeginTable("##frame_rate_controls", 2,
+                          ImGuiTableFlags_SizingStretchProp)) {
+      ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthStretch,
+                              0.62f);
+      ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthStretch,
+                              0.38f);
+      const auto source_cap_state =
+          mfgunlock::framecount::internal::ResolveUserSourceCapState();
+      const std::string source_cap_summary =
+          UserSourceCapSummary(source_cap_state);
+      int source_cap = static_cast<int>(source_cap_state.configured_fps);
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      SettingLabel(
+          "Output FPS Cap (Reflex)", source_cap_summary.c_str(),
+          "Sets the final/output FPS ceiling handled by Reflex and the DLSS-G pacer. Entering 120 targets up to approximately 120 displayed FPS, not 120 game-rendered FPS. At fixed 4x, roughly 30 FPS are rendered by the game and the remaining frames are generated. It applies only with a fixed 2x-6x selection or active Dynamic MFG, preserves a stricter native game cap, and cannot force hardware, VSync or the game to reach the target. Use FrameView Displayed FPS to validate final output.");
+      ImGui::TableNextColumn();
+      ImGui::SetNextItemWidth(-1.0f);
+      if (ImGui::InputInt("##rendered_fps_cap", &source_cap, 1, 10)) {
+        source_cap = source_cap <= 0 ? 0
+                                     : std::clamp(source_cap, 10, 1000);
+        mfgunlock::framecount::g_reflex_source_fps_cap.store(
+            static_cast<unsigned int>(source_cap),
+            std::memory_order_relaxed);
+        g_source_cap_config_origin.store(
+            static_cast<unsigned int>(
+                mfgunlock::pacing::SourceCapConfigOrigin::kConfigured),
+            std::memory_order_relaxed);
+        mfgunlock::framecount::NotifySourceFpsCapChanged();
+        reshade::set_config_value(nullptr, kConfigSection,
+                                  "ReflexSourceFpsCap", source_cap);
+      }
+      ImGui::EndTable();
+      if (source_cap_state.configured_fps != 0) {
+        ImGui::TextColored(UserSourceCapColor(source_cap_state.status), "%s",
+                           UserSourceCapStatusText(source_cap_state.status));
+        ImGui::TextDisabled(
+            "This is the final FPS ceiling; actual displayed FPS may be lower.");
+      }
+    }
+  }
+
+  if (page == UiPage::Latency) {
+    ImGui::Spacing();
+    ImGui::TextDisabled("REFLEX / PACING LAB");
+    ImGui::Separator();
+    DrawReflexPacingLabControl();
+    ImGui::Spacing();
+    ImGui::TextDisabled("LATENCY GUARD");
+    ImGui::Separator();
+    DrawLatencyGuardControl();
+    const auto latency_guard_mode =
+        static_cast<mfgunlock::pacing::LatencyGuardMode>(
+            mfgunlock::framecount::g_latency_guard_mode.load(
+                std::memory_order_relaxed));
+    if (latency_guard_mode ==
+        mfgunlock::pacing::LatencyGuardMode::kAutomatic) {
+      ImGui::TextColored(
+          kUiWarning,
+          "Changing the DLSS-G multiplier may cause a brief hitch during trials and periodic rechecks.");
+    }
+    if (latency_guard_mode == mfgunlock::pacing::LatencyGuardMode::kOff) {
+      ImGui::TextDisabled(
+          "Latency monitoring is off. Select Monitor Only for read-only information.");
+    } else {
+    ImGui::Spacing();
+    ImGui::TextDisabled("CURRENT LATENCY STATUS");
+    const bool guard_sample_seen =
+        mfgunlock::framecount::g_latency_guard_sample_seen.load(
+            std::memory_order_acquire);
+    if (!guard_sample_seen) {
+      ImGui::TextDisabled("Waiting for the first bounded NVAPI sample.");
+    } else if (ImGui::BeginTable("##latency_guard_status", 2,
+                                 ImGuiTableFlags_SizingStretchProp |
+                                     ImGuiTableFlags_RowBg)) {
+      ImGui::TableSetupColumn("Metric", ImGuiTableColumnFlags_WidthStretch,
+                              0.48f);
+      ImGui::TableSetupColumn("Observation",
+                              ImGuiTableColumnFlags_WidthStretch, 0.52f);
+      StatusSectionRow("INTEGRATION");
+      const auto marker_health =
+          static_cast<mfgunlock::pacing::MarkerHealth>(
+              mfgunlock::framecount::g_latency_guard_marker_health.load(
+                  std::memory_order_relaxed));
+      StatusRow("Reflex integration", MarkerHealthText(marker_health),
+                marker_health == mfgunlock::pacing::MarkerHealth::kHealthy
+                    ? kUiPositive
+                    : (marker_health ==
+                               mfgunlock::pacing::MarkerHealth::kWaiting ||
+                           marker_health ==
+                               mfgunlock::pacing::MarkerHealth::kUnavailable
+                       ? kUiMuted
+                       : kUiWarning));
+      const uint32_t timing_issues =
+          mfgunlock::framecount::g_latency_guard_timing_issue_mask.load(
+              std::memory_order_relaxed);
+      const bool source_timing_confident =
+          mfgunlock::framecount::g_latency_guard_timing_confident.load(
+              std::memory_order_relaxed);
+      const bool queue_timing_confident =
+          mfgunlock::framecount::g_latency_guard_queue_timing_confident.load(
+              std::memory_order_relaxed);
+      StatusRow("Source timing validation",
+                TimingValidationText(timing_issues),
+                source_timing_confident ? kUiPositive : kUiWarning);
+      StatusRow("Queue timing validation",
+                !source_timing_confident
+                    ? "Waiting for valid source timing"
+                    : (queue_timing_confident
+                           ? "Verified from at least 48 queue markers"
+                           : "Queue-only actions unavailable; other latency signals remain active"),
+                queue_timing_confident
+                    ? kUiPositive
+                    : (source_timing_confident ? kUiWarning : kUiMuted));
+      const unsigned int refresh =
+          mfgunlock::framecount::g_latency_guard_display_refresh_fps.load(
+              std::memory_order_relaxed);
+      const unsigned int live_multiplier =
+          mfgunlock::framecount::g_latency_guard_live_multiplier.load(
+              std::memory_order_relaxed);
+      const unsigned int source_cap =
+          mfgunlock::framecount::g_latency_guard_recommended_source_cap_fps.load(
+              std::memory_order_relaxed);
+      const unsigned int active_source_cap =
+          mfgunlock::framecount::g_latency_guard_active_source_cap_fps.load(
+              std::memory_order_relaxed);
+      const unsigned int source_fps =
+          mfgunlock::framecount::g_latency_guard_estimated_source_fps.load(
+              std::memory_order_relaxed);
+      const unsigned int projected_output =
+          mfgunlock::framecount::g_latency_guard_projected_output_fps.load(
+              std::memory_order_relaxed);
+      const unsigned int queue_wait =
+          mfgunlock::framecount::g_latency_guard_queue_wait_us.load(
+              std::memory_order_relaxed);
+      const unsigned int queue_p95 =
+          mfgunlock::framecount::g_latency_guard_queue_p95_us.load(
+              std::memory_order_relaxed);
+      const unsigned int input_to_gpu =
+          mfgunlock::framecount::g_latency_guard_input_to_gpu_end_us.load(
+              std::memory_order_relaxed);
+      const unsigned int gpu_active =
+          mfgunlock::framecount::g_latency_guard_gpu_active_us.load(
+              std::memory_order_relaxed);
+      const unsigned int pipeline =
+          mfgunlock::framecount::g_latency_guard_pipeline_latency_us.load(
+              std::memory_order_relaxed);
+      const unsigned int pipeline_p95 =
+          mfgunlock::framecount::g_latency_guard_pipeline_p95_us.load(
+              std::memory_order_relaxed);
+      const unsigned int ai_frame_time =
+          mfgunlock::framecount::g_latency_guard_ai_frame_time_us.load(
+              std::memory_order_relaxed);
+      const std::string refresh_text =
+          refresh == 0 ? "Not detected" : std::to_string(refresh) + " Hz";
+      const std::string multiplier_text =
+          live_multiplier < 2 ? "Not reported"
+                              : std::to_string(live_multiplier) + "x live";
+      const std::string source_cap_text =
+          source_cap == 0
+              ? "No queue trim justified"
+              : std::to_string(source_cap) + " source FPS (small trim)";
+      const std::string source_text =
+          source_fps == 0 ? "Not available"
+                          : std::to_string(source_fps) + " real FPS estimated";
+      const std::string projected_text =
+          projected_output == 0
+              ? "Not available"
+              : std::to_string(projected_output) + " FPS estimated";
+      const std::string queue_text =
+          queue_wait == 0
+              ? "Not reported"
+              : std::to_string(queue_wait / 1000.0f).substr(0, 4) +
+                    " ms median / " +
+                    std::to_string(queue_p95 / 1000.0f).substr(0, 4) +
+                    " ms p95";
+      const std::string input_text =
+          input_to_gpu == 0
+              ? "Input marker not reported"
+              : std::to_string(input_to_gpu / 1000.0f).substr(0, 5) +
+                    " ms (input sample to GPU end)";
+      const std::string ai_text =
+          ai_frame_time == 0
+              ? "Not reported"
+              : std::to_string(ai_frame_time / 1000.0f).substr(0, 5) +
+                    " ms";
+      const std::string pipeline_text =
+          pipeline == 0
+              ? "Not reported"
+              : std::to_string(pipeline / 1000.0f).substr(0, 5) +
+                    " ms median / " +
+                    std::to_string(pipeline_p95 / 1000.0f).substr(0, 5) +
+                    " ms p95";
+      const std::string gpu_active_text =
+          gpu_active == 0
+              ? "Not reported"
+              : std::to_string(gpu_active / 1000.0f).substr(0, 5) +
+                    " ms active GPU";
+      StatusSectionRow("PERFORMANCE");
+      StatusRow("Display refresh", refresh_text.c_str(), kUiMuted);
+      StatusRow("Active FG multiplier", multiplier_text.c_str(), kUiMuted);
+      const bool iflip_known =
+          mfgunlock::framecount::g_latency_guard_iflip_known.load(
+              std::memory_order_relaxed);
+      const bool iflip_active =
+          mfgunlock::framecount::g_latency_guard_iflip_active.load(
+              std::memory_order_relaxed);
+      StatusRow("Independent flip",
+                !iflip_known ? "Not reported"
+                             : (iflip_active ? "Active" : "Inactive"),
+                !iflip_known || iflip_active ? kUiMuted : kUiWarning);
+      StatusRow("Rendered/source FPS", source_text.c_str(), kUiMuted);
+      StatusRow("Estimated displayed FPS", projected_text.c_str(),
+                mfgunlock::framecount::g_latency_guard_oversubscribed.load(
+                    std::memory_order_relaxed)
+                    ? kUiWarning
+                    : kUiMuted);
+      const uint32_t observed_source_interval = source_fps == 0
+          ? 0
+          : mfgunlock::pacing::TargetFpsToFrameLimitUs(source_fps);
+      const bool meaningful_queue =
+          queue_timing_confident && queue_wait >= 1500 &&
+          observed_source_interval != 0 &&
+          static_cast<uint64_t>(queue_wait) * 4ull >=
+              observed_source_interval;
+      StatusRow("Median render-queue wait", queue_text.c_str(),
+                meaningful_queue ? kUiWarning : kUiMuted);
+      StatusRow("Estimated pipeline latency", pipeline_text.c_str(), kUiMuted);
+      HelpMarker(
+          "This is a marker-to-GPU estimate from game/Reflex timestamps, not NVIDIA overlay end-to-end system latency.");
+      StatusRow("GPU active work", gpu_active_text.c_str(), kUiMuted);
+      StatusRow("Input-to-GPU latency", input_text.c_str(), kUiMuted);
+      StatusRow("DLSS-G workload", ai_text.c_str(), kUiMuted);
+      const auto bottleneck =
+          static_cast<mfgunlock::pacing::LatencyBottleneck>(
+              mfgunlock::framecount::g_latency_guard_bottleneck.load(
+                  std::memory_order_relaxed));
+      StatusRow("Dominant observed stage",
+                LatencyBottleneckText(bottleneck),
+                bottleneck == mfgunlock::pacing::LatencyBottleneck::kBalanced
+                    ? kUiPositive
+                    : (bottleneck ==
+                               mfgunlock::pacing::LatencyBottleneck::kInsufficientData
+                           ? kUiMuted : kUiWarning));
+      const unsigned int sample_cost =
+          mfgunlock::framecount::g_latency_guard_sample_cost_us.load(
+              std::memory_order_relaxed);
+      const std::string sample_cost_text =
+          sample_cost == 0 ? "Below timer resolution"
+                           : std::to_string(sample_cost) + " us every 500 ms";
+      StatusRow("Monitoring overhead", sample_cost_text.c_str(), kUiMuted);
+      const unsigned int limit_source =
+          mfgunlock::framecount::g_reflex_limit_source.load(
+              std::memory_order_relaxed);
+      const auto user_source_cap =
+          mfgunlock::framecount::internal::ResolveUserSourceCapState();
+      const bool explicit_source_cap =
+          limit_source == static_cast<unsigned int>(
+              mfgunlock::framecount::internal::ReflexTargetSource::
+                  kUserSourceCap);
+      const unsigned int multiplier_override =
+          mfgunlock::framecount::g_latency_guard_multiplier_override.load(
+              std::memory_order_acquire);
+      const bool multiplier_accepted =
+          mfgunlock::framecount::g_latency_guard_multiplier_trial_accepted.load(
+              std::memory_order_relaxed);
+      const auto multiplier_phase =
+          static_cast<mfgunlock::latency::MultiplierTrialPhase>(
+              mfgunlock::framecount::g_latency_guard_multiplier_trial_phase.load(
+                  std::memory_order_relaxed));
+      const auto multiplier_reason =
+          static_cast<mfgunlock::latency::ResponsiveTrialReason>(
+              mfgunlock::framecount::g_latency_guard_multiplier_trial_reason.load(
+                  std::memory_order_relaxed));
+      const unsigned int saved_multiplier =
+          mfgunlock::framecount::g_force_multiplier.load(
+              std::memory_order_relaxed);
+      const unsigned int approved_multiplier =
+          mfgunlock::framecount::g_latency_guard_multiplier_approved.load(
+              std::memory_order_relaxed);
+      const unsigned int candidate_multiplier =
+          mfgunlock::framecount::g_latency_guard_multiplier_candidate.load(
+              std::memory_order_relaxed);
+      StatusSectionRow("GUARD DECISION");
+      const char* action =
+          explicit_source_cap
+              ? "Explicit Reflex output cap has priority"
+              : (multiplier_phase !=
+                         mfgunlock::latency::MultiplierTrialPhase::kIdle
+                     ? MultiplierTrialPhaseText(multiplier_phase)
+                     : (limit_source == 2
+                     ? "Queue trim active"
+                     : (latency_guard_mode ==
+                                mfgunlock::pacing::LatencyGuardMode::kAutomatic
+                            ? "Monitoring; no safe cap change"
+                            : "Read-only monitoring")));
+      StatusRow("Guard action", action,
+                limit_source == 2 || explicit_source_cap ||
+                        multiplier_override != 0
+                    ? kUiPositive : kUiMuted);
+      if (user_source_cap.configured_fps != 0) {
+        const std::string cap_text =
+            UserSourceCapSummary(user_source_cap) + "; " +
+            UserSourceCapStatusText(user_source_cap.status);
+        StatusRow("Output FPS cap", cap_text.c_str(),
+                  UserSourceCapColor(user_source_cap.status));
+      }
+      if (latency_guard_mode ==
+              mfgunlock::pacing::LatencyGuardMode::kAutomatic &&
+          multiplier_phase ==
+              mfgunlock::latency::MultiplierTrialPhase::kIdle) {
+        const auto blocker =
+            static_cast<mfgunlock::latency::ResponsiveTrialBlocker>(
+                mfgunlock::framecount::g_latency_guard_trial_blocker.load(
+                    std::memory_order_relaxed));
+        StatusRow("Responsive eligibility",
+                  ResponsiveTrialBlockerText(blocker),
+                  blocker ==
+                          mfgunlock::latency::ResponsiveTrialBlocker::kNone
+                      ? kUiPositive
+                      : kUiMuted);
+      }
+      if (saved_multiplier >= 2) {
+        const std::string saved_text =
+            std::to_string(saved_multiplier) + "x (never overwritten)";
+        StatusRow("Saved multiplier", saved_text.c_str(), kUiMuted);
+      }
+      if (multiplier_phase !=
+          mfgunlock::latency::MultiplierTrialPhase::kIdle) {
+        StatusRow("Responsive trial", MultiplierTrialPhaseText(multiplier_phase),
+                  multiplier_accepted ? kUiPositive : kUiWarning);
+        StatusRow("Trial reason", ResponsiveTrialReasonText(multiplier_reason),
+                  kUiMuted);
+        if (approved_multiplier >= 3 &&
+            approved_multiplier < saved_multiplier) {
+          const std::string approved_text =
+              std::to_string(approved_multiplier) +
+              "x is the last measured-beneficial step";
+          StatusRow("Last approved multiplier", approved_text.c_str(),
+                    kUiPositive);
+        }
+        if (candidate_multiplier >= 3 &&
+            candidate_multiplier != saved_multiplier) {
+          const std::string candidate_text =
+              std::to_string(approved_multiplier) + "x -> " +
+              std::to_string(candidate_multiplier) + "x";
+          StatusRow("Current trial step", candidate_text.c_str(),
+                    kUiWarning);
+        }
+        const unsigned int baseline_samples =
+            mfgunlock::framecount::g_latency_guard_multiplier_baseline_samples.load(
+                std::memory_order_relaxed);
+        const unsigned int trial_samples =
+            mfgunlock::framecount::g_latency_guard_multiplier_trial_samples.load(
+                std::memory_order_relaxed);
+        const std::string window_text =
+            "baseline " + std::to_string(baseline_samples) +
+            "/8; current " + std::to_string(trial_samples) + "/8";
+        StatusRow("Measurement windows", window_text.c_str(), kUiMuted);
+        const unsigned int baseline_pipeline =
+            mfgunlock::framecount::g_latency_guard_multiplier_baseline_pipeline_us.load(
+                std::memory_order_relaxed);
+        const unsigned int baseline_p95 =
+            mfgunlock::framecount::g_latency_guard_multiplier_baseline_p95_us.load(
+                std::memory_order_relaxed);
+        const unsigned int trial_pipeline =
+            mfgunlock::framecount::g_latency_guard_multiplier_trial_pipeline_us.load(
+                std::memory_order_relaxed);
+        const unsigned int trial_p95 =
+            mfgunlock::framecount::g_latency_guard_multiplier_trial_p95_us.load(
+                std::memory_order_relaxed);
+        if (baseline_pipeline != 0 && trial_pipeline != 0) {
+          const std::string comparison =
+              std::to_string(baseline_pipeline / 1000.0f).substr(0, 5) +
+              "/" + std::to_string(baseline_p95 / 1000.0f).substr(0, 5) +
+              " ms baseline -> " +
+              std::to_string(trial_pipeline / 1000.0f).substr(0, 5) +
+              "/" + std::to_string(trial_p95 / 1000.0f).substr(0, 5) +
+              " ms measured (median/p95)";
+          StatusRow("Pipeline comparison", comparison.c_str(), kUiMuted);
+        }
+      }
+      if (source_cap != 0 && limit_source != 2 &&
+          !user_source_cap.requested)
+        StatusRow("Potential automatic trim", source_cap_text.c_str(),
+                  kUiWarning);
+      if (active_source_cap != 0) {
+        const std::string active_text =
+            std::to_string(active_source_cap) + " source FPS";
+        StatusRow("Active queue-trim cap", active_text.c_str(), kUiPositive);
+      }
+      ImGui::EndTable();
+    }
+    ImGui::TextDisabled(
+        "Automatic tests fixed multipliers one step at a time (6x -> 5x -> 4x -> 3x)\n"
+        "when input/pipeline latency, a GPU-bound latency proxy, queueing, output saturation or DLSS-G workload justifies a trial.\n"
+        "Each step uses two eight-sample windows and is kept only after lower measured latency.\n"
+        "It periodically restores the saved multiplier for a new baseline and never goes below 3x.\n"
+        "An explicit Reflex output-FPS cap remains unchanged across multiplier tests; queue trim never replaces it.\n"
+        "A small source-rate trim is used only as a verified queue-pressure fallback when no explicit cap is set.\n"
+        "It does not replace Reflex or change Dynamic MFG, VSync or G-SYNC behavior.");
+    ImGui::TextDisabled(
+        "Real/source FPS comes from game markers. Estimated output FPS is source FPS x the driver-reported multiplier; it is not a displayed-frame measurement.");
+    HelpMarker(
+        "ReShade and NVIDIA overlays may expose rendered/source FPS depending on their selected metric. Confirm actual displayed output with FrameView or PresentMon Displayed FPS.");
+    }
+  }
+
+  if (page == UiPage::General) {
+    ImGui::Spacing();
+    ImGui::TextDisabled("IMAGE QUALITY");
+    ImGui::Separator();
+    if (ImGui::BeginTable("##image_quality_settings", 2,
                         ImGuiTableFlags_SizingStretchProp)) {
     ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthStretch, 0.62f);
     ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthStretch, 0.38f);
@@ -3155,104 +6591,82 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
                                 "HDRCompatibilityMode", hdr_mode);
     }
 
-    bool intermediate_scatter =
-        g_configured_thin_geometry_intermediate_scatter.load(
-            std::memory_order_relaxed);
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     SettingLabel(
-        "Intermediate Scatter Retention",
-        "Preserves motion around thin geometry.",
-        "Relaxes one motion-consistency rejection while DLSS-G builds intermediate motion vectors. It can preserve fences, foliage, hair and weapon edges, but may add trails, stretched pixels or disocclusion artifacts. Requires restart.",
+        "Adaptive Quality Suite",
+        "Unified quality profile for silhouettes, warping and inpaint.",
+        "Coordinates silhouette confidence, motion-direction scatter coverage, warp validation, candidate arbitration and inpaint decisions as one quality path. Standalone legacy experiments remain saved but do not stack on top of it. Exact kernel/provider validation is mandatory and unavailable components fall back independently. Requires a full game restart.",
         "Recommended", kUiPositive);
     ImGui::TableNextColumn();
-    if (ImGui::Checkbox("##intermediate_scatter", &intermediate_scatter)) {
-      g_configured_thin_geometry_intermediate_scatter.store(
-          intermediate_scatter, std::memory_order_relaxed);
+    bool adaptive_quality =
+        g_configured_adaptive_quality.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("##adaptive_quality", &adaptive_quality)) {
+      g_configured_adaptive_quality.store(adaptive_quality,
+                                          std::memory_order_relaxed);
       reshade::set_config_value(nullptr, kConfigSection,
-                                "ThinGeometryIntermediateScatter",
-                                intermediate_scatter ? 1 : 0);
+                                "ExperimentalAdaptiveQuality",
+                                adaptive_quality ? 1 : 0);
     }
+    if (adaptive_quality !=
+        g_adaptive_quality.load(std::memory_order_relaxed))
+      ImGui::TextDisabled("Saved for next launch; restart the game.");
 
-    int boundary_mode = static_cast<int>(
-        g_configured_silhouette_guard_mode.load(std::memory_order_relaxed));
-    constexpr const char* kBoundaryModes[] = {"Off", "Balanced", "Aggressive"};
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    SettingLabel(
-        "Boundary Artifact Mitigation",
-        "Reduces distortion around moving silhouettes.",
-        "Uses neighboring motion and depth evidence to reduce foreground/background bleeding, stretching and occlusion-edge artifacts. Balanced preserves more thin detail and is recommended. Aggressive rejects more uncertain retention and may increase flicker. Requires restart.",
-        boundary_mode == static_cast<int>(
-                             mfgunlock::blackwell::SilhouetteGuardMode::Balanced)
-            ? "Recommended"
-            : nullptr,
-        kUiPositive);
-    ImGui::TableNextColumn();
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::Combo("##boundary_mitigation", &boundary_mode,
-                     kBoundaryModes,
-                     static_cast<int>(std::size(kBoundaryModes)))) {
-      g_configured_silhouette_guard_mode.store(
-          static_cast<unsigned int>(boundary_mode),
-          std::memory_order_relaxed);
-      reshade::set_config_value(nullptr, kConfigSection,
-                                "BoundaryArtifactMitigationMode",
-                                boundary_mode);
-    }
-
-    bool validated_warp =
-        g_configured_thin_geometry_validated_warp_blend.load(
+    if (adaptive_quality) {
+      constexpr const char* kAdaptiveProfiles[] = {
+          "Stable V1 (Compatibility)",
+          "Flicker-Reduced V2",
+          "Luminance + Directional V3 (Recommended)"};
+      int adaptive_profile = static_cast<int>(
+          mfgunlock::adaptivequality::NormalizeProfile(
+              g_configured_adaptive_quality_profile.load(
+                  std::memory_order_relaxed))) - 1;
+      const char* profile_summary =
+          adaptive_profile == 2
+              ? "Exposure-relative color confidence and motion-oriented edges."
+              : adaptive_profile == 1
+                    ? "Smoother confidence transitions for fine detail and silhouettes."
+                    : "Released 1.1.5 behavior for compatibility.";
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      SettingLabel(
+          "Adaptive Quality Profile", profile_summary,
+          "V3 normalizes luma/chroma disagreement by local luminance and adds motion-oriented border and geometry confidence. V3.2 Local Stable uses only the existing 3x3 tile; optional Temporal Stable stores confidence bytes only after a strict CUDA probe and uses the low-overhead launch fast path. V2 retains absolute RGB confidence; Stable V1 preserves the 1.1.5 behavior. Components fall back independently. Requires restart.");
+      ImGui::TableNextColumn();
+      ImGui::SetNextItemWidth(-1.0f);
+      if (ImGui::Combo("##adaptive_quality_profile", &adaptive_profile,
+                       kAdaptiveProfiles,
+                       static_cast<int>(std::size(kAdaptiveProfiles)))) {
+        const auto selected = mfgunlock::adaptivequality::NormalizeProfile(
+            static_cast<unsigned int>(adaptive_profile + 1));
+        g_configured_adaptive_quality_profile.store(
+            static_cast<unsigned int>(selected),
             std::memory_order_relaxed);
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    SettingLabel(
-        "Validated Warp Blend",
-        "Validates and blends reprojected color.",
-        "Checks candidate bounds, finite color and mutual agreement before gradually trusting warped color. It may reduce flicker and tearing on thin objects, but can increase temporal persistence or ghosting. Inspired by Tony Joaca's qualityValidWarp work and independently implemented here. Requires restart.",
-        "Recommended", kUiPositive);
-    ImGui::TableNextColumn();
-    if (ImGui::Checkbox("##validated_warp", &validated_warp)) {
-      g_configured_thin_geometry_validated_warp_blend.store(
-          validated_warp, std::memory_order_relaxed);
-      reshade::set_config_value(nullptr, kConfigSection,
-                                "ThinGeometryValidatedWarpBlend",
-                                validated_warp ? 1 : 0);
-    }
-
-    constexpr const char* kDepthEdgeModes[] = {
-        "Game Default", "Mild", "Balanced", "Strong", "Aggressive"};
-    int depth_edge_level = static_cast<int>(
-        mfgunlock::framecount::g_depth_edge_guard_level.load(
-            std::memory_order_relaxed));
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    SettingLabel(
-        "Depth-Edge Guard", "Optional depth separation tuning.",
-        "Overrides the game's linear-depth separation value. Lower values may improve nearby object or lower-screen edge separation, but this setting previously harmed pacing in some configurations. Leave on Game Default unless testing a known issue.",
-        "Optional", kUiWarning);
-    ImGui::TableNextColumn();
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::Combo("##depth_edge_guard", &depth_edge_level,
-                     kDepthEdgeModes,
-                     static_cast<int>(std::size(kDepthEdgeModes)))) {
-      mfgunlock::framecount::g_depth_edge_guard_level.store(
-          static_cast<unsigned int>(depth_edge_level),
-          std::memory_order_relaxed);
-      mfgunlock::framecount::NotifyDepthEdgeTuningChanged();
-      reshade::set_config_value(nullptr, kConfigSection,
-                                "DepthEdgeGuardLevel", depth_edge_level);
+        reshade::set_config_value(
+            nullptr, kConfigSection, "AdaptiveQualityProfile",
+            static_cast<int>(selected));
+      }
+      if (g_configured_adaptive_quality_profile.load(
+              std::memory_order_relaxed) !=
+          g_adaptive_quality_profile.load(std::memory_order_relaxed)) {
+        ImGui::TextDisabled("Saved for next launch; restart the game.");
+      }
     }
     ImGui::EndTable();
   }
+  if (page == UiPage::General &&
+      g_configured_adaptive_quality.load(std::memory_order_relaxed)) {
+    ImGui::TextDisabled(
+        "Adaptive Quality manages geometry, boundary handling, warp validation and inpaint as one profile.");
+  }
 
-  if (ImGui::CollapsingHeader("Advanced")) {
+  if (page == UiPage::General && ImGui::CollapsingHeader("Advanced")) {
     constexpr const char* kRuntimeModes[] = {
         "Game default", "Prefer local runtime - disable OTA",
         "Force NVIDIA OTA runtime"};
     int runtime_mode = static_cast<int>(
         g_configured_runtime_selection_mode.load(std::memory_order_relaxed));
-    ImGui::SetNextItemWidth(-1.0f);
+    SetNextItemWidthWithHelp("Streamline runtime selection");
     if (ImGui::Combo("Streamline runtime selection", &runtime_mode,
                      kRuntimeModes,
                      static_cast<int>(std::size(kRuntimeModes)))) {
@@ -3266,6 +6680,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
         "Selects which complete Streamline runtime package initializes on the next launch. Do not mix DLL versions. Game default is recommended. Requires restart.");
 
     int count = static_cast<int>(g_max_count.load(std::memory_order_relaxed));
+    SetNextItemWidthWithHelp("Reported MultiFrameCountMax");
     if (ImGui::SliderInt("Reported MultiFrameCountMax", &count,
                          static_cast<int>(kMinCount),
                          static_cast<int>(kMaxCount))) {
@@ -3313,21 +6728,6 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     HelpMarker(
         "Compatibility fallback for older Streamline integrations where 3x/4x freezes. Leave disabled with current runtimes. Requires restart.");
 
-    bool reflex_source_cap =
-        mfgunlock::framecount::g_dynamic_reflex_source_cap.load(
-            std::memory_order_relaxed);
-    if (ImGui::Checkbox("Reflex rendered-FPS source cap",
-                        &reflex_source_cap)) {
-      mfgunlock::framecount::g_dynamic_reflex_source_cap.store(
-          reflex_source_cap, std::memory_order_relaxed);
-      mfgunlock::framecount::NotifyDynamicModeChanged();
-      reshade::set_config_value(nullptr, kConfigSection,
-                                "DynamicReflexSourceCap",
-                                reflex_source_cap ? 1 : 0);
-    }
-    HelpMarker(
-        "Advanced source-frame limiter, not a final output target. Leave disabled unless you calculated a rendered-FPS cap for the current multiplier and refresh rate.");
-
     const int active_runtime_mode = static_cast<int>(
         mfgunlock::framecount::g_runtime_selection_mode.load(
             std::memory_order_relaxed));
@@ -3344,26 +6744,18 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
       HelpMarker(
           "Adds this addon's current filename to ReShade's ADDON.LoadFromDllMain list. Required only when a selected runtime policy must intercept slInit before normal addon loading. Requires restart.");
     }
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("IMAGE QUALITY COMPATIBILITY");
+    DrawAdvancedQualityControls(
+        g_configured_adaptive_quality.load(std::memory_order_relaxed));
+  }
   }
 
-  if (ImGui::CollapsingHeader("Experimental / Research")) {
-    bool previous_scatter =
-        g_configured_thin_geometry_previous_scatter.load(
-            std::memory_order_relaxed);
-    ImGui::TextColored(kUiWarning, "Experimental / unstable");
-    if (ImGui::Checkbox("Previous-to-current Scatter Retention",
-                        &previous_scatter)) {
-      g_configured_thin_geometry_previous_scatter.store(
-          previous_scatter, std::memory_order_relaxed);
-      reshade::set_config_value(nullptr, kConfigSection,
-                                "ThinGeometryPreviousScatter",
-                                previous_scatter ? 1 : 0);
-    }
-    HelpMarker(
-        "Changes motion rejection between real frames. It crashed after restart during initial testing and is not recommended for normal use. Requires restart.");
-  }
-
-  if (ImGui::CollapsingHeader("Diagnostics")) {
+  if (page == UiPage::Support) {
+    ImGui::Spacing();
+    ImGui::TextDisabled("SUPPORT DIAGNOSTICS");
+    ImGui::Separator();
     bool gate_patched = false;
     bool midpoint_patched = false;
     bool blackwell_patched = false;
@@ -3375,8 +6767,13 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     size_t thin_geometry_provider_count = 0;
     std::string midpoint_detail;
     std::string blackwell_detail;
+    std::string blackwell_applied_detail;
+    mfgunlock::blackwell::Result blackwell_active_result{};
     ThinGeometryModulePatch thin_geometry_last;
-    AcquireSRWLockShared(&g_provider_maintenance_lock);
+  if (!TryAcquireSRWLockShared(&g_provider_maintenance_lock)) {
+    ImGui::TextDisabled("Diagnostics updating; retry next frame.");
+    return;
+  }
     gate_patched = g_gate_patched.load(std::memory_order_relaxed);
     midpoint_patched = g_midpoint_patched.load(std::memory_order_relaxed);
     blackwell_patched = g_blackwell_patched.load(std::memory_order_relaxed);
@@ -3389,6 +6786,8 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     thin_geometry_provider_count = g_thin_geometry_modules.size();
     midpoint_detail = g_midpoint_detail;
     blackwell_detail = g_blackwell_detail;
+    blackwell_applied_detail = g_blackwell_applied_detail;
+    blackwell_active_result = AggregateBlackwellResults(g_blackwell_modules);
     thin_geometry_last =
         SelectRelevantThinGeometryResult(g_thin_geometry_modules);
     ReleaseSRWLockShared(&g_provider_maintenance_lock);
@@ -3400,8 +6799,24 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
       StatusRow("Renderer", RenderApiName(render_api), kUiMuted);
       StatusRow("Streamline", streamline_text.c_str(), kUiMuted);
       StatusRow("DLSS-G", dlssg_text.c_str(), kUiMuted);
+      StatusRow("DLSS Super Resolution", super_resolution_preset.c_str(),
+                kUiMuted);
+      StatusRow("DLSS Frame Generation", frame_generation_preset.c_str(),
+                kUiMuted);
+      StatusRow("DLSS Ray Reconstruction",
+                ray_reconstruction_preset.c_str(), kUiMuted);
       StatusRow("HDR", hdr_seen ? (hdr_active ? "Yes" : "No") : "Unknown",
                 kUiMuted);
+      const std::string diagnostic_sync =
+          !sleep_status_available
+              ? "Not reported"
+              : (driver_vsync_active && gsync_active
+                     ? "Driver VSync + G-SYNC active"
+                     : (driver_vsync_active
+                            ? "Driver VSync active"
+                            : (gsync_active ? "G-SYNC active"
+                                            : "Inactive")));
+      StatusRow("Driver sync", diagnostic_sync.c_str(), kUiMuted);
       StatusRow("Dynamic MFG VSync API",
                 !mfgunlock::framecount::g_vsync_support_seen.load(
                      std::memory_order_acquire)
@@ -3413,7 +6828,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
                 kUiMuted);
       ImGui::EndTable();
     }
-    ImGui::TextDisabled(
+    TextDisabledWrapped(
         "This reports the Streamline/DLSS-G Dynamic interface, not whether driver VSync is enabled.");
 
     ImGui::Spacing();
@@ -3434,20 +6849,56 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
               ? std::to_string(mfgunlock::framecount::g_actual_frames_presented.load(
                     std::memory_order_relaxed))
               : "No sample";
-      StatusRow("Presentations", actual_text.c_str(), kUiMuted);
-      StatusRow("Validation",
-                runtime_error ? "Failed"
-                              : (mfg_confirmed ? "Passed" : "Pending"),
-                runtime_error ? kUiError
-                              : (mfg_confirmed ? kUiPositive : kUiWarning));
+      const std::string live_multiplier =
+          driver_multiplier >= 2
+              ? std::to_string(driver_multiplier) + "x live"
+              : "Not reported";
+      StatusRow("Driver live multiplier", live_multiplier.c_str(),
+                driver_multiplier >= 2 ? kUiPositive : kUiMuted);
+      StatusRow("Provider presentations", actual_text.c_str(),
+                mfg_confirmed ? kUiPositive : kUiMuted);
+      StatusRow("Validation evidence", validation_text.c_str(),
+                runtime_error
+                    ? kUiError
+                    : (request_rejected
+                           ? kUiWarning
+                           : (mfg_request_accepted ? kUiPositive : kUiMuted)));
       StatusRow("Dynamic MFG",
                 mfgunlock::framecount::g_dynamic_applied.load(
                     std::memory_order_relaxed)
                     ? "Active"
                     : (dynamic_available ? "Available" : "Inactive"),
                 kUiMuted);
+      const auto source_cap_state =
+          mfgunlock::framecount::internal::ResolveUserSourceCapState();
+      const std::string source_cap_value =
+          std::to_string(source_cap_state.configured_fps) +
+          " final/output FPS; " +
+          UserSourceCapStatusText(source_cap_state.status);
+      StatusRow("Output FPS cap", source_cap_value.c_str(),
+                UserSourceCapColor(source_cap_state.status));
+      std::ostringstream source_cap_intervals;
+      source_cap_intervals << "requested "
+                           << source_cap_state.requested_limit_us
+                           << " us; native "
+                           << source_cap_state.native_limit_us
+                           << " us; effective "
+                           << source_cap_state.effective_limit_us << " us";
+      StatusRow("Reflex cap intervals", source_cap_intervals.str().c_str(),
+                kUiMuted);
+      StatusRow(
+          "Cap configuration source",
+          SourceCapConfigOriginText(
+              static_cast<mfgunlock::pacing::SourceCapConfigOrigin>(
+                  g_source_cap_config_origin.load(
+                      std::memory_order_relaxed))),
+          kUiMuted);
       ImGui::EndTable();
     }
+    TextDisabledWrapped(
+        "Evidence is layered: an accepted request, a driver-live multiplier and provider output are separate observations.");
+    HelpMarker(
+        "ReShade's FPS counter and many overlays can report game/source Presents rather than frames scanned out after DLSS-G. Estimated output FPS is never treated as a measured result here. Use FrameView or PresentMon Displayed FPS for external confirmation.");
 
     ImGui::Spacing();
     ImGui::TextDisabled("PATCHES");
@@ -3466,13 +6917,293 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
       StatusRow("Thin-geometry patches",
                 thin_geometry_patched ? "At least one active" : "Pending",
                 thin_geometry_patched ? kUiPositive : kUiWarning);
-      if (thin_geometry_provider_count != 0) {
+      if (g_adaptive_quality.load(std::memory_order_relaxed)) {
+        const auto requested_profile =
+            mfgunlock::adaptivequality::NormalizeProfile(
+                g_adaptive_quality_profile.load(std::memory_order_relaxed));
+        const bool adaptive_blend =
+            thin_geometry_last.result.validated_warp_blend.applied;
+        const bool adaptive_complete =
+            blackwell_active_result.adaptive_geometry && adaptive_blend &&
+            blackwell_active_result.adaptive_inpaint_decision;
+        const auto warp_version =
+            thin_geometry_last.result.validated_warp_blend.adaptive_version;
+        const auto geometry_version =
+            blackwell_active_result.adaptive_geometry_version;
+        const auto inpaint_version =
+            blackwell_active_result.adaptive_inpaint_version;
+        const auto expected_warp =
+            mfgunlock::adaptivequality::ExpectedComponentVersion(
+                requested_profile,
+                mfgunlock::adaptivequality::Component::kWarp);
+        const auto expected_geometry =
+            requested_profile ==
+                        mfgunlock::adaptivequality::Profile::
+                            kLuminanceDirectionalV3 &&
+                    !g_adaptive_quality_v3_oriented_geometry.load(
+                        std::memory_order_relaxed)
+                ? mfgunlock::adaptivequality::ComponentVersion::kV2
+                : mfgunlock::adaptivequality::ExpectedComponentVersion(
+                      requested_profile,
+                      mfgunlock::adaptivequality::Component::kGeometry);
+        const auto requested_inpaint_mode =
+            mfgunlock::cudatemporal::NormalizeInpaintMode(
+                g_adaptive_quality_v3_inpaint_mode.load(
+                    std::memory_order_relaxed));
+        const auto expected_inpaint =
+            requested_profile ==
+                    mfgunlock::adaptivequality::Profile::kLuminanceDirectionalV3 &&
+                requested_inpaint_mode !=
+                    mfgunlock::cudatemporal::InpaintMode::kV2Compatibility
+                ? mfgunlock::adaptivequality::ComponentVersion::kV3
+                : mfgunlock::adaptivequality::ExpectedComponentVersion(
+                      requested_profile,
+                      mfgunlock::adaptivequality::Component::kInpaint);
+        const bool all_requested_versions =
+            warp_version == expected_warp &&
+            geometry_version == expected_geometry &&
+            inpaint_version == expected_inpaint;
+        const std::string profile_status =
+            std::string(mfgunlock::adaptivequality::ProfileName(
+                requested_profile)) +
+            (adaptive_complete && all_requested_versions
+                 ? "; core components applied"
+                 : "; partial/fallback");
+        StatusRow("Adaptive Quality Suite",
+                  profile_status.c_str(),
+                  adaptive_complete && all_requested_versions
+                      ? kUiPositive
+                      : kUiWarning);
+        const std::string warp_status = AdaptiveComponentStatus(
+            expected_warp, warp_version, adaptive_blend);
+        StatusRow("Warp confidence", warp_status.c_str(),
+                  AdaptiveComponentColor(expected_warp, warp_version,
+                                         adaptive_blend));
+        const std::string geometry_status = AdaptiveComponentStatus(
+            expected_geometry, geometry_version,
+            blackwell_active_result.adaptive_geometry);
+        StatusRow("Geometry confidence", geometry_status.c_str(),
+                  AdaptiveComponentColor(
+                      expected_geometry, geometry_version,
+                      blackwell_active_result.adaptive_geometry));
+        if (geometry_version ==
+            mfgunlock::adaptivequality::ComponentVersion::kV3) {
+          StatusRow(
+              "Geometry V3 install",
+              blackwell_active_result.adaptive_geometry_redirected
+                  ? "Full ptxas cubin; exact fatbin redirect"
+                  : "In-place cubin",
+              blackwell_active_result.adaptive_geometry_redirected
+                  ? kUiPositive
+                  : kUiMuted);
+          StatusRow("Geometry V3.2 cubin",
+                    mfgunlock::blackwell::AdaptiveGeometryVariantName(
+                        blackwell_active_result.adaptive_geometry_variant),
+                    blackwell_active_result.adaptive_geometry_variant ==
+                            mfgunlock::blackwell::AdaptiveGeometryVariant::kTemporal
+                        ? kUiPositive
+                        : kUiMuted);
+          StatusRow("Geometry V3.2 ptxas",
+                    "40 registers; 0 spills/local; 7,776 B shared",
+                    kUiPositive);
+        }
+        const std::string inpaint_status = AdaptiveComponentStatus(
+            expected_inpaint, inpaint_version,
+            blackwell_active_result.adaptive_inpaint_decision);
+        StatusRow("Inpaint decision", inpaint_status.c_str(),
+                  AdaptiveComponentColor(
+                      expected_inpaint, inpaint_version,
+                      blackwell_active_result.adaptive_inpaint_decision));
+        if (requested_profile ==
+            mfgunlock::adaptivequality::Profile::kLuminanceDirectionalV3) {
+          const char* requested_inpaint =
+              requested_inpaint_mode ==
+                      mfgunlock::cudatemporal::InpaintMode::kTemporal
+                  ? "Temporal V3"
+                  : requested_inpaint_mode ==
+                            mfgunlock::cudatemporal::InpaintMode::kLocal
+                        ? "Local V3"
+                        : "V2 Compatibility";
+          StatusRow("Inpaint V3.4 requested", requested_inpaint, kUiMuted);
+          StatusRow(
+              "Inpaint V3.4 cubin",
+              mfgunlock::blackwell::AdaptiveInpaintVariantName(
+                  blackwell_active_result.adaptive_inpaint_variant),
+              blackwell_active_result.adaptive_inpaint_variant ==
+                      mfgunlock::blackwell::AdaptiveInpaintVariant::kTemporal
+                  ? kUiPositive
+                  : kUiMuted);
+          const std::string inpaint_temporal_detail =
+#if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+              "V3 inpaint removed; V2 Compatibility requested (see installed cubin above)";
+#else
+              mfgunlock::cudatemporal::InpaintDetail();
+#endif
+          StatusRow(
+              "Inpaint V3.4 effective", inpaint_temporal_detail.c_str(),
+#if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+              kUiMuted);
+#else
+              mfgunlock::cudatemporal::g_inpaint_temporal_active.load(
+                      std::memory_order_acquire)
+                  ? kUiPositive
+                  : (mfgunlock::cudatemporal::g_inpaint_fallback.load(
+                             std::memory_order_acquire)
+                         ? kUiWarning
+                         : kUiMuted));
+#endif
+        }
+        if (requested_profile ==
+            mfgunlock::adaptivequality::Profile::kLuminanceDirectionalV3) {
+          StatusRow(
+              "V3 photometric A/B",
+              g_adaptive_quality_v3_photometric.load(
+                      std::memory_order_relaxed)
+                  ? "Relative luma/chroma enabled"
+                  : "Disabled; using V2 absolute RGB",
+              kUiMuted);
+          StatusRow(
+              "V3 border A/B",
+              g_adaptive_quality_v3_directional_border.load(
+                      std::memory_order_relaxed)
+                  ? "Motion-directional taper enabled"
+                  : "Disabled; using V2 symmetric taper",
+              kUiMuted);
+          StatusRow(
+              "V3 geometry A/B",
+              g_adaptive_quality_v3_oriented_geometry.load(
+                      std::memory_order_relaxed)
+                  ? "Motion-oriented diagonals enabled"
+                  : "Disabled; requesting geometry V2",
+              kUiMuted);
+        }
+        StatusRow("Directional scatter",
+                  blackwell_active_result.adaptive_directional_scatter
+                      ? "Native motion-adaptive coverage retained"
+                      : "Baseline",
+                  kUiMuted);
+        const auto stability_mode = mfgunlock::cudatemporal::NormalizeMode(
+            g_adaptive_quality_v3_stability_mode.load(
+                std::memory_order_relaxed));
+        StatusRow(
+            "V3.2 stability requested",
+            stability_mode ==
+                    mfgunlock::cudatemporal::StabilityMode::kTemporal
+                ? "Temporal Stable"
+                : "Local Stable",
+            kUiMuted);
+        const std::string temporal_detail =
+#if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+            "History disabled; dedicated Local cubin requested (see installed variant above)";
+#else
+            mfgunlock::cudatemporal::Detail();
+#endif
+        StatusRow(
+            "V3.2 stability effective", temporal_detail.c_str(),
+#if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+            kUiMuted);
+        StatusRow("Build", "Local low-overhead; no V3 inpaint or confidence history", kUiPositive);
+        StatusRow("Temporal backend", "Disabled by build; 0 B history; no self-test or barriers", kUiMuted);
+        StatusRow("CUDA hook fast path", "Not installed; no CUDA/NVAPI launch interception", kUiMuted);
+#else
+            mfgunlock::cudatemporal::g_temporal_active.load(
+                    std::memory_order_acquire)
+                ? kUiPositive
+                : (mfgunlock::cudatemporal::g_fallback.load(
+                           std::memory_order_acquire)
+                       ? kUiWarning
+                       : kUiMuted));
+        StatusRow(
+            "CUDA hook fast path",
+            mfgunlock::cudatemporal::FastPathReady()
+                ? "Active; atomic CUfunction compare only for non-target kernels"
+                : (mfgunlock::cudatemporal::g_hooked.load(
+                           std::memory_order_acquire)
+                       ? "Hook installed; target association pending"
+                       : "Inactive"),
+            mfgunlock::cudatemporal::FastPathReady() ? kUiPositive
+                                                     : kUiMuted);
+#endif
+        if (mfgunlock::cudatemporal::g_history_bytes.load(
+                std::memory_order_relaxed) != 0) {
+          const uint64_t history_bytes =
+              mfgunlock::cudatemporal::g_history_bytes.load(
+                  std::memory_order_relaxed);
+          std::ostringstream history_status;
+          history_status << history_bytes / (1024.0 * 1024.0) << " MiB; "
+                         << mfgunlock::cudatemporal::g_history_width.load(
+                                std::memory_order_relaxed)
+                         << 'x'
+                         << mfgunlock::cudatemporal::g_history_height.load(
+                                std::memory_order_relaxed)
+                         << "; "
+                         << mfgunlock::cudatemporal::g_history_multiplier.load(
+                                std::memory_order_relaxed)
+                         << 'x';
+          StatusRow("V3.2 confidence history",
+                    history_status.str().c_str(), kUiMuted);
+        }
+        if (mfgunlock::cudatemporal::g_inpaint_history_bytes.load(
+                std::memory_order_relaxed) != 0) {
+          std::ostringstream inpaint_history;
+          inpaint_history
+              << mfgunlock::cudatemporal::g_inpaint_history_bytes.load(
+                     std::memory_order_relaxed) /
+                     (1024.0 * 1024.0)
+              << " MiB; total arena used "
+              << (mfgunlock::cudatemporal::g_history_bytes.load(
+                      std::memory_order_relaxed) +
+                  mfgunlock::cudatemporal::g_inpaint_history_bytes.load(
+                      std::memory_order_relaxed)) /
+                     (1024.0 * 1024.0)
+              << " / 96 MiB; resets "
+              << mfgunlock::cudatemporal::g_history_resets.load(
+                     std::memory_order_relaxed);
+          StatusRow("V3.4 inpaint history",
+                    inpaint_history.str().c_str(), kUiMuted);
+        }
+      }
+      if (!g_adaptive_quality.load(std::memory_order_relaxed)) {
+        StatusRow("Geometry confidence V2",
+                  !g_geometry_confidence_v2.load(std::memory_order_relaxed)
+                      ? "Off"
+                      : (!g_quality_refinement.load(std::memory_order_relaxed)
+                             ? "Requires Quality Refinement"
+                             : (g_silhouette_guard_mode.load(std::memory_order_relaxed) !=
+                                        static_cast<unsigned int>(mfgunlock::blackwell::SilhouetteGuardMode::Balanced)
+                                    ? "Requires Balanced boundary mode"
+                                    : (thin_geometry_last.geometry_confidence_v2_applied
+                                           ? "Patch applied; visual test pending"
+                                           : "Requested; V1/fallback or no patch"))),
+                  kUiMuted);
+        StatusRow("Border confidence trial",
+                  !g_border_confidence.load(std::memory_order_relaxed)
+                      ? "Off"
+                      : (!g_quality_refinement.load(std::memory_order_relaxed)
+                             ? "Requires Quality Refinement"
+                             : (!thin_geometry_last.result.validated_warp_blend.applied
+                                    ? "Requested; blend not applied"
+                                    : "Patch applied; visual test pending")),
+                  kUiMuted);
+      }
+      if (!g_adaptive_quality.load(std::memory_order_relaxed) &&
+          thin_geometry_provider_count != 0) {
         const auto mechanism_state = [](const auto& result) {
           return !result.requested ? "Not requested"
                                    : (result.applied ? "Active" : "Not applied");
         };
+        const bool intermediate_superseded =
+            g_thin_geometry_intermediate_scatter.load(
+                std::memory_order_relaxed) &&
+            (g_adaptive_quality.load(std::memory_order_relaxed) ||
+             g_silhouette_guard_mode.load(std::memory_order_relaxed) !=
+                static_cast<unsigned int>(
+                    mfgunlock::blackwell::SilhouetteGuardMode::Off));
         StatusRow("Intermediate retention",
-                  mechanism_state(thin_geometry_last.intermediate_scatter),
+                  intermediate_superseded
+                      ? "Superseded by Boundary mitigation"
+                      : mechanism_state(
+                            thin_geometry_last.intermediate_scatter),
                   thin_geometry_last.intermediate_scatter.applied
                       ? kUiPositive
                       : kUiMuted);
@@ -3500,14 +7231,97 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
                     ? "Filtered incompatible input"
                     : "No filtering reported",
                 kUiMuted);
+      const unsigned int tracked_viewports =
+          mfgunlock::framecount::g_quality_viewport_count.load(
+              std::memory_order_relaxed);
+      const bool viewport_capacity_exhausted =
+          mfgunlock::framecount::g_quality_viewport_capacity_exhausted.load(
+              std::memory_order_acquire);
+      const std::string viewport_text =
+          std::to_string(tracked_viewports) + " / " +
+          std::to_string(mfgunlock::framecount::kMaxQualityViewports) +
+          (viewport_capacity_exhausted ? "; capacity exhausted" : " tracked");
+      StatusRow("Quality Guard viewports", viewport_text.c_str(),
+                viewport_capacity_exhausted ? kUiWarning : kUiMuted);
+      const auto tag_lock_contentions =
+          mfgunlock::framecount::g_quality_tag_lock_contentions.load(
+              std::memory_order_relaxed);
+      const std::string contention_text =
+          std::to_string(tag_lock_contentions) +
+          " non-blocking fallback(s)";
+      StatusRow("Quality Guard contention", contention_text.c_str(),
+                tag_lock_contentions == 0 ? kUiMuted : kUiWarning);
       ImGui::EndTable();
     }
 
+    std::string intermediate_report = "Disabled";
+    if (g_adaptive_quality.load(std::memory_order_relaxed)) {
+      intermediate_report = "Managed by Adaptive Quality Suite";
+    } else if (g_thin_geometry_intermediate_scatter.load(
+            std::memory_order_relaxed)) {
+      if (g_silhouette_guard_mode.load(std::memory_order_relaxed) !=
+          static_cast<unsigned int>(
+              mfgunlock::blackwell::SilhouetteGuardMode::Off)) {
+        intermediate_report = "Superseded by Boundary mitigation";
+      } else if (thin_geometry_last.intermediate_scatter.applied) {
+        intermediate_report = "Active";
+      } else {
+        intermediate_report = "Requested; not applied";
+      }
+    }
+    const auto adaptive_profile =
+        mfgunlock::adaptivequality::NormalizeProfile(
+            g_adaptive_quality_profile.load(std::memory_order_relaxed));
+    const auto expected_warp =
+        mfgunlock::adaptivequality::ExpectedComponentVersion(
+            adaptive_profile, mfgunlock::adaptivequality::Component::kWarp);
+    const auto expected_geometry =
+        adaptive_profile ==
+                    mfgunlock::adaptivequality::Profile::
+                        kLuminanceDirectionalV3 &&
+                !g_adaptive_quality_v3_oriented_geometry.load(
+                    std::memory_order_relaxed)
+            ? mfgunlock::adaptivequality::ComponentVersion::kV2
+            : mfgunlock::adaptivequality::ExpectedComponentVersion(
+                  adaptive_profile,
+                  mfgunlock::adaptivequality::Component::kGeometry);
+    const auto requested_inpaint_mode =
+        mfgunlock::cudatemporal::NormalizeInpaintMode(
+            g_adaptive_quality_v3_inpaint_mode.load(
+                std::memory_order_relaxed));
+    const auto expected_inpaint =
+        adaptive_profile ==
+                mfgunlock::adaptivequality::Profile::kLuminanceDirectionalV3 &&
+            requested_inpaint_mode !=
+                mfgunlock::cudatemporal::InpaintMode::kV2Compatibility
+            ? mfgunlock::adaptivequality::ComponentVersion::kV3
+            : mfgunlock::adaptivequality::ExpectedComponentVersion(
+                  adaptive_profile,
+                  mfgunlock::adaptivequality::Component::kInpaint);
+    const std::string adaptive_warp_report = AdaptiveComponentStatus(
+        expected_warp,
+        thin_geometry_last.result.validated_warp_blend.adaptive_version,
+        thin_geometry_last.result.validated_warp_blend.applied);
+    const std::string adaptive_geometry_report = AdaptiveComponentStatus(
+        expected_geometry, blackwell_active_result.adaptive_geometry_version,
+        blackwell_active_result.adaptive_geometry);
+    const std::string adaptive_inpaint_report = AdaptiveComponentStatus(
+        expected_inpaint, blackwell_active_result.adaptive_inpaint_version,
+        blackwell_active_result.adaptive_inpaint_decision);
+    const auto source_cap_state =
+        mfgunlock::framecount::internal::ResolveUserSourceCapState();
+    const auto source_cap_origin =
+        static_cast<mfgunlock::pacing::SourceCapConfigOrigin>(
+            g_source_cap_config_origin.load(std::memory_order_relaxed));
     std::ostringstream report;
     report << "MFG Unlock Diagnostics\n"
            << "Renderer: " << RenderApiName(render_api) << '\n'
            << "Streamline: " << streamline_text << '\n'
            << "DLSS-G: " << dlssg_text << '\n'
+           << "DLSS Super Resolution: " << super_resolution_preset << '\n'
+           << "DLSS Frame Generation: " << frame_generation_preset << '\n'
+           << "DLSS Ray Reconstruction: " << ray_reconstruction_preset
+           << '\n'
            << "HDR: " << (hdr_seen ? (hdr_active ? "Yes" : "No") : "Unknown")
            << '\n'
            << "Game request: "
@@ -3517,6 +7331,15 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
            << "Effective request: "
            << (effective_seen ? std::to_string(effective_multiplier) + "x"
                               : "Not observed")
+           << '\n'
+           << "Driver live multiplier: "
+           << (driver_multiplier >= 2
+                   ? std::to_string(driver_multiplier) + "x"
+                   : "Not reported")
+           << '\n'
+           << "Provider presentations: "
+           << (state_seen ? std::to_string(observed_presentations)
+                          : "Not sampled")
            << '\n'
            << "Dynamic MFG: "
            << (mfgunlock::framecount::g_dynamic_applied.load(
@@ -3528,11 +7351,333 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
            << mfgunlock::framecount::g_dynamic_target_fps.load(
                   std::memory_order_relaxed)
            << '\n'
-           << "Reflex source cap: "
-           << (mfgunlock::framecount::g_dynamic_reflex_source_cap.load(
-                   std::memory_order_relaxed)
-                   ? "Enabled"
-                   : "Disabled")
+           << "Output FPS cap (Reflex): "
+           << source_cap_state.configured_fps << " final/output FPS; state "
+           << UserSourceCapStatusText(source_cap_state.status)
+           << "; estimated multiplier "
+           << source_cap_state.estimated_multiplier
+           << "x; requested/native/effective interval "
+           << source_cap_state.requested_limit_us << '/'
+           << source_cap_state.native_limit_us << '/'
+           << source_cap_state.effective_limit_us << " us; config "
+           << SourceCapConfigOriginText(source_cap_origin)
+           << '\n'
+           << "Latency Guard mode: "
+           << mfgunlock::framecount::g_latency_guard_mode.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Timestamp units (0 unknown / 1 us / 2 QPC): "
+           << mfgunlock::framecount::g_latency_guard_units.load(std::memory_order_relaxed) << '\n'
+           << "Fresh completed frame count: "
+           << mfgunlock::framecount::g_latency_guard_new_frames.load(std::memory_order_relaxed) << '\n'
+           << "Adaptive Quality Suite: "
+           << (g_adaptive_quality.load(std::memory_order_relaxed)
+                   ? mfgunlock::adaptivequality::ProfileName(adaptive_profile)
+                   : "Off") << '\n'
+           << "V3 photometric A/B: "
+           << (g_adaptive_quality.load(std::memory_order_relaxed) &&
+                       adaptive_profile == mfgunlock::adaptivequality::Profile::
+                                               kLuminanceDirectionalV3
+                   ? (g_adaptive_quality_v3_photometric.load(
+                          std::memory_order_relaxed)
+                          ? "relative luma/chroma"
+                          : "disabled; V2 absolute RGB")
+                   : "inactive outside V3") << '\n'
+           << "V3 border A/B: "
+           << (g_adaptive_quality.load(std::memory_order_relaxed) &&
+                       adaptive_profile == mfgunlock::adaptivequality::Profile::
+                                               kLuminanceDirectionalV3
+                   ? (g_adaptive_quality_v3_directional_border.load(
+                          std::memory_order_relaxed)
+                          ? "motion-directional"
+                          : "disabled; V2 symmetric")
+                   : "inactive outside V3") << '\n'
+           << "V3 geometry A/B: "
+           << (g_adaptive_quality.load(std::memory_order_relaxed) &&
+                       adaptive_profile == mfgunlock::adaptivequality::Profile::
+                                               kLuminanceDirectionalV3
+                   ? (g_adaptive_quality_v3_oriented_geometry.load(
+                          std::memory_order_relaxed)
+                          ? "motion-oriented diagonals"
+                          : "disabled; V2 geometry")
+                   : "inactive outside V3") << '\n'
+           << "Adaptive warp confidence: "
+           << adaptive_warp_report << '\n'
+           << "Adaptive geometry confidence: "
+           << adaptive_geometry_report << '\n'
+           << "Geometry V3 install: "
+           << (blackwell_active_result.adaptive_geometry_redirected
+                   ? "Full ptxas cubin; exact fatbin descriptor redirect"
+                   : "No oversized redirect active") << '\n'
+           << "Geometry V3.2 cubin: "
+           << mfgunlock::blackwell::AdaptiveGeometryVariantName(
+                  blackwell_active_result.adaptive_geometry_variant)
+           << (blackwell_active_result.adaptive_geometry_variant ==
+                       mfgunlock::blackwell::AdaptiveGeometryVariant::kTemporal
+                   ? "; 40 registers; 7,776 B shared; zero stack/spill/local; .text=41,216 B; 8 global loads (2 u8) + 2 u8 stores"
+                   : blackwell_active_result.adaptive_geometry_variant ==
+                             mfgunlock::blackwell::AdaptiveGeometryVariant::kLocal
+                         ? "; 40 registers; 7,776 B shared; zero stack/spill/local; .text=39,552 B; zero global loads/stores"
+                         : "; resource audit unavailable for fallback/native")
+           << '\n'
+           << "Adaptive inpaint decision: "
+           << adaptive_inpaint_report << '\n'
+           << "Inpaint V3.4 requested: "
+           << (requested_inpaint_mode ==
+                       mfgunlock::cudatemporal::InpaintMode::kTemporal
+                   ? "Temporal V3"
+                   : requested_inpaint_mode ==
+                             mfgunlock::cudatemporal::InpaintMode::kLocal
+                         ? "Local V3"
+                         : "V2 Compatibility")
+           << '\n'
+           << "Inpaint V3.4 cubin: "
+           << mfgunlock::blackwell::AdaptiveInpaintVariantName(
+                  blackwell_active_result.adaptive_inpaint_variant)
+           << (blackwell_active_result.adaptive_inpaint_variant ==
+                       mfgunlock::blackwell::AdaptiveInpaintVariant::kTemporal
+                   ? "; ABI 152 bytes; 48 registers; 784 B shared; zero stack/spill/local; .text=10,368 B; one u8 history load + one u8 store"
+                   : blackwell_active_result.adaptive_inpaint_variant ==
+                             mfgunlock::blackwell::AdaptiveInpaintVariant::kLocal
+                         ? "; 48 registers; 784 B shared; zero stack/spill/local; .text=9,344 B; zero global history access"
+                         : "; compatibility/fallback resources")
+           << '\n'
+           << "Inpaint V3.4 effective: "
+#if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+           << "V3 inpaint removed; V2 Compatibility requested (see installed cubin above)" << '\n'
+           << "Confidence history: 0 bytes; disabled by local low-overhead build" << '\n'
+#else
+           << mfgunlock::cudatemporal::InpaintDetail() << '\n'
+           << "Inpaint V3.4 history: "
+           << mfgunlock::cudatemporal::g_inpaint_history_bytes.load(
+                  std::memory_order_relaxed)
+           << " bytes; combined used="
+           << (mfgunlock::cudatemporal::g_history_bytes.load(
+                   std::memory_order_relaxed) +
+               mfgunlock::cudatemporal::g_inpaint_history_bytes.load(
+                   std::memory_order_relaxed))
+           << "/" << mfgunlock::cudatemporal::kArenaLimit
+           << "; resets="
+           << mfgunlock::cudatemporal::g_history_resets.load(
+                  std::memory_order_relaxed)
+           << '\n'
+#endif
+           << "Directional scatter: "
+           << (blackwell_active_result.adaptive_directional_scatter
+                   ? "Provider-native signed coverage retained"
+                   : "Baseline") << '\n'
+           << "V3.2 Stability requested: "
+           << (mfgunlock::cudatemporal::NormalizeMode(
+                       g_adaptive_quality_v3_stability_mode.load(
+                           std::memory_order_relaxed)) ==
+                       mfgunlock::cudatemporal::StabilityMode::kTemporal
+                   ? "Temporal Stable"
+                   : "Local Stable") << '\n'
+           << "V3.2 Stability effective: "
+#if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+           << "History disabled; dedicated Local cubin requested (see installed variant above)" << '\n'
+           << "Build: Local low-overhead; no V3 inpaint or confidence history" << '\n'
+           << "Temporal backend: Disabled by build; no self-test, allocations or barriers" << '\n'
+           << "CUDA hook fast path: Not installed; no CUDA/NVAPI launch interception" << '\n'
+#else
+           << (g_adaptive_quality.load(std::memory_order_relaxed)
+                   ? mfgunlock::cudatemporal::Detail()
+                   : "Off") << '\n'
+           << "V3.2 CUDA probe: launches="
+           << mfgunlock::cudatemporal::g_probe_launches.load(
+                  std::memory_order_relaxed)
+           << ", phase_mask=0x" << std::hex
+           << mfgunlock::cudatemporal::g_probe_phase_mask.load(
+                  std::memory_order_relaxed)
+           << std::dec << ", history_bytes="
+           << mfgunlock::cudatemporal::g_history_bytes.load(
+                  std::memory_order_relaxed) << '\n'
+           << "V3.2 CUDA hook fast path: "
+           << (mfgunlock::cudatemporal::FastPathReady()
+                   ? "active; one immutable dispatch-table atomic load for non-target kernels"
+                   : "inactive/target association pending")
+           << '\n'
+#endif
+           << "Quality refinement requested this session: "
+           << (g_adaptive_quality.load(std::memory_order_relaxed)
+                   ? "Legacy setting ignored; managed by Adaptive Quality"
+                   : (g_quality_refinement.load(std::memory_order_relaxed)
+                          ? "Yes (check patch details)"
+                          : "No")) << '\n'
+           << "Geometry confidence V2: "
+           << (g_adaptive_quality.load(std::memory_order_relaxed)
+                   ? "Integrated asymmetric successor managed by Adaptive Quality"
+                   : (g_geometry_confidence_v2.load(std::memory_order_relaxed)
+                   ? (thin_geometry_last.geometry_confidence_v2_applied
+                          ? "Patch applied; execution unverified"
+                          : "Requested; V1/fallback or no patch")
+                   : "Off")) << '\n'
+           << "Geometry patch detail: "
+           << thin_geometry_last.silhouette_boundary_guard.detail << '\n'
+           << "Border confidence trial: "
+           << (g_adaptive_quality.load(std::memory_order_relaxed)
+                   ? "Integrated and managed by Adaptive Quality"
+                   : (g_border_confidence.load(std::memory_order_relaxed)
+                   ? (!g_quality_refinement.load(std::memory_order_relaxed)
+                          ? "Requires Quality Refinement"
+                          : (thin_geometry_last.result.validated_warp_blend.applied
+                                 ? "Patch applied; execution unverified"
+                                 : "Requested; blend not applied"))
+                   : "Off")) << '\n'
+           << "Reflex marker health: "
+           << MarkerHealthText(static_cast<mfgunlock::pacing::MarkerHealth>(
+                  mfgunlock::framecount::g_latency_guard_marker_health.load(
+                      std::memory_order_relaxed)))
+           << '\n'
+           << "Source timing validation: "
+           << TimingValidationText(
+                  mfgunlock::framecount::g_latency_guard_timing_issue_mask.load(
+                      std::memory_order_relaxed))
+           << "; queue timing "
+           << (mfgunlock::framecount::g_latency_guard_queue_timing_confident.load(
+                   std::memory_order_relaxed) ? "verified" : "unverified")
+           << '\n'
+           << "Estimated rendered/source FPS: "
+           << mfgunlock::framecount::g_latency_guard_estimated_source_fps.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Estimated output FPS (not measured): "
+           << mfgunlock::framecount::g_latency_guard_projected_output_fps.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Simulation marker FPS: "
+           << mfgunlock::framecount::g_latency_guard_simulation_fps.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Median render-queue wait (us): "
+           << mfgunlock::framecount::g_latency_guard_queue_wait_us.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "P95 render-queue wait (us): "
+           << mfgunlock::framecount::g_latency_guard_queue_p95_us.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Estimated marker-to-GPU pipeline median/p95 (us; not end-to-end): "
+           << mfgunlock::framecount::g_latency_guard_pipeline_latency_us.load(
+                  std::memory_order_relaxed)
+           << '/'
+           << mfgunlock::framecount::g_latency_guard_pipeline_p95_us.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Median input-to-GPU latency (us): "
+           << mfgunlock::framecount::g_latency_guard_input_to_gpu_end_us.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Median GPU active work (us): "
+           << mfgunlock::framecount::g_latency_guard_gpu_active_us.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Dominant observed latency stage: "
+           << LatencyBottleneckText(
+                  static_cast<mfgunlock::pacing::LatencyBottleneck>(
+                      mfgunlock::framecount::g_latency_guard_bottleneck.load(
+                          std::memory_order_relaxed)))
+           << '\n'
+           << "Independent flip: "
+           << (!mfgunlock::framecount::g_latency_guard_iflip_known.load(
+                       std::memory_order_relaxed)
+                   ? "Not reported"
+                   : (mfgunlock::framecount::g_latency_guard_iflip_active.load(
+                              std::memory_order_relaxed)
+                          ? "Active" : "Inactive"))
+           << '\n'
+           << "Latency monitor sample cost (us): "
+           << mfgunlock::framecount::g_latency_guard_sample_cost_us.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Automatic multiplier trial: "
+           << mfgunlock::framecount::g_latency_guard_multiplier_override.load(
+                  std::memory_order_relaxed)
+           << "x (0 = inactive; saved selection unchanged)\n"
+           << "Responsive multiplier phase: "
+           << MultiplierTrialPhaseText(
+                  static_cast<mfgunlock::latency::MultiplierTrialPhase>(
+                      mfgunlock::framecount::g_latency_guard_multiplier_trial_phase.load(
+                          std::memory_order_relaxed)))
+           << '\n'
+           << "Responsive trial reason: "
+           << ResponsiveTrialReasonText(
+                  static_cast<mfgunlock::latency::ResponsiveTrialReason>(
+                      mfgunlock::framecount::g_latency_guard_multiplier_trial_reason.load(
+                          std::memory_order_relaxed)))
+           << '\n'
+           << "Responsive trial eligibility: "
+           << ResponsiveTrialBlockerText(
+                  static_cast<mfgunlock::latency::ResponsiveTrialBlocker>(
+                      mfgunlock::framecount::g_latency_guard_trial_blocker.load(
+                          std::memory_order_relaxed)))
+           << '\n'
+           << "Responsive multiplier saved/approved/candidate: "
+           << mfgunlock::framecount::g_force_multiplier.load(
+                  std::memory_order_relaxed)
+           << 'x' << '/'
+           << mfgunlock::framecount::g_latency_guard_multiplier_approved.load(
+                  std::memory_order_relaxed)
+           << 'x' << '/'
+           << mfgunlock::framecount::g_latency_guard_multiplier_candidate.load(
+                  std::memory_order_relaxed)
+           << "x\n"
+           << "Responsive baseline/trial samples: "
+           << mfgunlock::framecount::g_latency_guard_multiplier_baseline_samples.load(
+                  std::memory_order_relaxed)
+           << "/8; "
+           << mfgunlock::framecount::g_latency_guard_multiplier_trial_samples.load(
+                  std::memory_order_relaxed)
+           << "/8\n"
+           << "Responsive baseline pipeline median/p95 (us): "
+           << mfgunlock::framecount::g_latency_guard_multiplier_baseline_pipeline_us.load(
+                  std::memory_order_relaxed)
+           << '/'
+           << mfgunlock::framecount::g_latency_guard_multiplier_baseline_p95_us.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Responsive latest trial pipeline median/p95 (us): "
+           << mfgunlock::framecount::g_latency_guard_multiplier_trial_pipeline_us.load(
+                  std::memory_order_relaxed)
+           << '/'
+           << mfgunlock::framecount::g_latency_guard_multiplier_trial_p95_us.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Automatic queue-trim cap: "
+           << mfgunlock::framecount::g_latency_guard_active_source_cap_fps.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "DXGI frame-latency policy: "
+           << (render_api == DetectedRenderApi::kVulkan
+                   ? "unavailable on Vulkan"
+                   : (g_latency_guard_dxgi_observed.load(std::memory_order_acquire)
+                   ? (g_latency_guard_waitable_swapchain.load(
+                              std::memory_order_relaxed)
+                          ? "waitable"
+                          : "No waitable object observed")
+                   : "not observed"))
+           << '\n'
+           << "Process local VRAM usage/budget: "
+           << (render_api == DetectedRenderApi::kVulkan
+                   ? std::string("DXGI budget unavailable on Vulkan")
+                   : std::to_string(
+                         g_vram_local_usage.load(std::memory_order_relaxed)) +
+                         "/" +
+                         std::to_string(
+                             g_vram_local_budget.load(
+                                 std::memory_order_relaxed)) +
+                         " bytes")
+           << '\n'
+           << "DLSS-G estimated VRAM: "
+           << mfgunlock::framecount::g_vram_estimate_bytes.load(
+                  std::memory_order_relaxed)
+           << " bytes; status "
+           << mfgunlock::framecount::g_vram_estimate_status.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Potentially volatile DLSS-G inputs: "
+           << mfgunlock::framecount::g_vram_volatile_input_count.load(
+                  std::memory_order_relaxed)
            << '\n'
            << "Input quality mode: "
            << mfgunlock::framecount::g_hdr_compatibility_mode.load(
@@ -3542,52 +7687,93 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
            << mfgunlock::framecount::g_quality_issue_mask.load(
                   std::memory_order_relaxed)
            << std::dec << '\n'
-           << "Validation: "
-           << (runtime_error ? "Failed" : (mfg_confirmed ? "Passed" : "Pending"))
+           << "Quality Guard viewports: "
+           << mfgunlock::framecount::g_quality_viewport_count.load(
+                  std::memory_order_relaxed)
+           << '/' << mfgunlock::framecount::kMaxQualityViewports
+           << (mfgunlock::framecount::g_quality_viewport_capacity_exhausted.load(
+                       std::memory_order_acquire)
+                   ? " (capacity exhausted)" : "")
            << '\n'
+           << "Quality Guard tag-lock contention fallbacks: "
+           << mfgunlock::framecount::g_quality_tag_lock_contentions.load(
+                  std::memory_order_relaxed)
+           << '\n'
+           << "Validation evidence: " << ValidationStageName(validation_stage)
+           << " -- " << validation_text << '\n'
            << "Architecture gates: " << (gate_patched ? "Active" : "Pending")
            << " (providers " << gate_provider_count << ", sites "
            << gate_site_count << ")\n"
            << "Blackwell kernels: " << (blackwell_patched ? "Active" : "Inactive")
+           << "\nBlackwell targeted roles: motion-vector "
+           << (blackwell_active_result.motion_vector ? "yes" : "no")
+           << ", inpaint "
+           << (blackwell_active_result.inpaint ? "yes" : "no")
+           << ", decision "
+           << (blackwell_active_result.inpaint_decision ? "yes" : "no")
+           << "; patched slots " << blackwell_active_result.kernels
            << "\nTemporal fallback: " << (midpoint_patched ? "Active" : "Inactive")
            << "\nThin-geometry patches: "
            << (thin_geometry_patched ? "Active" : "Inactive/Pending") << '\n'
-           << "Intermediate retention: "
-           << (g_thin_geometry_intermediate_scatter.load(
-                   std::memory_order_relaxed)
-                   ? "Enabled"
-                   : "Disabled")
+           << "Intermediate retention: " << intermediate_report
            << '\n'
            << "Boundary mitigation: "
-           << mfgunlock::blackwell::SilhouetteGuardName(
-                  static_cast<mfgunlock::blackwell::SilhouetteGuardMode>(
-                      g_silhouette_guard_mode.load(
-                          std::memory_order_relaxed)))
+           << (g_adaptive_quality.load(std::memory_order_relaxed)
+                   ? "balanced (selected by Adaptive Quality Suite)"
+                   : mfgunlock::blackwell::SilhouetteGuardName(
+                         static_cast<mfgunlock::blackwell::SilhouetteGuardMode>(
+                             g_silhouette_guard_mode.load(
+                                 std::memory_order_relaxed))))
            << '\n'
            << "Validated warp blend: "
-           << (g_thin_geometry_validated_warp_blend.load(
-                   std::memory_order_relaxed)
+           << ((g_adaptive_quality.load(std::memory_order_relaxed) ||
+                g_thin_geometry_validated_warp_blend.load(
+                    std::memory_order_relaxed))
                    ? "Enabled"
                    : "Disabled")
+           << " (" << thin_geometry_last.result.validated_warp_blend.detail
+           << ")"
            << '\n'
            << "Previous scatter retention: "
-           << (g_thin_geometry_previous_scatter.load(
-                   std::memory_order_relaxed)
-                   ? "Enabled"
-                   : "Disabled")
+           << (g_adaptive_quality.load(std::memory_order_relaxed)
+                   ? "Disabled by Adaptive Quality Suite; saved preference preserved"
+                   : (g_thin_geometry_previous_scatter.load(
+                          std::memory_order_relaxed)
+                          ? "Enabled"
+                          : "Disabled"))
            << '\n';
-    if (ImGui::Button("Copy diagnostics"))
+    if (ImGui::Button("Copy diagnostics")) {
       ImGui::SetClipboardText(report.str().c_str());
+    }
     ImGui::SameLine();
     ImGui::TextDisabled("No local paths or credentials are included.");
 
+
     if (blackwell_patched) {
-      ImGui::Text("Blackwell framework kernels are active on %zu provider(s).",
-                  blackwell_provider_count);
-      if (!blackwell_detail.empty()) {
-        ImGui::TextDisabled(
-            "Last inspected candidate (not necessarily active): %s",
-            blackwell_detail.c_str());
+      std::ostringstream framework_status;
+      framework_status << "Blackwell framework kernels are active on "
+                       << blackwell_provider_count << " provider(s).";
+      ImGui::TextWrapped("%s", framework_status.str().c_str());
+      std::ostringstream patched_roles;
+      patched_roles << "Patched roles: motion-vector "
+                    << (blackwell_active_result.motion_vector ? "yes" : "no")
+                    << ", inpaint "
+                    << (blackwell_active_result.inpaint ? "yes" : "no")
+                    << ", decision "
+                    << (blackwell_active_result.inpaint_decision ? "yes" : "no")
+                    << " (" << blackwell_active_result.kernels << " slots).";
+      TextDisabledWrapped(patched_roles.str().c_str());
+      if (!blackwell_applied_detail.empty()) {
+        const std::string applied =
+            "Applied provider result: " + blackwell_applied_detail;
+        TextDisabledWrapped(applied.c_str());
+      }
+      if (!blackwell_detail.empty() &&
+          blackwell_detail != blackwell_applied_detail) {
+        const std::string rejected =
+            "Separate rejected candidate (does not replace the result above): " +
+            blackwell_detail;
+        TextDisabledWrapped(rejected.c_str());
       }
     } else if (!blackwell_detail.empty()) {
       ImGui::TextWrapped("Blackwell: %s", blackwell_detail.c_str());
@@ -3606,14 +7792,6 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
                         mfgunlock::loadhook::g_catches.load(
                             std::memory_order_relaxed));
 
-    if (ImGui::TreeNode("Raw developer panel")) {
-      ImGui::TextDisabled(
-          "Original controls and verbose diagnostics retained for development and regression checks.");
-      ImGui::PushID("legacy_overlay");
-      DrawLegacyOverlay(runtime);
-      ImGui::PopID();
-      ImGui::TreePop();
-    }
   }
 
   ImGui::Spacing();
@@ -3624,6 +7802,135 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
 
 void LoadConfig() {
   int value = 0;
+  int legacy_fixed_output_cap = 0;
+  bool legacy_fixed_output_cap_present = false;
+  bool legacy_dynamic_source_cap = false;
+  if (reshade::get_config_value(nullptr, kConfigSection,
+                                "ExperimentalAdaptiveQuality", value))
+    g_adaptive_quality.store(value != 0, std::memory_order_relaxed);
+  g_configured_adaptive_quality.store(
+      g_adaptive_quality.load(std::memory_order_relaxed),
+      std::memory_order_relaxed);
+  if (reshade::get_config_value(nullptr, kConfigSection,
+                                "AdaptiveQualityProfile", value)) {
+    g_adaptive_quality_profile.store(
+        static_cast<unsigned int>(
+            mfgunlock::adaptivequality::NormalizeProfile(
+                static_cast<unsigned int>(value))),
+        std::memory_order_relaxed);
+  }
+  g_configured_adaptive_quality_profile.store(
+      g_adaptive_quality_profile.load(std::memory_order_relaxed),
+      std::memory_order_relaxed);
+  if (reshade::get_config_value(nullptr, kConfigSection,
+                                "AdaptiveQualityV3Photometric", value))
+    g_adaptive_quality_v3_photometric.store(value != 0,
+                                             std::memory_order_relaxed);
+  g_configured_adaptive_quality_v3_photometric.store(
+      g_adaptive_quality_v3_photometric.load(std::memory_order_relaxed),
+      std::memory_order_relaxed);
+  if (reshade::get_config_value(nullptr, kConfigSection,
+                                "AdaptiveQualityV3DirectionalBorder", value))
+    g_adaptive_quality_v3_directional_border.store(
+        value != 0, std::memory_order_relaxed);
+  g_configured_adaptive_quality_v3_directional_border.store(
+      g_adaptive_quality_v3_directional_border.load(std::memory_order_relaxed),
+      std::memory_order_relaxed);
+  if (reshade::get_config_value(nullptr, kConfigSection,
+                                "AdaptiveQualityV3OrientedGeometry", value))
+    g_adaptive_quality_v3_oriented_geometry.store(
+        value != 0, std::memory_order_relaxed);
+  g_configured_adaptive_quality_v3_oriented_geometry.store(
+      g_adaptive_quality_v3_oriented_geometry.load(std::memory_order_relaxed),
+      std::memory_order_relaxed);
+  if (reshade::get_config_value(nullptr, kConfigSection,
+                                "AdaptiveQualityV3StabilityMode", value)) {
+    const auto normalized = mfgunlock::cudatemporal::NormalizeMode(
+        static_cast<unsigned int>(value));
+    g_adaptive_quality_v3_stability_mode.store(
+        mfgunlock::qualitybuild::StabilityMode(static_cast<unsigned int>(normalized)),
+        std::memory_order_relaxed);
+  }
+  g_configured_adaptive_quality_v3_stability_mode.store(
+      g_adaptive_quality_v3_stability_mode.load(std::memory_order_relaxed),
+      std::memory_order_relaxed);
+  if (reshade::get_config_value(nullptr, kConfigSection,
+                                "AdaptiveQualityV3InpaintMode", value)) {
+    const auto normalized =
+        mfgunlock::cudatemporal::NormalizeInpaintMode(
+            static_cast<unsigned int>(value));
+    g_adaptive_quality_v3_inpaint_mode.store(
+        mfgunlock::qualitybuild::InpaintMode(static_cast<unsigned int>(normalized)),
+        std::memory_order_relaxed);
+  }
+  g_configured_adaptive_quality_v3_inpaint_mode.store(
+      g_adaptive_quality_v3_inpaint_mode.load(std::memory_order_relaxed),
+      std::memory_order_relaxed);
+#if !defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+  mfgunlock::cudatemporal::Configure(
+      mfgunlock::cudatemporal::NormalizeMode(
+          g_adaptive_quality_v3_stability_mode.load(
+              std::memory_order_relaxed)),
+      mfgunlock::cudatemporal::NormalizeInpaintMode(
+          g_adaptive_quality_v3_inpaint_mode.load(
+              std::memory_order_relaxed)));
+#endif
+  if (reshade::get_config_value(nullptr, kConfigSection, "ExperimentalQualityRefinement", value))
+    g_quality_refinement.store(value != 0, std::memory_order_relaxed);
+  g_configured_quality_refinement.store(g_quality_refinement.load(std::memory_order_relaxed),
+                                       std::memory_order_relaxed);
+  if (reshade::get_config_value(nullptr, kConfigSection, "ExperimentalBorderConfidence", value))
+    g_border_confidence.store(value != 0, std::memory_order_relaxed);
+  g_configured_border_confidence.store(g_border_confidence.load(std::memory_order_relaxed),
+                                      std::memory_order_relaxed);
+  if (reshade::get_config_value(nullptr, kConfigSection, "ExperimentalGeometryConfidenceV2", value))
+    g_geometry_confidence_v2.store(value != 0, std::memory_order_relaxed);
+  g_configured_geometry_confidence_v2.store(
+      g_geometry_confidence_v2.load(std::memory_order_relaxed),
+      std::memory_order_relaxed);
+  const bool adaptive_quality =
+      g_adaptive_quality.load(std::memory_order_relaxed);
+  // Adaptive Quality owns the complete confidence path. Legacy choices remain
+  // loaded and saved for later A/B use, but cannot stack another refinement,
+  // border taper or geometry variant on top of the unified suite.
+  mfgunlock::thingeometry::g_refinement_enabled =
+      !adaptive_quality &&
+      g_quality_refinement.load(std::memory_order_relaxed);
+  mfgunlock::thingeometry::g_adaptive_quality_enabled =
+      adaptive_quality;
+  mfgunlock::thingeometry::g_adaptive_quality_profile =
+      mfgunlock::adaptivequality::NormalizeProfile(
+          g_adaptive_quality_profile.load(std::memory_order_relaxed));
+  mfgunlock::thingeometry::g_adaptive_quality_v3_photometric =
+      g_adaptive_quality_v3_photometric.load(std::memory_order_relaxed);
+  mfgunlock::thingeometry::g_adaptive_quality_v3_directional_border =
+      g_adaptive_quality_v3_directional_border.load(
+          std::memory_order_relaxed);
+  mfgunlock::thingeometry::g_border_confidence_enabled =
+      !adaptive_quality &&
+      g_quality_refinement.load(std::memory_order_relaxed) &&
+      g_border_confidence.load(std::memory_order_relaxed);
+  mfgunlock::blackwell::g_refinement_enabled =
+      !adaptive_quality &&
+      g_quality_refinement.load(std::memory_order_relaxed);
+  mfgunlock::blackwell::g_adaptive_quality_enabled =
+      adaptive_quality;
+  mfgunlock::blackwell::g_adaptive_quality_profile =
+      mfgunlock::adaptivequality::NormalizeProfile(
+          g_adaptive_quality_profile.load(std::memory_order_relaxed));
+  mfgunlock::blackwell::g_adaptive_quality_v3_oriented_geometry =
+      g_adaptive_quality_v3_oriented_geometry.load(std::memory_order_relaxed);
+  mfgunlock::blackwell::g_adaptive_quality_v3_temporal_geometry =
+      mfgunlock::cudatemporal::NormalizeMode(
+          g_adaptive_quality_v3_stability_mode.load(
+              std::memory_order_relaxed)) ==
+      mfgunlock::cudatemporal::StabilityMode::kTemporal;
+  mfgunlock::blackwell::g_adaptive_quality_v3_inpaint_mode =
+      g_adaptive_quality_v3_inpaint_mode.load(std::memory_order_relaxed);
+  mfgunlock::blackwell::g_geometry_confidence_v2_enabled =
+      !adaptive_quality &&
+      g_quality_refinement.load(std::memory_order_relaxed) &&
+      g_geometry_confidence_v2.load(std::memory_order_relaxed);
   if (reshade::get_config_value(nullptr, kConfigSection, "Enabled", value)) {
     g_enabled.store(value != 0, std::memory_order_relaxed);
   }
@@ -3742,6 +8049,9 @@ void LoadConfig() {
                 : mfgunlock::forcepolicy::FixedOverrideStatus::kNative),
         std::memory_order_relaxed);
   }
+  legacy_fixed_output_cap_present = reshade::get_config_value(
+      nullptr, kConfigSection, "FixedOutputFpsCap",
+      legacy_fixed_output_cap);
   if (reshade::get_config_value(nullptr, kConfigSection, "DynamicMFG", value)) {
     mfgunlock::framecount::g_dynamic_mfg_enabled.store(value != 0,
                                                         std::memory_order_relaxed);
@@ -3753,8 +8063,71 @@ void LoadConfig() {
   }
   if (reshade::get_config_value(nullptr, kConfigSection,
                                "DynamicReflexSourceCap", value)) {
-    mfgunlock::framecount::g_dynamic_reflex_source_cap.store(
+    legacy_dynamic_source_cap = value != 0;
+  }
+  int configured_source_cap = 0;
+  const bool source_cap_key_present = reshade::get_config_value(
+      nullptr, kConfigSection, "ReflexSourceFpsCap", configured_source_cap);
+  const auto source_cap = mfgunlock::pacing::ResolveSourceCapConfig(
+      source_cap_key_present,
+      configured_source_cap > 0
+          ? static_cast<unsigned int>(configured_source_cap)
+          : 0u,
+      mfgunlock::framecount::g_dynamic_mfg_enabled.load(
+          std::memory_order_relaxed),
+      legacy_dynamic_source_cap,
+      mfgunlock::framecount::g_dynamic_target_fps.load(
+          std::memory_order_relaxed),
+      legacy_fixed_output_cap_present,
+      legacy_fixed_output_cap > 0
+          ? static_cast<unsigned int>(legacy_fixed_output_cap)
+          : 0u,
+      mfgunlock::framecount::g_force_multiplier.load(
+          std::memory_order_relaxed));
+  mfgunlock::framecount::g_reflex_source_fps_cap.store(
+      source_cap.output_fps, std::memory_order_relaxed);
+  g_source_cap_config_origin.store(
+      static_cast<unsigned int>(source_cap.origin),
+      std::memory_order_relaxed);
+  if (reshade::get_config_value(nullptr, kConfigSection,
+                                "ReflexModeOverride", value)) {
+    mfgunlock::reflexpacing::g_mode_override.store(
+        static_cast<uint32_t>(
+            mfgunlock::pacing::NormalizeReflexModeOverride(
+                static_cast<uint32_t>(value))),
+        std::memory_order_relaxed);
+  }
+  if (reshade::get_config_value(nullptr, kConfigSection,
+                                "ReflexPacingMethod", value)) {
+    mfgunlock::reflexpacing::g_pacing_method.store(
+        static_cast<uint32_t>(
+            mfgunlock::pacing::NormalizeReflexPacingMethod(
+                static_cast<uint32_t>(value))),
+        std::memory_order_relaxed);
+  }
+  if (reshade::get_config_value(nullptr, kConfigSection,
+                                "ReflexVrrHeadroomEnabled", value)) {
+    mfgunlock::reflexpacing::g_headroom_enabled.store(
         value != 0, std::memory_order_relaxed);
+  }
+  if (reshade::get_config_value(nullptr, kConfigSection,
+                                "ReflexVrrHeadroomBasisPoints", value)) {
+    mfgunlock::reflexpacing::g_headroom_basis_points.store(
+        mfgunlock::pacing::NormalizeHeadroomBasisPoints(
+            static_cast<uint32_t>(value)),
+        std::memory_order_relaxed);
+  }
+  if (reshade::get_config_value(nullptr, kConfigSection,
+                                "LatencyGuardMode", value)) {
+    if (value < static_cast<int>(
+                    mfgunlock::pacing::LatencyGuardMode::kOff) ||
+        value > static_cast<int>(
+                    mfgunlock::pacing::LatencyGuardMode::kAutomatic)) {
+      value = static_cast<int>(
+          mfgunlock::pacing::LatencyGuardMode::kMonitor);
+    }
+    mfgunlock::framecount::g_latency_guard_mode.store(
+        static_cast<unsigned int>(value), std::memory_order_relaxed);
   }
   if (reshade::get_config_value(nullptr, kConfigSection, "HDRCompatibilityMode", value)) {
     if (value < static_cast<int>(mfgunlock::framecount::HdrCompatibilityMode::kNative) ||
@@ -3790,20 +8163,84 @@ void LoadConfig() {
     mfgunlock::framecount::g_depth_edge_guard_level.store(
         static_cast<unsigned int>(value), std::memory_order_relaxed);
   }
+  const auto stability_mode = mfgunlock::cudatemporal::NormalizeMode(
+      g_adaptive_quality_v3_stability_mode.load(std::memory_order_relaxed));
+  std::ostringstream stability_log;
+  stability_log << "mfgunlock: Adaptive Quality V3.2 stability requested=";
+  if (stability_mode ==
+      mfgunlock::cudatemporal::StabilityMode::kTemporal) {
+    stability_log
+        << "Temporal Stable; effective=Local Stable until exact-provider CUDA probe validation.";
+  } else {
+    stability_log << "Local Stable; effective=Local Stable; CUDA history disabled.";
+  }
+  reshade::log::message(reshade::log::level::info,
+                        stability_log.str().c_str());
+  const auto inpaint_mode =
+      mfgunlock::cudatemporal::NormalizeInpaintMode(
+          g_adaptive_quality_v3_inpaint_mode.load(
+              std::memory_order_relaxed));
+  std::ostringstream inpaint_log;
+  inpaint_log << "mfgunlock: Adaptive Quality V3.4 inpaint requested="
+              << (inpaint_mode ==
+                          mfgunlock::cudatemporal::InpaintMode::kTemporal
+                      ? "Temporal V3; effective=Local V3 until exact kernel/ABI/phase validation."
+                      : inpaint_mode ==
+                                mfgunlock::cudatemporal::InpaintMode::kLocal
+                            ? "Local V3; confidence history disabled."
+                            : "V2 Compatibility; explicit compatibility mode or invalid-value fallback.");
+  reshade::log::message(reshade::log::level::info,
+                        inpaint_log.str().c_str());
+#if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+  reshade::log::message(reshade::log::level::info,
+      "mfgunlock: Local low-overhead build; V3 inpaint removed; confidence history, CUDA/NVAPI launch hooks and backend barriers disabled. Saved temporal keys preserved but ignored; Reflex, caps and pacing configuration unchanged.");
+#endif
 }
 
 }  // namespace
 
 extern "C" __declspec(dllexport) constexpr const char* NAME = "MFG Unlock";
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
+#if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+    "Local low-overhead; V2 inpaint; no confidence history or CUDA/NVAPI launch interception";
+#else
     "Reports DLSSG.MultiFrameCountMax so Streamline offers multi-frame generation";
+#endif
 
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   switch (fdw_reason) {
-    case DLL_PROCESS_ATTACH:
+    case DLL_PROCESS_ATTACH: {
       g_self_module = h_module;
       if (!reshade::register_addon(h_module)) return FALSE;
       LoadConfig();
+      g_is_star_wars_outlaws = CurrentProcessNameIs(L"Outlaws.exe");
+      g_is_monster_hunter_wilds =
+          CurrentProcessNameIs(L"MonsterHunterWilds.exe");
+      if (g_is_star_wars_outlaws) {
+        mfgunlock::framecount::g_outlaws_get_state_compat.store(
+            true, std::memory_order_relaxed);
+        mfgunlock::framecount::g_dynamic_game_compat_blocked.store(
+            true, std::memory_order_relaxed);
+        reshade::log::message(
+            reshade::log::level::info,
+            "mfgunlock: Star Wars Outlaws compatibility path active: native startup state and telemetry retained; Dynamic MFG is blocked while fixed/game-controlled MFG remains available.");
+      }
+      if (g_is_monster_hunter_wilds) {
+        int acknowledged_revision = 0;
+        const bool acknowledged = reshade::get_config_value(
+            nullptr, kConfigSection,
+            "MonsterHunterRestartNoticeRevision", acknowledged_revision);
+        const bool pending =
+            !acknowledged ||
+            acknowledged_revision < kMonsterHunterRestartNoticeRevision;
+        g_monster_hunter_restart_notice_pending.store(
+            pending, std::memory_order_release);
+        if (pending) {
+          reshade::log::message(
+              reshade::log::level::warning,
+              "mfgunlock: Monster Hunter Wilds first-launch notice pending: let shader.cache2 compilation finish, then fully restart the game before evaluating frame pacing.");
+        }
+      }
       if (mfgunlock::framecount::g_runtime_selection_mode.load(
               std::memory_order_relaxed) !=
               static_cast<unsigned int>(
@@ -3842,18 +8279,31 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
       reshade::register_event<reshade::addon_event::init_command_queue>(OnInitCommandQueue);
       reshade::register_event<reshade::addon_event::present>(OnPresentStartDiscovery);
+      reshade::register_event<reshade::addon_event::finish_present>(OnFinishPresent);
       break;
+    }
     case DLL_PROCESS_DETACH:
       // During process termination Windows is already reclaiming every mapped
       // image. Avoid detour transactions and stale provider-memory restores
       // under the loader lock; explicit addon unload still performs cleanup.
       if (lpv_reserved != nullptr) break;
+      reshade::unregister_event<reshade::addon_event::finish_present>(OnFinishPresent);
       reshade::unregister_event<reshade::addon_event::present>(OnPresentStartDiscovery);
       reshade::unregister_event<reshade::addon_event::init_command_queue>(OnInitCommandQueue);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
       reshade::unregister_event<reshade::addon_event::init_swapchain>(OnInitSwapchain);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_overlay("MFG Unlock", OnRegisterOverlay);
+      AcquireSRWLockExclusive(&g_reflex_waitable.lock);
+      if (g_reflex_waitable.owner != nullptr) {
+        RestoreReflexWaitableLocked(
+            g_reflex_waitable.owner,
+            mfgunlock::reflexpacing::FallbackReason::kNotRequested);
+      }
+      ReleaseSRWLockExclusive(&g_reflex_waitable.lock);
+#if !defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+      mfgunlock::cudatemporal::Uninstall();
+#endif
       mfgunlock::loadhook::Uninstall();
       mfgunlock::framecount::Uninstall();
       RestoreThinGeometry();

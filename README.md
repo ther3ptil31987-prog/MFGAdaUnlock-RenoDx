@@ -1,5 +1,10 @@
 # MFG Unlock
 
+> Release **1.4.1** uses **Local Stable geometry + V2 Compatibility inpaint**,
+> with no confidence-history backend or CUDA/NVAPI temporal launch interception.
+> Saved temporal research modes are ignored without rewriting the INI.
+> See the [1.4.1 release notes](docs/releases/1.4.1.md) for details and limitations.
+
 <p align="center">
   <a href="https://ko-fi.com/mavismmg"><img src="https://img.shields.io/badge/Support%20me%20on-Ko--fi-FF5E5B?logo=ko-fi&amp;logoColor=white" alt="Support me on Ko-fi"></a>
 </p>
@@ -179,8 +184,10 @@ through [my Ko-fi](https://ko-fi.com/mavismmg).
 | Mafia: The Old Country | Working with HDR fix |
 | Dying Light: The Beast | Working |
 | Onimusha: Way of the Sword | Working |
-| Monster Hunter Wilds | Working |
-| Star Wars Outlaws | Soon |
+| [Monster Hunter Wilds](#monster-hunter-wilds-first-launch-note) | Working |
+| Star Wars Outlaws | Working — Dynamic MFG not supported |
+| The Sinking City 2 | Working |
+| Control Resonant | Working |
 
 These are the games personally tested with this fork; this is not a claim of
 universal compatibility. Results may vary with the game version, DLSS and
@@ -189,6 +196,20 @@ Streamline versions, GPU, drivers, and configuration.
 **Working with HDR fix** means selecting **Automatic Guard + UI Composition
 (HDR compatibility)** if the HDR issue occurs. If that mode introduces an
 artifact on a HUD/UI element, switch back to **Native**.
+
+### Monster Hunter Wilds first-launch note
+
+After installing or updating the addon, or whenever the game rebuilds
+`shader.cache2`, allow the shader compilation to finish completely. Then fully
+close **Monster Hunter Wilds** and launch it again before evaluating Frame
+Generation, image quality, latency, or frame pacing.
+
+Testing during that initial compilation session, without a full game restart,
+can result in severely uneven frame pacing. Toggling Frame Generation off and
+back on in the in-game menu does not necessarily clear the affected state.
+
+Special thanks to **Darkalibur** for helping identify this first-launch issue,
+reproducing the frame-pacing behavior, and testing the restart workaround.
 
 ## Known Multiplier Behavior
 
@@ -496,6 +517,113 @@ variant remains protected by exact provider, payload, kernel-role,
 architecture, and slot-size validation; unsupported providers fail closed to a
 validated compatibility path or the baseline kernel.
 
+### Adaptive Quality V3.2 Stability and launch latency
+
+V3.2 keeps V3.1's luminance-relative photometric confidence and oriented
+geometry, but makes silhouette and screen-edge decisions less binary. Diagonal
+support fades continuously across ambiguity and motion-direction thresholds,
+an isolated neighbor can contribute only one eighth of the add-on relaxation,
+and full two-neighbor consensus still reaches one half. Orientation fades in
+between 0.5 and 1.5 pixels of motion. Warp candidates supported from only one
+side require a native weight ramp from 0.50 to 0.75, while the native weight
+always remains the lower bound. Entry at all four screen edges is limited to
+one extra pixel and also constrained by the perpendicular edge distance.
+
+`Local Stable` uses the provider's existing 3x3 tile and introduces no texture
+read. `Temporal Stable` is the default for a missing setting and stores only
+8-bit geometry confidence: no RGB, depth, motion vector or frame image is kept.
+Recovery is capped at 0.20 per source frame and confidence loss is immediate.
+Symmetric 2x/4x/6x phases share buckets with their directions exchanged; 4K at
+6x uses 49,766,400 active confidence bytes. The allocation is bounded at 64 MiB.
+
+V3.2 ships separate Local and Temporal ptxas cubins. The Local artifact has no
+history symbol, global load/store or history branch. A Temporal request falls
+back to that dedicated Local artifact before V2, V1 and native; a Local request
+never installs the CUDA hooks.
+
+The CUDA launch hooks are not installed until an exact 310.9.0 or 310.9.1
+provider has accepted the V3.2 Temporal geometry cubin. Temporal history remains disabled
+while a read-only probe verifies the kernel name, module magic, 144-byte ABI,
+launch API, stream, dimensions, multiplier and complete cyclic phase sequence.
+If a validated integration has not loaded the delay-loaded CUDA Driver yet, the
+addon acquires `nvcuda.dll` from System32 before installing the hooks; it never
+searches the game directory for a replacement driver DLL.
+Any mismatch, unsupported API, allocation failure or size above 64 MiB falls
+back to `Local Stable`; unrelated kernels pass through unchanged. The overlay
+and diagnostics report the requested and effective mode and the precise
+fallback reason. After both requested target kernels are associated, every
+unrelated launch performs one atomic immutable-dispatch load and two pointer
+comparisons before the original trampoline:
+there is no lock, hash lookup, name/module/ABI query or per-launch logging.
+
+### Adaptive Quality V3.4 Temporal Inpaint Stability
+
+V3.4 leaves the V3.2 warp, photometric thresholds and geometry cubins
+unchanged. It adds separate decision-only inpaint variants. `Local V3` tags
+coordinate and non-finite hard rejects inside the existing 3x3 tile while
+remaining decision-equivalent to V2 and adding no texture or global-memory
+access. `Temporal V3` keeps one encoded confidence byte per pixel, direction
+and symmetric phase bucket; reconstructed color, depth and motion vectors are
+never retained.
+
+The byte uses six confidence bits and four states: Cold, Armed, GraceUsed and
+RearmSeen. Hard rejects clear confidence immediately. An Armed soft ambiguity
+may retain at most 12/62 confidence for one observation; repeated drops are
+immediate. Recovery is limited to 12/62 per source frame and rearming requires
+two stable high-confidence observations. NVIDIA's native inpaint decision is
+always a lower bound, so the temporal path can never reject native work.
+
+`Kernel_OutputPull` has no temporal-phase argument. The addon therefore accepts
+only the phase validated from the immediately preceding
+`Kernel_EstimateIntermMvecsScatter` launch in the same module, context and
+stream. Missing, duplicated or ambiguous sequencing falls back only the
+inpaint component to Local V3. Geometry and inpaint share a bounded 96 MiB
+arena; at 4K/6x they use 49,766,400 bytes each (99,532,800 bytes total). If the
+combined requirement does not fit, inpaint falls back first and temporal
+geometry remains available.
+
+The Local cubin uses 48 registers, 784 bytes of shared memory and zero
+stack/spill/local memory, with 9,344 bytes of `.text`. Temporal uses the same
+register/shared limits, 10,368 bytes of `.text`, and exactly one 8-bit history
+read plus one 8-bit history write per output pixel. During the test phase,
+`Temporal V3` is the default when the V3.4 setting is absent. Existing saved
+choices remain unchanged, and invalid values still normalize to
+`V2 Compatibility`.
+
+### Reflex / Pacing Lab V3.3
+
+The Latency page includes an opt-in Reflex/Pacing Lab. Its defaults are fully
+native: the game controls the Reflex mode, `slReflexSleep` is forwarded
+directly, and VRR headroom is disabled. `Off (FG-safe sleep bypass)` keeps
+Streamline's internal Reflex mode at Low Latency because submitting mode Off
+also disables Frame Generation in some integrations; it removes only the
+`slReflexSleep` pacing wait. Markers, frame tokens, `useMarkersToOptimize`, the
+PCL hotkey/thread fields and every other game-owned option remain intact. On
+and On + Boost still override only the mode. A rejected override is retried
+immediately with the exact native options.
+
+The independent VRR headroom control uses the Reflex final/output limiter only
+while NVAPI confirms VRR/G-SYNC. It accepts 0.5%-3.0% and defaults to 1.0% when
+enabled. The effective limiter is always the strictest of the game limit, the
+explicit Output FPS Cap, Latency Guard and VRR headroom; the addon never
+relaxes a native cap.
+
+`DXGI Waitable` is an experimental alternative to Reflex sleep for integrations
+with uneven native pacing. It never adds the waitable flag or recreates a
+swapchain. Activation requires an existing D3D11/D3D12 waitable swapchain,
+active 2x-6x MFG, a duplicated wait handle, and 120 unique monotonic frame
+tokens with successful native sleep. It then temporarily sets
+`MaximumFrameLatency` to 1 and restores the original value on disable, resize,
+swapchain replacement or unload. A timeout, invalid handle, concurrent sleep,
+bad token sequence or failed DXGI call immediately returns to native sleep.
+Automatic Latency Guard actions are suspended while this alternate pacer is
+probing or active so two controllers cannot compete.
+
+The in-game cadence figures are application-level diagnostics. They do not
+observe every generated/displayed frame; use PresentMon or FrameView for a real
+V2/V3.2/V3.3 pacing comparison. No V3.2 image-quality kernel or cubin is changed
+by the Pacing Lab.
+
 ## Dynamic Multi Frame Generation
 
 **Use NVIDIA Dynamic MFG** requests Streamline's native
@@ -525,11 +653,13 @@ MFG is enabled. If VSync is used with Dynamic MFG, use the validated 310.9.1 +
 that cannot reach Independent Flip; NVIDIA warns that such a path can add high
 latency.
 
-The optional **Advanced: cap application-rendered FPS with Reflex** setting is
-off by default. It changes `ReflexOptions::frameLimitUs`, which limits source
-frames rendered by the game; it is not a final displayed-FPS control and must
-not be treated as a workaround for VSync ignoring the Dynamic target. When the
-advanced cap is disabled, the game-owned Reflex options pass through unchanged.
+The optional **Output FPS Cap (Reflex)** setting is off by default. It changes
+`ReflexOptions::frameLimitUs` and represents the final/output FPS ceiling: a
+value of `120` targets up to approximately 120 displayed FPS. Reflex and the
+DLSS-G pacer account for generated frames, so fixed 4x corresponds to roughly
+30 game-rendered FPS at that ceiling. Actual output can be lower because of the
+game, GPU, display or VSync. When the cap is disabled, the game-owned Reflex
+options pass through unchanged.
 
 The addon queries `DLSSGState::bIsDynamicMFGSupported` on D3D12 whether or not
 the option is already enabled, using addon-owned v4 storage so games compiled
@@ -650,6 +780,13 @@ Written to your `ReShade.ini` under `[RenoDX.MFGUnlock]`:
 | `ForceFlipMeteringOff` | `0` | Normally leave off. Enable only if 3x/4x freezes; this forces Streamline's legacy software pacing fallback and requires a game restart |
 | `TemporalFix` | `1` | The interpolation correction. Leave on; changing it requires a restart |
 | `BlackwellFrameworkKernels` | `1` | Uses the exact-fingerprint Blackwell motion-vector/inpaint/inpaint-decision replacements when the installed provider matches; otherwise falls back to the 0.7 temporal correction. Changing it requires a restart |
+| `ExperimentalAdaptiveQuality` | `1` | Enables the coordinated geometry, warp-confidence, border and inpaint quality path; restart required |
+| `AdaptiveQualityProfile` | `3` | `1` preserves Stable V1, `2` selects Flicker-Reduced V2, and `3` selects the default Luminance + Directional V3. Existing saved V1/V2 values are preserved; missing keys use V3 and invalid values fail closed to V1 |
+| `AdaptiveQualityV3Photometric` | `1` | Developer A/B control for local-luminance-normalized luma/chroma confidence. Off retains V2 absolute-RGB confidence inside the V3 profile; restart required |
+| `AdaptiveQualityV3DirectionalBorder` | `1` | Developer A/B control for motion-directional border tapering. Off retains V2's symmetric taper; restart required |
+| `AdaptiveQualityV3OrientedGeometry` | `1` | Developer A/B control for motion-oriented cardinal/diagonal support. Off deliberately requests geometry V2; restart required |
+| `AdaptiveQualityV3StabilityMode` | `2` | `1` selects tile-only Local Stable; `2` requests Temporal Stable (default). Invalid values normalize to Local Stable. Temporal mode activates only after exact-provider CUDA/ABI/phase validation and otherwise falls back locally; restart required |
+| `AdaptiveQualityV3InpaintMode` | `2` | `0` keeps V2 Compatibility, `1` selects Local V3, and `2` requests Temporal V3 (default when the key is absent). Existing saved choices remain unchanged; invalid values normalize to V2 Compatibility; restart required |
 | `ThinGeometryIntermediateScatter` | `1` | Experimental recommended default: retains more motion information while constructing intermediate generated frames; keeps the separate depth test and requires the validated full Blackwell path. Disable per game if it adds ghosting or disocclusion artifacts |
 | `ThinGeometryValidatedWarpBlend` | `1` | Experimental recommended default paired with Intermediate scatter retention: validates warped candidates before gradually increasing their blend weight; may reduce thin-detail flicker but can increase temporal persistence. Requires a restart |
 | `ThinGeometryPreviousScatter` | `0` | Unstable advanced research control for a separate previous-to-current motion-rejection path; not recommended for normal use |
@@ -657,11 +794,34 @@ Written to your `ReShade.ini` under `[RenoDX.MFGUnlock]`:
 | `ForceMultiplier` | `0` | `0` respects the game's own choice; `2`–`6` requests that exact multiplier, whether it is higher or lower than the game's choice |
 | `DynamicMFG` | `0` | Requests native NVIDIA Dynamic MFG only on the validated 310.9.1 + 2.14.1 D3D12 stack after the provider reports support; takes priority over `ForceMultiplier` while active |
 | `DynamicTargetFPS` | `0` | Dynamic output target; `0` follows display refresh. With VSync active, Streamline ignores a nonzero value and follows refresh instead |
-| `DynamicReflexSourceCap` | `0` | Advanced opt-in source/application frame cap through Reflex; not a final-output target |
+| `ReflexSourceFpsCap` | `0` | Compatibility key for **Output FPS Cap (Reflex)**. Despite the historical key name, the number is the final/output FPS ceiling; `120` targets up to approximately 120 displayed FPS |
+| `ReflexModeOverride` | `0` | `0` preserves the game setting; `1` uses FG-safe Off by keeping Streamline at Low Latency and bypassing only `slReflexSleep`; `2` forces On; `3` forces On + Boost |
+| `ReflexPacingMethod` | `0` | `0` uses native `slReflexSleep`; `1` requests the experimental DXGI Waitable path after its 120-token safety probe |
+| `ReflexVrrHeadroomEnabled` | `0` | Enables the final/output Reflex cap derived from verified VRR refresh and the configured headroom |
+| `ReflexVrrHeadroomBasisPoints` | `100` | VRR headroom from `50` to `300` basis points (0.5%-3.0%); invalid values normalize to 1.0% |
+| `DynamicReflexSourceCap` | `0` | Legacy migration flag. New configurations should use `ReflexSourceFpsCap` through the UI |
+| `FixedOutputFpsCap` | `0` | Legacy fixed-output setting migrated in memory when the current cap key is absent |
+
 | `RaiseFrameCeiling` | `0` | Raises an old Streamline plugin's compiled hard limit to 6x. Off by default because that breaks some games; the stale device-limit bypass needed by STALKER 2 is always applied |
 | `RuntimeSelectionMode` | `0` | `0` preserves the game's runtime policy, `1` disables OTA/downloaded plugins to prefer local files, and `2` forces the NVIDIA OTA flags; restart required |
 | `HDRCompatibilityMode` | `0` | `0` is **Native** (default for new configurations), `1` forces UI Composition, `2` enables **Automatic Guard + UI Composition (HDR compatibility)**, and `3` enables Final Color Fallback; existing saved values remain unchanged |
 | `DepthEdgeGuardLevel` | `0` | Optional depth-edge tuning: `0` keeps the game value; `1`-`4` select progressively lower separation thresholds |
+
+The full geometry V3 ptxas payload is larger than the provider's original Ada
+cubin slot. Builds that deliberately include this research payload never write
+past that slot: after exact provider, fatbin, cubin fingerprint, slot-size and
+descriptor validation, the addon copies the fatbin into a bounded allocation,
+replaces only the matching cubin entry, and redirects the provider's exact
+fatbin descriptor references. If that redirect cannot be established safely,
+geometry falls back independently to V2, then V1, then native. The V3.2 Local
+artifact has 39,552 bytes of `.text`; the Temporal artifact has 41,216 bytes of
+`.text` and a 45,360-byte cubin. Both use 40 registers and 7,776 bytes of shared
+memory, with zero stack, local memory and spills. `nvdisasm` confirms that Local
+contains no global memory instruction and Temporal contains eight global loads
+(including exactly two confidence-byte reads) plus two confidence-byte writes.
+The V3.2 warp program is bit-identical to V3.1, uses 48 registers and has zero spills;
+profile GPU and Reflex latency before treating the temporal mode as validated
+for a game.
 
 If a game has its own multiplier selector, leave `ForceMultiplier` at `0` and use
 the game's setting. A fixed value is an absolute override: for example, if the
@@ -720,8 +880,8 @@ the effective downstream request separately.
   pending until a successful call applies it.
 - If VSync is active, a target such as 100 FPS is intentionally ignored by
   Streamline and Dynamic follows display refresh. Disable VSync for a custom
-  Dynamic output target; do not use the advanced Reflex source cap as though it
-  were a final-output limiter.
+  Dynamic scheduler target. **Output FPS Cap (Reflex)** is a separate final
+  ceiling and does not make an ignored Dynamic target authoritative.
 - Check NVIDIA App global and per-game DLSS overrides, reset any matching NVPI
   Frame Generation/NGX overrides, and check the addon's Streamline
   runtime-selection mode. Apply the profile and restart fully after changes.
@@ -893,6 +1053,15 @@ GPUs.
 
 ## Building
 
+For the **1.4.1 local low-overhead release**, configure `tests/CMakeLists.txt`
+with `RENODX_SOURCE_DIR` pointing to an existing RenoDX dependency checkout,
+then build the Release target `mfgunlock_local_low_overhead`. This target defines
+`MFGUNLOCK_LOCAL_LOW_OVERHEAD`; the generic/research compile target does not.
+The output is `renodx-mfgunlock-local-low-overhead.addon64`, distributed as
+`renodx-mfgunlock.addon64`. Audit it with
+`tests/audit_local_low_overhead.ps1 -AddonPath <path>`. Generated provider cubin
+tables remain locally generated and excluded from source control.
+
 The addon is built as part of a [RenoDX](https://github.com/clshortfuse/renodx)
 tree, which supplies ReShade, ImGui, Detours, and the NGX/Streamline headers.
 
@@ -953,6 +1122,10 @@ They are developer tools and are not required for normal use.
 - Special thanks to Artur from DLSS Enabler for the valuable debugging insights
   during the investigation of the Hogwarts Legacy HDR + Frame Generation issue,
   which helped lead to the fix included in this fork.
+- Special thanks to **Darkalibur** for helping identify and validate the
+  `shader.cache2` first-launch frame-pacing issue in Monster Hunter Wilds.
+- Special thanks to **harddaysmike** for the Star Wars Outlaws compatibility
+  and regression testing.
 - [u/amart565](https://www.reddit.com/user/amart565/) tested and documented the
   ReShade + MFG Unlock installation workflow for Xbox Game Pass / UWP-style game packages,
   including Vulkan titles such as Indiana Jones and DOOM: The Dark Ages.

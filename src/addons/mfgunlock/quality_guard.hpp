@@ -17,6 +17,12 @@
 #include <sl_core_types.h>
 
 namespace mfgunlock::qualityguard {
+enum class FormatApi : uint32_t { kUnknown, kDxgi, kVulkan };
+inline constexpr bool LowPrecisionUiAlpha(uint32_t format, FormatApi api) {
+  // DXGI R10G10B10A2_UNORM; Vulkan A2R10G10B10/A2B10G10R10 packed family.
+  return api == FormatApi::kDxgi ? format == 24 :
+      api == FormatApi::kVulkan ? (format >= 58 && format <= 69) : false;
+}
 
 enum Issue : uint32_t {
   kNone = 0,
@@ -89,7 +95,8 @@ inline OutputDescription Describe(const sl::ResourceTag& tag, bool* valid = null
       tag.lifecycle == sl::ResourceLifecycle::eOnlyValidNow ||
       tag.lifecycle == sl::ResourceLifecycle::eValidUntilPresent ||
       tag.lifecycle == sl::ResourceLifecycle::eValidUntilEvaluate;
-  bool local_valid = tag.structVersion == sl::kStructVersion1 && lifecycle_valid;
+  bool local_valid = tag.structType == sl::ResourceTag::s_structType &&
+      tag.structVersion == sl::kStructVersion1 && lifecycle_valid && tag.next == nullptr;
   OutputDescription result{};
   if (tag.extent.width != 0 && tag.extent.height != 0) {
     result.width = tag.extent.width;
@@ -97,7 +104,9 @@ inline OutputDescription Describe(const sl::ResourceTag& tag, bool* valid = null
   }
 
   if (tag.resource != nullptr) {
-    local_valid = local_valid && tag.resource->structVersion == sl::kStructVersion1;
+    local_valid = local_valid && tag.resource->structType == sl::Resource::s_structType &&
+        tag.resource->structVersion == sl::kStructVersion1 && tag.resource->next == nullptr &&
+        tag.resource->native != nullptr;
     if (!result.HasDimensions()) {
       result.width = tag.resource->width;
       result.height = tag.resource->height;
@@ -117,7 +126,8 @@ inline OutputDescription Describe(const sl::ResourceTag& tag, bool* valid = null
 }
 
 inline Assessment AssessTags(const sl::ResourceTag* tags, uint32_t count, bool hdr,
-                             const OutputDescription& previous_output = {}) {
+                             const OutputDescription& previous_output = {},
+                             FormatApi api = FormatApi::kDxgi) {
   Assessment result{};
   if (tags == nullptr || count == 0) return result;
 
@@ -170,7 +180,7 @@ inline Assessment AssessTags(const sl::ResourceTag* tags, uint32_t count, bool h
     // DXGI_FORMAT_R10G10B10A2_UNORM has only two alpha bits. NVIDIA's DLSS-G
     // guide explicitly rejects it for UIColorAndAlpha because the separation
     // mask needs adequate alpha precision.
-    if (tag.type == sl::kBufferTypeUIColorAndAlpha && resource.format == 24) {
+    if (tag.type == sl::kBufferTypeUIColorAndAlpha && LowPrecisionUiAlpha(resource.format, api)) {
       result.issues |= kUiColorAlphaLowPrecision;
     }
   }

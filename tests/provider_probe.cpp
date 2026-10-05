@@ -66,10 +66,40 @@ bool Contains(HMODULE module, const char* needle) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
-  if (argc != 2) {
-    std::wcerr << L"usage: provider_probe <nvngx_dlssg.dll>\n";
+  if (argc != 2 && argc != 3) {
+    std::wcerr << L"usage: provider_probe <nvngx_dlssg.dll> [--refined|--border|--geometry-v2|--geometry-v2-border|--adaptive|--adaptive-inpaint-temporal]\n";
     return 2;
   }
+  const std::wstring mode = argc == 3 ? argv[2] : L"";
+  if (!mode.empty() && mode != L"--refined" && mode != L"--border" &&
+      mode != L"--geometry-v2" && mode != L"--geometry-v2-border" &&
+      mode != L"--adaptive" && mode != L"--adaptive-inpaint-temporal") {
+    std::wcerr << L"unknown probe mode: " << mode << L'\n';
+    return 2;
+  }
+  const bool adaptive = mode == L"--adaptive" ||
+                        mode == L"--adaptive-inpaint-temporal";
+  const bool refined = !mode.empty() && !adaptive;
+  const bool geometry_v2 = mode == L"--geometry-v2" ||
+                           mode == L"--geometry-v2-border";
+  mfgunlock::thingeometry::g_refinement_enabled = refined;
+  mfgunlock::thingeometry::g_adaptive_quality_enabled = adaptive;
+  if (adaptive) {
+    mfgunlock::thingeometry::g_adaptive_quality_profile =
+        mfgunlock::adaptivequality::Profile::kLuminanceDirectionalV3;
+  }
+  mfgunlock::thingeometry::g_border_confidence_enabled =
+      mode == L"--border" || mode == L"--geometry-v2-border";
+  mfgunlock::blackwell::g_refinement_enabled = refined;
+  mfgunlock::blackwell::g_adaptive_quality_enabled = adaptive;
+  if (adaptive) {
+    mfgunlock::blackwell::g_adaptive_quality_profile =
+        mfgunlock::adaptivequality::Profile::kLuminanceDirectionalV3;
+    mfgunlock::blackwell::g_adaptive_quality_v3_oriented_geometry = true;
+    mfgunlock::blackwell::g_adaptive_quality_v3_inpaint_mode =
+        mode == L"--adaptive-inpaint-temporal" ? 2u : 0u;
+  }
+  mfgunlock::blackwell::g_geometry_confidence_v2_enabled = geometry_v2;
   HMODULE module = LoadLibraryExW(argv[1], nullptr, DONT_RESOLVE_DLL_REFERENCES);
   if (module == nullptr) {
     std::wcerr << L"LoadLibraryExW failed: " << GetLastError() << L'\n';
@@ -97,7 +127,10 @@ int wmain(int argc, wchar_t** argv) {
   std::string blackwell_detail;
   const bool blackwell_supported = mfgunlock::blackwell::Apply(
       module, blackwell_patches, blackwell_allocations, blackwell_result,
-      blackwell_detail, true);
+      blackwell_detail, true,
+      adaptive ? mfgunlock::blackwell::SilhouetteGuardMode::Balanced
+               : mfgunlock::blackwell::SilhouetteGuardMode::Off,
+      adaptive);
   std::cout << "blackwell_framework_supported=" << (blackwell_supported ? "yes" : "no")
             << '\n';
   std::cout << "blackwell_motion_vector="
@@ -105,6 +138,16 @@ int wmain(int argc, wchar_t** argv) {
   std::cout << "blackwell_inpaint=" << (blackwell_result.inpaint ? "yes" : "no") << '\n';
   std::cout << "blackwell_inpaint_decision="
             << (blackwell_result.inpaint_decision ? "yes" : "no") << '\n';
+  std::cout << "adaptive_geometry="
+            << (blackwell_result.adaptive_geometry ? "applied" : "not-applied")
+            << '\n';
+  std::cout << "adaptive_inpaint_decision="
+            << (blackwell_result.adaptive_inpaint_decision ? "applied" : "not-applied")
+            << '\n';
+  std::cout << "adaptive_inpaint_variant="
+            << mfgunlock::blackwell::AdaptiveInpaintVariantName(
+                   blackwell_result.adaptive_inpaint_variant)
+            << '\n';
   std::cout << "blackwell_detail=" << blackwell_detail << '\n';
 
   std::vector<mfgunlock::thingeometry::Redirect> thin_redirects;
@@ -133,7 +176,8 @@ int wmain(int argc, wchar_t** argv) {
   const bool silhouette_supported = mfgunlock::blackwell::Apply(
       module, blackwell_patches, blackwell_allocations, silhouette_result,
       silhouette_detail, true,
-      mfgunlock::blackwell::SilhouetteGuardMode::Aggressive);
+      refined ? mfgunlock::blackwell::SilhouetteGuardMode::Balanced :
+                mfgunlock::blackwell::SilhouetteGuardMode::Aggressive);
   std::cout << "silhouette_guard_framework_supported="
             << (silhouette_supported ? "yes" : "no") << '\n';
   std::cout << "silhouette_guard="
@@ -146,6 +190,9 @@ int wmain(int argc, wchar_t** argv) {
             << mfgunlock::blackwell::SilhouetteGuardName(
                    silhouette_result.silhouette_guard_mode_selected)
             << '\n';
+  std::cout << "geometry_confidence_v2="
+            << (silhouette_result.geometry_confidence_v2 ? "applied" : "not-applied")
+            << '\n';
   std::cout << "silhouette_guard_detail=" << silhouette_detail << '\n';
   mfgunlock::blackwell::Restore(blackwell_patches, blackwell_allocations);
 
@@ -156,5 +203,11 @@ int wmain(int argc, wchar_t** argv) {
   std::cout << "temporal_detail=" << detail << '\n';
   mfgunlock::midpoint::Restore(patches, allocation);
   FreeLibrary(module);
-  return temporal_supported ? 0 : 1;
+  return temporal_supported && (!refined ||
+      (silhouette_result.refined_geometry && thin_result.validated_warp_blend.applied)) &&
+      (!geometry_v2 || silhouette_result.geometry_confidence_v2) &&
+      (!adaptive ||
+       (blackwell_result.adaptive_geometry &&
+        blackwell_result.adaptive_inpaint_decision &&
+        thin_result.validated_warp_blend.applied)) ? 0 : 1;
 }

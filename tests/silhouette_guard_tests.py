@@ -118,6 +118,52 @@ def main() -> None:
         check("0fBE800000" in aggressive_program,
               "aggressive relaxation cap is missing")
 
+        diagonal_program = builder._diagonal_support_program(direction)
+        check("MFGUNLOCK_CONTINUOUS_DIAGONAL_SUPPORT" in diagonal_program,
+              "V3.2 diagonal-support marker is missing")
+        check("@%qgp1 bra MFGUNLOCK_GEOMETRY_DIAGONALS_DONE" in
+              diagonal_program,
+              "V3 zero-motion diagonal fast path is missing")
+        check("0f3EB33333" in diagonal_program and
+              "0f3F19999A" not in diagonal_program,
+              "V3.2 continuous ambiguity ramp is missing")
+        check("div.approx.f32 %qgf4, %qgf4, %qgf3;" in
+              diagonal_program,
+              "V3.2 continuous two-axis relevance is missing")
+        check(f"mul.f32 %qgf3, {builder._SILHOUETTE_NEIGHBORS[direction]['center'][0]}, "
+              f"{builder._SILHOUETTE_NEIGHBORS[direction]['center'][1]};" in
+              diagonal_program,
+              "V3 motion-quadrant selection is missing")
+        check(diagonal_program.count("selp.f32 %qgf3") == 2,
+              "V3 must inspect exactly one aligned diagonal pair")
+        check(diagonal_program.count("min.f32 %qgf7, %qgf0, %qgf6") == 1,
+              "the coherent diagonal pair must update top-two exactly once")
+        check("min.f32 %qgf6, %qgf6, %qgf11;" in diagonal_program,
+              "V3.2 must require both sides of the diagonal pair")
+        check("ld." not in diagonal_program,
+              "V3 diagonal support introduced an unexpected load")
+
+        history_program = builder._temporal_history_program(direction)
+        check(history_program.count("ld.global") == 4,
+              "temporal V3.2 must use four global-load instructions per direction")
+        check(history_program.count("ld.global.v4.u32") == 1,
+              "temporal V3.2 control vector load is missing")
+        check(history_program.count("ld.global.u8") == 1,
+              "temporal V3.2 must read one confidence byte per direction")
+        check(history_program.count("st.global.u8") == 1,
+              "temporal V3.2 must write one confidence byte per direction")
+        check("tex." not in history_program,
+              "temporal V3.2 introduced an unexpected texture read")
+        check("mul.f32 %qgf3, %f1, %qgf3;" in history_program,
+              "temporal V3.2 phase must come from provider parameter t")
+        check("0f3E4CCCCD" in history_program,
+              "temporal recovery cap of 0.20 is missing")
+        check("@%qgp1 min.f32 %qgf3, %qgf3, %qgf4;" in
+              history_program and
+              "@!%qgp1 add.f32 %qgf4, %qgf4, 0f3E4CCCCD;" in
+              history_program,
+              "the symmetric phase must be drop-only so recovery is capped per source frame")
+
     print("silhouette guard tests passed")
 
 
