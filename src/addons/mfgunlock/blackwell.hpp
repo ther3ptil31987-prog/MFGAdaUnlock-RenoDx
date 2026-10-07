@@ -41,7 +41,11 @@ namespace mfgunlock::blackwell::generated {
 
 #if __has_include("./thin_geometry_cubins.generated.hpp")
 namespace mfgunlock::blackwell::generated_thin_geometry {
+#if defined(MFGUNLOCK_LOCAL_STABILITY)
+#include "./thin_geometry_stability.generated.hpp"
+#else
 #include "./thin_geometry_cubins.generated.hpp"
+#endif
 }
 #define MFGUNLOCK_HAS_GENERATED_THIN_GEOMETRY_CUBINS 1
 #else

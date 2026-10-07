@@ -248,7 +248,9 @@ int main() {
   CHECK(aq3::DiagonalAmbiguityWeight(0.60f) == 0.0f);
   CHECK(aq3::DiagonalAmbiguityWeight(0.475f) > 0.49f);
   CHECK(aq3::DiagonalAmbiguityWeight(0.475f) < 0.51f);
-  CHECK(aq3::DiagonalDirectionWeight(0.5f, 0.5f) == 0.0f);
+  CHECK(aq3::DiagonalDirectionWeight(0.5f, 0.5f) > 0.0f);
+  CHECK(aq3::DiagonalDirectionWeight(0.3f, 0.3f) == 0.0f);
+  CHECK(std::abs(aq3::DiagonalDirectionWeight(0.6f, 0.6f) - 0.27974286f) < 0.00001f);
   CHECK(aq3::DiagonalDirectionWeight(2.0f, 0.6f) == 0.0f);
   CHECK(aq3::DiagonalDirectionWeight(2.0f, 1.2f) > 0.99f);
   CHECK(std::abs(aq3::StableGeometryRelaxation(1.0f, 0.0f) - 0.125f) <

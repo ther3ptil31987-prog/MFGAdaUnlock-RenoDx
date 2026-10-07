@@ -133,8 +133,13 @@ int main() {
                                      compiled));
       CHECK(compiled.shared == replacement.source_shared);
       if (redirected_geometry_v3) {
-        if (mechanism == "adaptive_quality_geometry_v31_local")
+        if (mechanism == "adaptive_quality_geometry_v31_local") {
+#if defined(MFGUNLOCK_LOCAL_STABILITY)
+          CHECK(compiled.text <= 39680u);
+#else
           CHECK(compiled.text <= 39552u);
+#endif
+        }
         CHECK(compiled.registers == 40u);
       } else if (redirected_inpaint_v3) {
         CHECK(compiled.shared == 784u);

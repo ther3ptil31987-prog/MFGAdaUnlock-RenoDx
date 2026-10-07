@@ -244,6 +244,9 @@ struct ReflexWaitableSwapchainControl {
   bool last_requested = false;
 };
 ReflexWaitableSwapchainControl g_reflex_waitable;
+// Published only after the owner has been retired and request bookkeeping
+// returned to native. Native waitable state alone does not prove retirement.
+std::atomic_bool g_reflex_waitable_idle{true};
 std::atomic<unsigned long long> g_vram_ui_heartbeat_ms{0};
 std::atomic_bool g_vram_capture_owned{false};
 std::atomic_bool g_vram_dxgi_seen{false};
@@ -2221,6 +2224,15 @@ void UpdateReflexPacingLab(reshade::api::swapchain* swapchain) {
   if (swapchain == nullptr ||
       swapchain != g_primary_swapchain.load(std::memory_order_acquire))
     return;
+  const bool cap_poll_requested = framecount::g_addon_enabled.load(std::memory_order_relaxed) &&
+      pacing::IsValidReflexOutputFpsCap(framecount::g_reflex_source_fps_cap.load());
+  if (!cap_poll_requested && !reflexpacing::WaitableRequested() &&
+      !reflexpacing::LabMeasurementEnabled() &&
+      reflexpacing::g_sleep_dispatch.load(std::memory_order_acquire) ==
+          reflexpacing::SleepDispatch::kNative &&
+      g_reflex_waitable_idle.load(std::memory_order_acquire) &&
+      reflexpacing::g_headroom_limit_us.load(std::memory_order_relaxed) == 0)
+    return;
   static SRWLOCK update_lock = SRWLOCK_INIT;
   if (!TryAcquireSRWLockExclusive(&update_lock)) return;
   struct Unlock {
@@ -2269,14 +2281,16 @@ void UpdateReflexPacingLab(reshade::api::swapchain* swapchain) {
             : "mfgunlock: FG-safe Reflex sleep bypass released.");
   }
   const bool lab_requested = addon_enabled &&
-      (reflexpacing::WaitableRequested() ||
+      (cap_poll_requested || reflexpacing::WaitableRequested() ||
        reflexpacing::g_headroom_enabled.load(std::memory_order_relaxed));
   if (lab_requested && now >= next_status_sample) {
     next_status_sample = now + 500;
     bool vrr = false;
     uint32_t driver_multiplier = 0;
     if (auto* device = swapchain->get_device();
-        device != nullptr && device->get_native() != 0) {
+        device != nullptr && device->get_native() != 0 &&
+        (device->get_api() == reshade::api::device_api::d3d11 ||
+         device->get_api() == reshade::api::device_api::d3d12)) {
       nvapistatus::SleepStatus sleep{};
       sleep.version = nvapistatus::StructVersion<nvapistatus::SleepStatus, 1>();
       const auto get_sleep = nvapistatus::GetSleepStatus();
@@ -2290,6 +2304,13 @@ void UpdateReflexPacingLab(reshade::api::swapchain* swapchain) {
       }
     }
     reflexpacing::g_vrr_active.store(vrr, std::memory_order_relaxed);
+    const uint32_t previous_cap_multiplier = framecount::g_cap_driver_multiplier.exchange(
+        driver_multiplier, std::memory_order_relaxed);
+    framecount::g_cap_driver_observed_ms.store(now, std::memory_order_release);
+    if (previous_cap_multiplier != driver_multiplier) {
+      framecount::g_latency_guard_epoch.fetch_add(1, std::memory_order_acq_rel);
+      framecount::g_latency_guard_refresh_pending.store(true, std::memory_order_release);
+    }
     if (driver_multiplier >= 2 && driver_multiplier <= 6)
       reflexpacing::g_mfg_multiplier.store(driver_multiplier,
                                            std::memory_order_relaxed);
@@ -2323,10 +2344,13 @@ void UpdateReflexPacingLab(reshade::api::swapchain* swapchain) {
         true, std::memory_order_release);
   }
 
-  AcquireSRWLockExclusive(&g_reflex_waitable.lock);
   const bool requested =
       framecount::g_addon_enabled.load(std::memory_order_relaxed) &&
       reflexpacing::WaitableRequested();
+  if (!requested && g_reflex_waitable_idle.load(std::memory_order_acquire))
+    return;
+  g_reflex_waitable_idle.store(false, std::memory_order_release);
+  AcquireSRWLockExclusive(&g_reflex_waitable.lock);
   if (requested != g_reflex_waitable.last_requested) {
     g_reflex_waitable.last_requested = requested;
     g_reflex_waitable.fallback_latched = false;
@@ -2349,6 +2373,7 @@ void UpdateReflexPacingLab(reshade::api::swapchain* swapchain) {
   if (!requested) {
     reflexpacing::g_waitable_state.store(
         reflexpacing::WaitableState::kNative, std::memory_order_release);
+    g_reflex_waitable_idle.store(true, std::memory_order_release);
     ReleaseSRWLockExclusive(&g_reflex_waitable.lock);
     return;
   }
@@ -2588,6 +2613,15 @@ void UpdateLatencyGuard(reshade::api::swapchain* swapchain) {
 
   if (swapchain == nullptr ||
       swapchain != g_primary_swapchain.load(std::memory_order_acquire)) return;
+  if (!mfgunlock::framecount::g_latency_guard_refresh_pending.load(std::memory_order_acquire) &&
+      !mfgunlock::framecount::g_latency_guard_auto_cap_ready.load(std::memory_order_acquire)) {
+    const uint64_t heartbeat = mfgunlock::framecount::g_latency_guard_ui_heartbeat_ms.load(
+        std::memory_order_acquire);
+    if (guard_mode == LatencyGuardMode::kOff ||
+        (guard_mode == LatencyGuardMode::kMonitor &&
+         (heartbeat == 0 || GetTickCount64() - heartbeat > 1500)))
+      return;
+  }
   // Prevent two presenting threads from racing the sampler/controller.
   static SRWLOCK sample_lock = SRWLOCK_INIT;
   if (!TryAcquireSRWLockExclusive(&sample_lock)) return;
@@ -3264,7 +3298,9 @@ const char* UserSourceCapStatusText(
       mfgunlock::framecount::internal::UserSourceCapStatus;
   switch (status) {
     case Status::kInactiveGameControlled:
-      return "Inactive: select fixed MFG or enable Dynamic MFG";
+      return "Waiting for fresh driver-confirmed MFG (or select fixed/Dynamic MFG)";
+    case Status::kSleepNotNative:
+      return "Unavailable: Reflex sleep bypassed/replaced; configured cap is not guaranteed";
     case Status::kWaitingForDynamic:
       return "Waiting for Dynamic MFG to become active";
     case Status::kWaitingForReflex:
@@ -6154,7 +6190,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
       ImGui::TableNextColumn();
       SettingLabel(
           "Output FPS Cap (Reflex)", source_cap_summary.c_str(),
-          "Sets the final/output FPS ceiling handled by Reflex and the DLSS-G pacer. Entering 120 targets up to approximately 120 displayed FPS, not 120 game-rendered FPS. At fixed 4x, roughly 30 FPS are rendered by the game and the remaining frames are generated. It applies only with a fixed 2x-6x selection or active Dynamic MFG, preserves a stricter native game cap, and cannot force hardware, VSync or the game to reach the target. Use FrameView Displayed FPS to validate final output.");
+          "Sets the final/output FPS ceiling handled by native Reflex sleep and the DLSS-G pacer. Entering 120 targets approximately 120 displayed FPS. It applies with fixed 2x-6x, active Dynamic MFG, or fresh driver-confirmed MFG in Game controlled. A stricter native cap wins. FG-safe Off and active DXGI Waitable bypass/replace this sleep, so this cap is not guaranteed there. Use FrameView Displayed FPS to validate final output.");
       ImGui::TableNextColumn();
       ImGui::SetNextItemWidth(-1.0f);
       if (ImGui::InputInt("##rendered_fps_cap", &source_cap, 1, 10)) {
@@ -7102,7 +7138,11 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
             "V3.2 stability effective", temporal_detail.c_str(),
 #if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
             kUiMuted);
+#if defined(MFGUNLOCK_LOCAL_STABILITY)
+        StatusRow("Build", "Release 1.4.2; continuous borders + paired diagonals", kUiPositive);
+#else
         StatusRow("Build", "Local low-overhead; no V3 inpaint or confidence history", kUiPositive);
+#endif
         StatusRow("Temporal backend", "Disabled by build; 0 B history; no self-test or barriers", kUiMuted);
         StatusRow("CUDA hook fast path", "Not installed; no CUDA/NVAPI launch interception", kUiMuted);
 #else
@@ -7417,7 +7457,12 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
                    ? "; 40 registers; 7,776 B shared; zero stack/spill/local; .text=41,216 B; 8 global loads (2 u8) + 2 u8 stores"
                    : blackwell_active_result.adaptive_geometry_variant ==
                              mfgunlock::blackwell::AdaptiveGeometryVariant::kLocal
-                         ? "; 40 registers; 7,776 B shared; zero stack/spill/local; .text=39,552 B; zero global loads/stores"
+                         ? "; 40 registers; 7,776 B shared; zero stack/spill/local; .text="
+#if defined(MFGUNLOCK_LOCAL_STABILITY)
+                           "39,680 B; paired diagonal consensus; zero global loads/stores"
+#else
+                           "39,552 B; zero global loads/stores"
+#endif
                          : "; resource audit unavailable for fallback/native")
            << '\n'
            << "Adaptive inpaint decision: "
@@ -7476,7 +7521,11 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
            << "V3.2 Stability effective: "
 #if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
            << "History disabled; dedicated Local cubin requested (see installed variant above)" << '\n'
+#if defined(MFGUNLOCK_LOCAL_STABILITY)
+           << "Build: Release 1.4.2; continuous border transition; paired diagonal consensus; V2 inpaint" << '\n'
+#else
            << "Build: Local low-overhead; no V3 inpaint or confidence history" << '\n'
+#endif
            << "Temporal backend: Disabled by build; no self-test, allocations or barriers" << '\n'
            << "CUDA hook fast path: Not installed; no CUDA/NVAPI launch interception" << '\n'
 #else
@@ -8193,7 +8242,11 @@ void LoadConfig() {
                         inpaint_log.str().c_str());
 #if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
   reshade::log::message(reshade::log::level::info,
-      "mfgunlock: Local low-overhead build; V3 inpaint removed; confidence history, CUDA/NVAPI launch hooks and backend barriers disabled. Saved temporal keys preserved but ignored; Reflex, caps and pacing configuration unchanged.");
+      "mfgunlock: Local low-overhead build; V2 inpaint; confidence history, CUDA/NVAPI launch hooks and backend barriers disabled. Saved temporal keys preserved but ignored; native pacing remains the default. Output caps require a native sleep path; Game controlled accepts fresh driver-confirmed MFG.");
+#if defined(MFGUNLOCK_LOCAL_STABILITY)
+  reshade::log::message(reshade::log::level::info,
+      "mfgunlock: Release 1.4.2; continuous subpixel border (48 registers, zero local/spill); paired diagonal consensus (40 registers, 39680 B text, 7776 B shared, zero local/spill); InputMvecProcessing unchanged.");
+#endif
 #endif
 }
 
@@ -8201,7 +8254,9 @@ void LoadConfig() {
 
 extern "C" __declspec(dllexport) constexpr const char* NAME = "MFG Unlock";
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
-#if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+#if defined(MFGUNLOCK_LOCAL_STABILITY)
+    "Release 1.4.2 - Local Stability & CPU Overhead; Local low-overhead; V2 inpaint; no confidence history or CUDA/NVAPI launch interception";
+#elif defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
     "Local low-overhead; V2 inpaint; no confidence history or CUDA/NVAPI launch interception";
 #else
     "Reports DLSSG.MultiFrameCountMax so Streamline offers multi-frame generation";

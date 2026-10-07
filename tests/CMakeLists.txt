@@ -26,7 +26,7 @@ add_library(mfgunlock_local_low_overhead SHARED EXCLUDE_FROM_ALL
   ../src/addons/mfgunlock/addon.cpp)
 target_compile_definitions(mfgunlock_local_low_overhead PRIVATE
   $<TARGET_PROPERTY:mfgunlock_addon_compile,COMPILE_DEFINITIONS>
-  MFGUNLOCK_LOCAL_LOW_OVERHEAD)
+  MFGUNLOCK_LOCAL_LOW_OVERHEAD MFGUNLOCK_LOCAL_STABILITY)
 target_compile_options(mfgunlock_local_low_overhead PRIVATE /bigobj)
 target_include_directories(mfgunlock_local_low_overhead SYSTEM PRIVATE
   $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
@@ -34,7 +34,21 @@ target_link_libraries(mfgunlock_local_low_overhead PRIVATE
   "${RENODX_SOURCE_DIR}/external/Detours/lib.X64/detours.lib"
   user32 gdi32 shell32 ole32 uuid comdlg32 advapi32 version)
 set_target_properties(mfgunlock_local_low_overhead PROPERTIES
-  PREFIX "" SUFFIX ".addon64" OUTPUT_NAME "renodx-mfgunlock-local-low-overhead")
+  PREFIX "" SUFFIX ".addon64" OUTPUT_NAME "renodx-mfgunlock")
+add_executable(stability_runtime_tests stability_runtime_tests.cpp)
+target_compile_definitions(stability_runtime_tests PRIVATE NOMINMAX MFGUNLOCK_LOCAL_LOW_OVERHEAD MFGUNLOCK_LOCAL_STABILITY)
+target_compile_options(stability_runtime_tests PRIVATE /bigobj)
+target_include_directories(stability_runtime_tests SYSTEM PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+target_link_libraries(stability_runtime_tests PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_local_low_overhead,LINK_LIBRARIES>)
+add_test(NAME stability_runtime_tests COMMAND stability_runtime_tests)
+add_executable(local_stability_warp_tests local_stability_warp_tests.cpp)
+target_compile_definitions(local_stability_warp_tests PRIVATE NOMINMAX MFGUNLOCK_LOCAL_STABILITY)
+add_test(NAME local_stability_warp_tests COMMAND local_stability_warp_tests)
+add_executable(release_isolation_tests release_isolation_tests.cpp)
+target_compile_definitions(release_isolation_tests PRIVATE RELEASE_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME release_isolation_tests COMMAND release_isolation_tests)
 foreach(policy_variant IN ITEMS local_low_overhead research_baseline)
   add_executable(${policy_variant}_tests quality_build_policy_tests.cpp)
   target_compile_definitions(${policy_variant}_tests PRIVATE NOMINMAX)
@@ -114,6 +128,7 @@ target_compile_definitions(provider_probe PRIVATE NOMINMAX)
 target_include_directories(provider_probe SYSTEM PRIVATE
   "${RENODX_SOURCE_DIR}/external/reshade")
 add_executable(blackwell_kernel_tests blackwell_kernel_tests.cpp)
+target_compile_definitions(blackwell_kernel_tests PRIVATE MFGUNLOCK_LOCAL_STABILITY)
 target_compile_definitions(blackwell_kernel_tests PRIVATE NOMINMAX)
 target_include_directories(blackwell_kernel_tests SYSTEM PRIVATE
   "${RENODX_SOURCE_DIR}/external/reshade")

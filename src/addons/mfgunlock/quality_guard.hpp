@@ -54,6 +54,10 @@ struct Assessment {
   OutputDescription observed_backbuffer{};
 };
 
+inline bool HasLiveOptionalInput(const Assessment& assessment) {
+  return assessment.has_hudless_color || assessment.has_ui_color_or_alpha;
+}
+
 inline bool HasStructuralIssues(const Assessment& assessment) {
   constexpr uint32_t kStructuralIssues =
       kInvalidOptionalResource | kHudlessExtentMismatch |

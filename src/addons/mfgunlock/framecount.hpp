@@ -62,6 +62,7 @@
 #include "./pacing_policy.hpp"
 #include "./reflex_pacing.hpp"
 #include "./quality_guard.hpp"
+#include "./stability_policy.hpp"
 #include "./runtime_version.hpp"
 
 namespace mfgunlock::framecount {
@@ -75,6 +76,8 @@ inline std::atomic<unsigned int> g_last_requested{0};
 inline std::atomic<unsigned int> g_last_forced{0};
 inline std::atomic_bool g_effective_request_seen{false};
 inline std::atomic<unsigned int> g_last_effective_generated{0};
+inline std::atomic<uint32_t> g_cap_driver_multiplier{0};
+inline std::atomic<uint64_t> g_cap_driver_observed_ms{0};
 inline std::atomic<unsigned int> g_fixed_override_status{
     static_cast<unsigned int>(forcepolicy::FixedOverrideStatus::kNative)};
 inline std::atomic_bool g_declined_no_pacing{false};
@@ -616,7 +619,11 @@ inline bool UserSourceCapRequested() {
   return g_addon_enabled.load(std::memory_order_relaxed) &&
          pacing::IsValidReflexOutputFpsCap(cap) &&
          (g_dynamic_applied.load(std::memory_order_relaxed) ||
-          fixed_selected);
+          fixed_selected || stability::FreshLiveMfg(
+              g_cap_driver_multiplier.load(std::memory_order_relaxed),
+              g_cap_driver_observed_ms.load(std::memory_order_acquire),
+              GetTickCount64(),
+              g_effective_request_seen.load(std::memory_order_acquire)));
 }
 
 inline ExplicitReflexTarget ResolveExplicitReflexTarget() {
@@ -649,6 +656,7 @@ inline bool UserSourceCapReady() {
 enum class UserSourceCapStatus : unsigned int {
   kOff = 0,
   kInactiveGameControlled,
+  kSleepNotNative,
   kWaitingForDynamic,
   kWaitingForReflex,
   kPending,
@@ -679,6 +687,14 @@ inline UserSourceCapState ResolveUserSourceCapState() {
   state.effective_limit_us =
       g_reflex_effective_limit_us.load(std::memory_order_relaxed);
   if (!pacing::IsValidReflexOutputFpsCap(state.configured_fps)) return state;
+
+  // An accepted interval is not proof that its native sleep is executing.
+  if (reflexpacing::FgSafeOffRequested() ||
+      reflexpacing::g_waitable_state.load(std::memory_order_acquire) ==
+          reflexpacing::WaitableState::kActive) {
+    state.status = UserSourceCapStatus::kSleepNotNative;
+    return state;
+  }
 
   state.requested = UserSourceCapRequested();
   if (!state.requested) {
@@ -1034,6 +1050,8 @@ struct QualityViewportState {
   std::atomic_bool ui_recomposition_eligible{false};
   std::atomic<uint64_t> reset_requested{0};
   std::atomic<uint64_t> reset_applied{0};
+  std::atomic<uint32_t> last_forwarded_input_path{0};
+  std::atomic<uint64_t> options_revision{0};
 };
 inline std::array<QualityViewportState, kMaxQualityViewports>
     g_quality_viewports{};
@@ -1116,7 +1134,36 @@ inline void ObserveOptionsTransition(const sl::ViewportHandle& viewport,
   QualityViewportState* state = GetQualityState(viewport);
   if (state == nullptr) return;
 
+  // A versioned atomic snapshot avoids the writer lock and repeated stores
+  // for identical per-frame options. Never use a hash as equality evidence.
+  const uint64_t revision = state->options_revision.load(std::memory_order_acquire);
+  if ((revision & 1u) == 0 && state->options_seen.load(std::memory_order_acquire) &&
+      state->mode.load() == static_cast<uint32_t>(options.mode) &&
+      state->generated_frames.load() == generated_frames &&
+      state->flags.load() == static_cast<uint32_t>(options.flags) &&
+      state->dynamic_width.load() == options.dynamicResWidth &&
+      state->dynamic_height.load() == options.dynamicResHeight &&
+      state->back_buffers.load() == options.numBackBuffers &&
+      state->color_width.load() == options.colorWidth &&
+      state->color_height.load() == options.colorHeight &&
+      state->color_format.load() == options.colorBufferFormat &&
+      state->mvec_width.load() == options.mvecDepthWidth &&
+      state->mvec_height.load() == options.mvecDepthHeight &&
+      state->mvec_format.load() == options.mvecBufferFormat &&
+      state->depth_format.load() == options.depthBufferFormat &&
+      state->hudless_format.load() == options.hudLessBufferFormat &&
+      state->ui_format.load() == options.uiBufferFormat &&
+      state->queue_parallelism_mode.load() == (options.structVersion >= sl::kStructVersion3
+          ? static_cast<uint32_t>(options.queueParallelismMode) : 0u) &&
+      state->ui_recomposition.load() == (options.structVersion >= sl::kStructVersion4
+          ? static_cast<int>(options.enableUserInterfaceRecomposition) : -1) &&
+      state->dynamic_target_bits.load() == memorypolicy::FloatBits(
+          options.structVersion >= sl::kStructVersion5 ? options.dynamicTargetFrameRate : 0.0f) &&
+      state->options_revision.load(std::memory_order_acquire) == revision)
+    return;
+
   AcquireSRWLockExclusive(&state->lock);
+  state->options_revision.fetch_add(1, std::memory_order_acq_rel);
 
   const uint32_t mode = static_cast<uint32_t>(options.mode);
   const uint32_t flags = static_cast<uint32_t>(options.flags);
@@ -1180,6 +1227,7 @@ inline void ObserveOptionsTransition(const sl::ViewportHandle& viewport,
           : memorypolicy::FloatBits(0.0f),
       std::memory_order_relaxed);
   state->options_seen.store(true, std::memory_order_release);
+  state->options_revision.fetch_add(1, std::memory_order_release);
   ReleaseSRWLockExclusive(&state->lock);
   if (!options_were_seen || changed) ResetOutputValidationEvidence();
   if (changed && UsesQualityGuard()) {
@@ -1261,8 +1309,9 @@ inline sl::Result CallSetOptions(const sl::ViewportHandle& viewport,
       !g_dynamic_runtime_declined.load(std::memory_order_relaxed);
 
   const auto call_original = [&](bool preserve_ui_rejection = false) {
-    ObserveOptionsTransition(viewport, options, effective_generated);
     const sl::Result result = call_real(options);
+    if (result == sl::Result::eOk)
+      ObserveOptionsTransition(viewport, options, effective_generated);
     if (result == sl::Result::eOk && game_enabled) {
       if (!preserve_ui_rejection) {
         g_quality_mode_change_pending.store(false, std::memory_order_release);
@@ -1639,17 +1688,11 @@ inline sl::Result FilterHudSeparationTags(const sl::ViewportHandle& viewport,
         suppress_hud_separation = !recomposition_eligible ||
             (!was_recomposition_eligible && !complete_current_pair);
       }
-      const bool was_seen =
-          state->hud_separation_seen.exchange(true, std::memory_order_acq_rel);
-      const bool was_suppressed = state->hud_separation_suppressed.exchange(
-          suppress_hud_separation, std::memory_order_acq_rel);
-      const bool was_eligible = state->ui_recomposition_eligible.exchange(
-          recomposition_eligible, std::memory_order_acq_rel);
-      if ((!was_seen && suppress_hud_separation) ||
-          (was_seen && (was_suppressed != suppress_hud_separation ||
-                        was_eligible != recomposition_eligible))) {
-        RequestReset(state);
-      }
+      state->hud_separation_seen.store(true, std::memory_order_release);
+      state->hud_separation_suppressed.store(suppress_hud_separation, std::memory_order_release);
+      state->ui_recomposition_eligible.store(recomposition_eligible, std::memory_order_release);
+      // Reset decisions are committed after the API succeeds, using the
+      // actual forwarded path below (including contention fallback).
     }
     ReleaseSRWLockExclusive(&state->lock);
     if (snapshot_contended && assessment.has_hud_separation)
@@ -1666,7 +1709,22 @@ inline sl::Result FilterHudSeparationTags(const sl::ViewportHandle& viewport,
     // submissions, so keep the conservative final-color behavior.
     suppress_hud_separation = true;
   }
-  if (!suppress_hud_separation) return forward(tags);
+  const auto submit = [&](const sl::ResourceTag* actual) {
+    const sl::Result result = forward(actual);
+    if (state != nullptr && qualityguard::HasLiveOptionalInput(assessment)) {
+      if (result == sl::Result::eOk) {
+        const uint32_t path = suppress_hud_separation ? 2u : 1u;
+        const uint32_t previous = state->last_forwarded_input_path.exchange(
+            path, std::memory_order_acq_rel);
+        if (stability::NeedsInputReset(previous, path)) RequestReset(state);
+      } else {
+        // A rejected tag update is not evidence that the input path changed.
+        state->ui_recomposition_invalid.store(true, std::memory_order_release);
+      }
+    }
+    return result;
+  };
+  if (!suppress_hud_separation) return submit(tags);
 
   static_assert(std::is_trivially_copyable_v<sl::ResourceTag>);
   alignas(sl::ResourceTag)
@@ -1674,7 +1732,7 @@ inline sl::Result FilterHudSeparationTags(const sl::ViewportHandle& viewport,
   std::memcpy(storage.data(), tags, sizeof(sl::ResourceTag) * count);
   auto* forwarded = reinterpret_cast<sl::ResourceTag*>(storage.data());
   const uint32_t suppressed = hdrcompat::SuppressHudSeparationResources(forwarded, count);
-  if (suppressed == 0) return forward(tags);
+  if (suppressed == 0) return submit(tags);
 
   const uint32_t previous_issues =
       g_quality_issue_mask.fetch_or(assessment.issues, std::memory_order_relaxed);
@@ -1690,7 +1748,7 @@ inline sl::Result FilterHudSeparationTags(const sl::ViewportHandle& viewport,
       << "; using final color for this tag submission.";
     reshade::log::message(reshade::log::level::info, s.str().c_str());
   }
-  return forward(forwarded);
+  return submit(forwarded);
 }
 
 inline sl::Result HookedSetTag(const sl::ViewportHandle& viewport,

@@ -1,9 +1,11 @@
 # MFG Unlock
 
-> Release **1.4.1** uses **Local Stable geometry + V2 Compatibility inpaint**,
+> Release **1.4.2** improves local border/diagonal stability, input reset handling,
+> CPU overhead and Game-controlled Output FPS Caps. It uses
+> **Local Stable geometry + V2 Compatibility inpaint**,
 > with no confidence-history backend or CUDA/NVAPI temporal launch interception.
 > Saved temporal research modes are ignored without rewriting the INI.
-> See the [1.4.1 release notes](docs/releases/1.4.1.md) for details and limitations.
+> See the [1.4.2 release notes](docs/releases/1.4.2.md) for details and limitations.
 
 <p align="center">
   <a href="https://ko-fi.com/mavismmg"><img src="https://img.shields.io/badge/Support%20me%20on-Ko--fi-FF5E5B?logo=ko-fi&amp;logoColor=white" alt="Support me on Ko-fi"></a>
@@ -1053,14 +1055,19 @@ GPUs.
 
 ## Building
 
-For the **1.4.1 local low-overhead release**, configure `tests/CMakeLists.txt`
+For the **1.4.2 local-stability release**, configure `tests/CMakeLists.txt`
 with `RENODX_SOURCE_DIR` pointing to an existing RenoDX dependency checkout,
 then build the Release target `mfgunlock_local_low_overhead`. This target defines
-`MFGUNLOCK_LOCAL_LOW_OVERHEAD`; the generic/research compile target does not.
-The output is `renodx-mfgunlock-local-low-overhead.addon64`, distributed as
-`renodx-mfgunlock.addon64`. Audit it with
+`MFGUNLOCK_LOCAL_LOW_OVERHEAD` and `MFGUNLOCK_LOCAL_STABILITY`; the generic/research
+compile target does not. The output is `renodx-mfgunlock.addon64`. Audit it with
 `tests/audit_local_low_overhead.ps1 -AddonPath <path>`. Generated provider cubin
 tables remain locally generated and excluded from source control.
+
+Generate the separate local-stability table with `tools/build_local_stability.py`,
+using the approved original table as `--baseline`, an exactly matched local provider,
+the `local_stability_warp_tests` executable as `--emitter`, and ptxas/nvdisasm.
+The generated `thin_geometry_stability.generated.hpp` is private build input, not
+source to commit. The release target fails compilation if it is missing.
 
 The addon is built as part of a [RenoDX](https://github.com/clshortfuse/renodx)
 tree, which supplies ReShade, ImGui, Detours, and the NGX/Streamline headers.

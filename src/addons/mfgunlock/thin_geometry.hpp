@@ -401,7 +401,11 @@ sub.f32 %qf4, %f133, %f121;
                 : absolute_rgb_errors;
         if (directional_border) {
           error_program =
+#if defined(MFGUNLOCK_LOCAL_STABILITY)
+              adaptivequalityv3::ContinuousBorderProgram() +
+#else
               std::string(adaptivequalityv3::kDirectionalBorderDistances) +
+#endif
               error_program;
         }
         if (!ReplaceOnce(program, absolute_rgb_errors, error_program, why))
@@ -467,7 +471,17 @@ sub.f32 %qf4, %f133, %f121;
       }
     }
   }
+#if defined(MFGUNLOCK_LOCAL_STABILITY)
+  std::string candidate = ptx;
+  if (adaptive_v3 && g_adaptive_quality_v3_directional_border &&
+      !ReplaceOnce(candidate, ".maxntid 256, 1, 1\n",
+                   ".maxntid 256, 1, 1\n.maxnreg 48\n", why)) return false;
+  if (!ReplaceOnce(candidate, kInsertion, program + kInsertion, why)) return false;
+  ptx.swap(candidate);
+  return true;
+#else
   return ReplaceOnce(ptx, kInsertion, program + kInsertion, why);
+#endif
 }
 
 inline const ProviderProfile* MatchProvider(const IMAGE_NT_HEADERS64* nt) {

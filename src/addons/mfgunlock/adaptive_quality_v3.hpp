@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <string>
+#include <utility>
 
 namespace mfgunlock::adaptivequalityv3 {
 
@@ -283,6 +285,50 @@ fma.rn.f32 %qf1, %qf5, %qf6, %f175;
 MFGUNLOCK_BORDER_CONFIDENCE_DONE_V3:
 )PTX";
 
+// Local-stability path. Blend the symmetric and directional distances in
+// squared-motion space over 0.5..1.5 px. Reuse qf2..qf7; no new registers/loads.
+inline std::string ContinuousBorderProgram() {
+  std::string program = kDirectionalBorderDistances;
+  for (int direction = 0; direction < 2; ++direction) {
+    std::string fragment = R"PTX(
+// MFGUNLOCK_CONTINUOUS_BORDER_STABILITY
+sub.f32 %qf5, 0f3F800000, CAND_U;
+min.f32 %qf5, %qf5, CAND_U;
+mul.f32 %qf5, %qf5, %qf2;
+sub.f32 %qf6, 0f3F800000, CAND_V;
+min.f32 %qf6, %qf6, CAND_V;
+mul.f32 %qf6, %qf6, %qf3;
+min.f32 %qf7, %qf5, %qf6;
+sub.f32 %qf5, CAND_U, %f1;
+mul.f32 %qf5, %qf5, %qf2;
+sub.f32 %qf6, CAND_V, %f2;
+mul.f32 %qf6, %qf6, %qf3;
+mul.f32 %qf5, %qf5, %qf5;
+fma.rn.f32 %qf5, %qf6, %qf6, %qf5;
+sub.f32 %qf5, %qf5, 0f3E800000;
+mul.sat.f32 %qf5, %qf5, 0f3F000000;
+fma.rn.f32 %qf6, %qf5, 0fC0000000, 0f40400000;
+mul.f32 %qf5, %qf5, %qf5;
+mul.f32 %qf5, %qf5, %qf6;
+sub.f32 %qf4, %qf4, %qf7;
+fma.rn.f32 %qf4, %qf5, %qf4, %qf7;
+)PTX";
+    for (const auto& replacement : {std::pair{"CAND_U", direction == 0 ? "%f123" : "%f129"},
+                                    std::pair{"CAND_V", direction == 0 ? "%f124" : "%f130"}}) {
+      size_t pos = 0;
+      while ((pos = fragment.find(replacement.first, pos)) != std::string::npos) {
+        fragment.replace(pos, 6, replacement.second);
+        pos += 5;
+      }
+    }
+    const std::string anchor = direction == 0 ? "mov.f32 %f180, %qf4;" : "mov.f32 %f181, %qf4;";
+    const size_t pos = program.find(anchor);
+    if (pos == std::string::npos) return kDirectionalBorderDistances;
+    program.insert(pos, fragment);
+  }
+  return program;
+}
+
 inline constexpr const char* kCandidateArbitration = R"PTX(
 // MFGUNLOCK_RELATIVE_CANDIDATE_ARBITRATION_V3
 sub.f32 %qf2, %f176, 0f3DCCCCCD;
@@ -434,6 +480,18 @@ inline float BorderConfidence(float distance_pixels) {
   return value * value * (3.0f - 2.0f * value);
 }
 
+inline float ContinuousDirectionalBorderDistance(float current_u, float current_v,
+    float candidate_u, float candidate_v, float width, float height) {
+  const float symmetric = SymmetricBorderDistance(candidate_u, candidate_v, width, height);
+  const float directional = DirectionalBorderDistance(current_u, current_v,
+      candidate_u, candidate_v, width, height);
+  const float dx = (candidate_u - current_u) * width;
+  const float dy = (candidate_v - current_v) * height;
+  float weight = Clamp01((dx * dx + dy * dy - 0.25f) * 0.5f);
+  weight = weight * weight * (3.0f - 2.0f * weight);
+  return symmetric + weight * (directional - symmetric);
+}
+
 inline float OrientationWeight(float motion_x, float motion_y,
                                float direction_x, float direction_y) {
   const float motion_length =
@@ -459,10 +517,12 @@ inline float DiagonalDirectionWeight(float motion_x, float motion_y) {
   const float x = std::abs(motion_x);
   const float y = std::abs(motion_y);
   const float largest = std::max(x, y);
-  if (!(largest > 0.5f)) return 0.0f;
+  const float length = std::sqrt(motion_x * motion_x + motion_y * motion_y);
+  if (!(length > 0.5f) || !(largest > 0.0f)) return 0.0f;
   float value = Clamp01((std::min(x, y) / largest - 0.30f) / 0.30f);
   value = value * value * (3.0f - 2.0f * value);
-  float orientation = Clamp01(largest - 0.5f);
+  // Match qgf11 in the generated PTX: Euclidean length, not max component.
+  float orientation = Clamp01(length - 0.5f);
   orientation = orientation * orientation * (3.0f - 2.0f * orientation);
   return value * orientation;
 }
