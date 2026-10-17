@@ -154,7 +154,7 @@ int main() {
   fc::g_advertised_max_generated.store(5);
   fc::g_outlaws_get_state_compat.store(true);
   fc::g_dynamic_d3d12.store(true);
-  fc::g_streamline_2_14_1_active.store(true);
+  fc::g_streamline_dynamic_version_active.store(true);
   fc::g_dynamic_mfg_enabled.store(false);
   fc::g_native_request_seen.store(false);
   state.structVersion = sl::kStructVersion2;
@@ -182,7 +182,7 @@ int main() {
   fc::g_native_result.store(static_cast<unsigned int>(sl::Result::eOk));
   fc::g_dynamic_support_seen.store(true);
   fc::g_dynamic_supported.store(true);
-  fc::g_dlssg_310_9_1_seen.store(true);
+  fc::g_dlssg_dynamic_version_seen.store(true);
   fc::g_force_multiplier.store(0);
   options.mode = sl::DLSSGMode::eOn;
   options.numFramesToGenerate = 1;

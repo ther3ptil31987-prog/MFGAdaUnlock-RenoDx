@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string] $AddonPath
+    [string] $AddonPath,
+    [ValidateSet("control", "border-axis-candidate", "release-1.4.3", "release-1.4.4")]
+    [string] $Variant = "control"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,6 +11,18 @@ $addonText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($resolvedA
 $identity = 'Local low-overhead; V2 inpaint; no confidence history or CUDA/NVAPI launch interception'
 if (!$addonText.Contains($identity)) {
     throw 'Local build identity missing; refusing to audit a different variant.'
+}
+$variantIdentity = if ($Variant -eq 'release-1.4.4') {
+    'Release 1.4.4 - DLSS-G 310.9.16 Hotfix'
+} elseif ($Variant -eq 'release-1.4.3') {
+    'Release 1.4.3 - Continuous Border Stability'
+} elseif ($Variant -eq 'border-axis-candidate') {
+    '1.4.2-base - Border Axis Candidate'
+} else {
+    'Release 1.4.2 - Local Stability & CPU Overhead'
+}
+if (!$addonText.Contains($variantIdentity)) {
+    throw "Build variant identity does not match requested audit: $Variant"
 }
 # These are host-side lookup/self-test strings, not names in the embedded
 # approved provider cubin table. Legitimate NVAPI status/VRR support is retained.

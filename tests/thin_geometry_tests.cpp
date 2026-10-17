@@ -37,6 +37,23 @@ int main() {
   CHECK(blend.find(".reg .pred %qv<7>;") != std::string::npos);
   CHECK(blend.find("0f3F59999A") != std::string::npos);
   CHECK(blend.find("ld.param.u8 %rs8, [%rd6+220];") != std::string::npos);
+  std::string blend16 =
+      ".entry Kernel_BlendCandidatesFused(\n"
+      ".reg .pred %p<260>;\n"
+      "ld.param.u8 %rs5, [%rd6+128];\n";
+  CHECK(internal::RewriteValidatedWarpBlend(
+      blend16, mfgunlock::adaptivequality::Profile::kStableV1, why, internal::BlendLayout::V310916));
+  CHECK(blend16.find("@%qv0 fma.rn.f32 %f43, %qf0, %qf2, %f115;") !=
+        std::string::npos);
+  CHECK(blend16.find("@%qv1 fma.rn.f32 %f39, %qf1, %qf2, %f119;") !=
+        std::string::npos);
+  CHECK(blend16.find("ld.param.u8 %rs5, [%rd6+128];") != std::string::npos);
+  CHECK(blend16.find("[%rd6+220]") == std::string::npos);
+  CHECK(internal::ProfileFor(Mechanism::ValidatedWarpBlend)->normalized_size ==
+        39638u);
+  CHECK(internal::ProfileFor(Mechanism::ValidatedWarpBlend,
+                             internal::BlendLayout::V310916)->normalized_size ==
+        39833u);
   g_refinement_enabled = true;
   std::string refined = ".entry Kernel_BlendCandidatesFused(\n.reg .pred %p<260>;\nld.param.u8 %rs8, [%rd6+220];\n";
   CHECK(internal::RewriteValidatedWarpBlend(
@@ -155,6 +172,13 @@ int main() {
   headers.OptionalHeader.SizeOfImage = 7565312u;
   CHECK(internal::MatchProvider(&headers) != nullptr);
   CHECK(std::string(internal::MatchProvider(&headers)->version) == "310.9.1");
+  headers.FileHeader.TimeDateStamp = 0x6AB69977u;
+  CHECK(internal::MatchProvider(&headers) == nullptr);
+  headers.OptionalHeader.SizeOfImage = 7618560u;
+  CHECK(internal::MatchProvider(&headers) != nullptr);
+  CHECK(std::string(internal::MatchProvider(&headers)->version) == "310.9.16");
+  ++headers.OptionalHeader.SizeOfImage;
+  CHECK(internal::MatchProvider(&headers) == nullptr);
   headers.FileHeader.TimeDateStamp = 0;
   CHECK(internal::MatchProvider(&headers) == nullptr);
 

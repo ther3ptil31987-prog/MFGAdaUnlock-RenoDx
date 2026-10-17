@@ -1,11 +1,10 @@
 # MFG Unlock
 
-> Release **1.4.2** improves local border/diagonal stability, input reset handling,
-> CPU overhead and Game-controlled Output FPS Caps. It uses
-> **Local Stable geometry + V2 Compatibility inpaint**,
-> with no confidence-history backend or CUDA/NVAPI temporal launch interception.
-> Saved temporal research modes are ignored without rewriting the INI.
-> See the [1.4.2 release notes](docs/releases/1.4.2.md) for details and limitations.
+> Release **1.4.3** adds continuous border-axis blending to the local stability
+> improvements introduced in 1.4.2, targeting abrupt border-confidence changes
+> during diagonal movement. It uses **Local Stable geometry + V2 Compatibility
+> inpaint**, with no confidence-history backend or temporal launch interception.
+> Existing configuration is retained. See the [1.4.3 release notes](docs/releases/1.4.3.md).
 
 <p align="center">
   <a href="https://ko-fi.com/mavismmg"><img src="https://img.shields.io/badge/Support%20me%20on-Ko--fi-FF5E5B?logo=ko-fi&amp;logoColor=white" alt="Support me on Ko-fi"></a>
@@ -15,6 +14,12 @@ A [ReShade](https://reshade.me/) addon that enables **DLSS multi-frame generatio
 (3x / 4x and above) on GeForce RTX 40-series** cards, which NVIDIA ships gated to
 RTX 50-series only — and corrects the frame interpolation so the extra frames
 carry new motion instead of repeats.
+
+**Release 1.4.4 hotfix:** adds DLSS-G **310.9.16** and Streamline **2.14.16**
+compatibility while retaining the previous .1 versions. The new blend-kernel
+layout has its own exact fingerprint and register mapping. Offline checks
+passed; in-game validation on the new runtime remains pending. See the
+[validation record](docs/runtime-310.9.16-validation.md).
 
 The default for a new installation is **Native**, which preserves the game's
 existing HUD/UI tags and is recommended for most games. **Automatic Guard + UI
@@ -75,7 +80,7 @@ compatibility. The repository history and current code attribute these additions
   confidence guard for silhouette disocclusion, foreground/background bleeding,
   and edge stretching. Balanced is the recommended default for fresh
   configurations; Off and Aggressive remain available for per-game testing.
-- Exact DLSS-G 310.9.0/310.9.1 provider and payload validation for the
+- Exact DLSS-G 310.9.0/310.9.1/310.9.16 provider and payload validation for the
   thin-geometry paths, with unknown providers failing closed instead of being
   patched speculatively.
 - Safer reconstructed-fatbin handling that preserves kernels and metadata after
@@ -457,7 +462,7 @@ resets or a separate pacing path.
 These controls modify separate stages of the DLSS-G kernel pipeline. They do
 not change the selected multiplier, presentation pacing, Reflex, Dynamic MFG,
 HUD/UI tags, or HDR color handling. They currently require an exactly validated
-DLSS-G 310.9.0 or 310.9.1 provider; unknown or changed providers fail closed and
+DLSS-G 310.9.0, 310.9.1 or 310.9.16 provider; unknown or changed providers fail closed and
 keep the normal kernel path. Changes take effect after restarting the game.
 
 **Intermediate scatter retention (Experimental — Recommended)** and
@@ -519,78 +524,27 @@ variant remains protected by exact provider, payload, kernel-role,
 architecture, and slot-size validation; unsupported providers fail closed to a
 validated compatibility path or the baseline kernel.
 
-### Adaptive Quality V3.2 Stability and launch latency
+### Local quality path in release 1.4.3
 
-V3.2 keeps V3.1's luminance-relative photometric confidence and oriented
-geometry, but makes silhouette and screen-edge decisions less binary. Diagonal
-support fades continuously across ambiguity and motion-direction thresholds,
-an isolated neighbor can contribute only one eighth of the add-on relaxation,
-and full two-neighbor consensus still reaches one half. Orientation fades in
-between 0.5 and 1.5 pixels of motion. Warp candidates supported from only one
-side require a native weight ramp from 0.50 to 0.75, while the native weight
-always remains the lower bound. Entry at all four screen edges is limited to
-one extra pixel and also constrained by the perpendicular edge distance.
+The official release uses **Local Stable geometry and V2 Compatibility inpaint**.
+The local geometry path reuses the provider's tile. Confidence history, temporal
+inpaint, CUDA/NVAPI launch interception and backend synchronization are disabled.
+Saved temporal settings are preserved but ignored; no INI reset is required.
 
-`Local Stable` uses the provider's existing 3x3 tile and introduces no texture
-read. `Temporal Stable` is the default for a missing setting and stores only
-8-bit geometry confidence: no RGB, depth, motion vector or frame image is kept.
-Recovery is capped at 0.20 per source frame and confidence loss is immediate.
-Symmetric 2x/4x/6x phases share buckets with their directions exchanged; 4K at
-6x uses 49,766,400 active confidence bytes. The allocation is bounded at 64 MiB.
+V3 retains luminance-relative validation, local oriented geometry, native warp
+anchors and structural hard rejects. Release 1.4.3 interpolates horizontal and
+vertical border treatments continuously while preserving the 1.4.2 movement-
+magnitude transition. Paired diagonal supports remain limited by their weaker
+neighbor. These paths still require exactly validated 310.9.0/310.9.1 providers.
 
-V3.2 ships separate Local and Temporal ptxas cubins. The Local artifact has no
-history symbol, global load/store or history branch. A Temporal request falls
-back to that dedicated Local artifact before V2, V1 and native; a Local request
-never installs the CUDA hooks.
+Initial in-game feedback on the border-axis candidate was positive. Comparative
+frame-time and latency measurements remain pending. The 1.4.2 control and a
+separately identified candidate are retained as research targets. See
+[post-1.4.2 research](docs/research/post-1.4.2.md).
 
-The CUDA launch hooks are not installed until an exact 310.9.0 or 310.9.1
-provider has accepted the V3.2 Temporal geometry cubin. Temporal history remains disabled
-while a read-only probe verifies the kernel name, module magic, 144-byte ABI,
-launch API, stream, dimensions, multiplier and complete cyclic phase sequence.
-If a validated integration has not loaded the delay-loaded CUDA Driver yet, the
-addon acquires `nvcuda.dll` from System32 before installing the hooks; it never
-searches the game directory for a replacement driver DLL.
-Any mismatch, unsupported API, allocation failure or size above 64 MiB falls
-back to `Local Stable`; unrelated kernels pass through unchanged. The overlay
-and diagnostics report the requested and effective mode and the precise
-fallback reason. After both requested target kernels are associated, every
-unrelated launch performs one atomic immutable-dispatch load and two pointer
-comparisons before the original trampoline:
-there is no lock, hash lookup, name/module/ABI query or per-launch logging.
-
-### Adaptive Quality V3.4 Temporal Inpaint Stability
-
-V3.4 leaves the V3.2 warp, photometric thresholds and geometry cubins
-unchanged. It adds separate decision-only inpaint variants. `Local V3` tags
-coordinate and non-finite hard rejects inside the existing 3x3 tile while
-remaining decision-equivalent to V2 and adding no texture or global-memory
-access. `Temporal V3` keeps one encoded confidence byte per pixel, direction
-and symmetric phase bucket; reconstructed color, depth and motion vectors are
-never retained.
-
-The byte uses six confidence bits and four states: Cold, Armed, GraceUsed and
-RearmSeen. Hard rejects clear confidence immediately. An Armed soft ambiguity
-may retain at most 12/62 confidence for one observation; repeated drops are
-immediate. Recovery is limited to 12/62 per source frame and rearming requires
-two stable high-confidence observations. NVIDIA's native inpaint decision is
-always a lower bound, so the temporal path can never reject native work.
-
-`Kernel_OutputPull` has no temporal-phase argument. The addon therefore accepts
-only the phase validated from the immediately preceding
-`Kernel_EstimateIntermMvecsScatter` launch in the same module, context and
-stream. Missing, duplicated or ambiguous sequencing falls back only the
-inpaint component to Local V3. Geometry and inpaint share a bounded 96 MiB
-arena; at 4K/6x they use 49,766,400 bytes each (99,532,800 bytes total). If the
-combined requirement does not fit, inpaint falls back first and temporal
-geometry remains available.
-
-The Local cubin uses 48 registers, 784 bytes of shared memory and zero
-stack/spill/local memory, with 9,344 bytes of `.text`. Temporal uses the same
-register/shared limits, 10,368 bytes of `.text`, and exactly one 8-bit history
-read plus one 8-bit history write per output pixel. During the test phase,
-`Temporal V3` is the default when the V3.4 setting is absent. Existing saved
-choices remain unchanged, and invalid values still normalize to
-`V2 Compatibility`.
+The earlier temporal backend is documented as
+[historical research](docs/research/temporal-confidence-history.md), not as a
+release default. Its previous activation and benefit limitations still apply.
 
 ### Reflex / Pacing Lab V3.3
 
@@ -630,10 +584,12 @@ by the Pacing Lab.
 
 **Use NVIDIA Dynamic MFG** requests Streamline's native
 [`DLSSGMode::eDynamic`](https://github.com/NVIDIA-RTX/Streamline/blob/main/docs/ProgrammingGuideDLSS_G.md#63-enabling-dynamic-multi-frame-generation).
-Dynamic MFG in this release requires the exact validated stack:
+Dynamic MFG accepts the following explicit runtime versions. The new
+310.9.16 + 2.14.16 stack has passed offline interface and patch checks;
+in-game validation is pending. The previously supported .1 stack is retained:
 
-- **DLSS-G 310.9.1**
-- **Streamline 2.14.1**
+- **DLSS-G 310.9.1 or 310.9.16**
+- **Streamline 2.14.1 or 2.14.16**
 - NVIDIA display driver **595.41 or newer**, as required by NVIDIA's current
   Dynamic MFG integration guide
 - A compatible NVIDIA driver/runtime that reports
@@ -650,8 +606,8 @@ VSync is **not** a universal requirement for Dynamic MFG. When VSync is active,
 Streamline ignores the numeric Dynamic target and instead aims near the active
 display refresh for tear-free presentation. Users who are not using G-SYNC
 through the NVIDIA driver do not need to enable VSync solely because Dynamic
-MFG is enabled. If VSync is used with Dynamic MFG, use the validated 310.9.1 +
-2.14.1 stack, check that the addon reports VSync capability, and avoid a path
+MFG is enabled. If VSync is used with Dynamic MFG, use a supported 310.9.1/310.9.16 +
+2.14.1/2.14.16 stack, check that the addon reports VSync capability, and avoid a path
 that cannot reach Independent Flip; NVIDIA warns that such a path can add high
 latency.
 
@@ -686,13 +642,15 @@ it is not a universal claim for every game or presentation setup.
 |---|---|---|---|---|---|---|
 | 310.9.0 | 2.12.x | Validated legacy/compatibility path | Validated | Not release-validated on this older wrapper | Not supported by this release | Keep the game's established sync path; do not assume the 2.14.1 Dynamic/VSync behavior |
 | 310.9.0 | 2.14.0 / internal RC builds | Fixed MFG may work, including NVIDIA App override builds | Not release-validated as a complete combination | Not release-validated | The underlying runtime may expose Dynamic without VSync when its capability bit is true, but this addon does not advertise this combination as supported | Do not assume 2.14.1 VSync/frame-limiter behavior; use the exact current stack below for release testing |
-| 310.9.1 | 2.14.1 | Validated current path | Validated | Validated where the game supplies a correct pair; slight provider cost is expected | Supported on D3D12 when the runtime capability bit is true; final in-game release retest pending | VSync optional; with VSync, target follows refresh. G-SYNC remains a driver/display choice; capability and Independent Flip still matter |
+| 310.9.1 | 2.14.1 | Previously validated path | Validated | Validated where the game supplies a correct pair; slight provider cost is expected | Supported on D3D12 when the runtime capability bit is true; final in-game release retest pending | VSync optional; with VSync, target follows refresh. G-SYNC remains a driver/display choice; capability and Independent Flip still matter |
+
+| 310.9.16 | 2.14.16 | Offline patch/restore checks passed; in-game testing pending | In-game validation pending | In-game validation pending | Accepted by the version gate on D3D12; runtime capability is still required; in-game validation pending | Same public Dynamic/VSync interface as 2.14.1; verify capability and presentation behavior in-game |
 
 ### Manually using the current NVIDIA runtime
 
 > [!IMPORTANT]
 > **Do not assume that updating the NVIDIA App or display driver installs
-> DLSS-G 310.9.1 and Streamline 2.14.1 into a game.** Games normally keep the
+> DLSS-G 310.9.16 and Streamline 2.14.16 into a game.** Games normally keep the
 > DLLs they ship, while NVIDIA App driver-profile overrides may load a different
 > module from an NVIDIA cache. For the supported Dynamic configuration, the
 > files currently have to be installed manually and the driver overrides must
@@ -700,28 +658,28 @@ it is not a universal claim for every game or presentation setup.
 
 Dynamic MFG in this release requires the game process to **actually load** both:
 
-- `nvngx_dlssg.dll` **310.9.1**
-- the complete matching Streamline **2.14.1** runtime, including at least the
+- `nvngx_dlssg.dll` **310.9.16**
+- the complete matching Streamline **2.14.16** runtime, including at least the
   game's corresponding `sl.interposer.dll`, `sl.common.dll`, `sl.dlss_g.dll`,
   Reflex/PCL components, and any other Streamline plugins that game requires
 
-Replacing only `nvngx_dlssg.dll` is not sufficient. Likewise, seeing a 2.14.1
+Replacing only `nvngx_dlssg.dll` is not sufficient. Likewise, seeing a 2.14.16
 DLL in the game directory does not prove that the process selected it.
 
 - Normal users can obtain the current game DLL from the established
   [TechPowerUp DLSS Frame Generation archive](https://www.techpowerup.com/download/nvidia-dlss-3-frame-generation-dll/).
 - Developers and advanced users can obtain
-  [Streamline 2.14.1 from NVIDIA](https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.1),
+  [Streamline 2.14.16 from NVIDIA](https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.16),
   inspect NVIDIA's official
   [Windows DLSS library directory](https://github.com/NVIDIA/DLSS/tree/main/lib/Windows_x86_64/rel),
   and consult the
-  [DLSS 310.9.1 release](https://github.com/NVIDIA/DLSS/releases/tag/v310.9.1).
+  [DLSS 310.9.16 release](https://github.com/NVIDIA/DLSS/releases/tag/v310.9.16).
 
 #### Required installation and override checklist
 
 1. Back up the original game DLLs.
-2. Install `nvngx_dlssg.dll` 310.9.1 manually.
-3. Install the **complete, version-matched** Streamline 2.14.1 set. Never mix
+2. Install `nvngx_dlssg.dll` 310.9.16 manually.
+3. Install the **complete, version-matched** Streamline 2.14.16 set. Never mix
    `sl.interposer.dll`, `sl.common.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`, or
    other Streamline components from different packages.
 4. Open the NVIDIA App, check both **Global Settings** and the game's own
@@ -743,22 +701,22 @@ DLL in the game directory does not prove that the process selected it.
 
 For example, a path containing
 `ProgramData\\NVIDIA\\NGX\\models\\sl_dlss_g_override_0` means the driver/NVIDIA
-App override is active. In that situation a 2.14.1 file beside the executable
+App override is active. In that situation a 2.14.16 file beside the executable
 can be completely ignored. Do not delete NVIDIA cache directories as a normal
 installation step; correct the driver profile instead.
 
 Success means the log reports all of the following from the same launch:
 
 ```text
-observed Streamline DLSS-G wrapper version 2.14.1.0 from ...
-verified mapped DLSS-G provider candidate version 310.9.1.0
+observed Streamline DLSS-G wrapper version 2.14.16.0 from ...
+verified mapped DLSS-G provider candidate version 310.9.16.0
 slDLSSGGetState confirms NVIDIA Dynamic MFG support
 NVIDIA Dynamic MFG accepted
 ```
 
 If VSync is enabled, the last line can still report Dynamic as accepted, but
 the numeric `DynamicTargetFPS` is intentionally ignored and the provider aims
-near the active display refresh. Streamline 2.14.1 adds supported VSync and
+near the active display refresh. Streamline 2.14.1 introduced supported VSync and
 frame-limiter behavior to Dynamic mode; it does not make a custom Dynamic target
 override the monitor-refresh target while VSync is active.
 
@@ -787,14 +745,14 @@ Written to your `ReShade.ini` under `[RenoDX.MFGUnlock]`:
 | `AdaptiveQualityV3Photometric` | `1` | Developer A/B control for local-luminance-normalized luma/chroma confidence. Off retains V2 absolute-RGB confidence inside the V3 profile; restart required |
 | `AdaptiveQualityV3DirectionalBorder` | `1` | Developer A/B control for motion-directional border tapering. Off retains V2's symmetric taper; restart required |
 | `AdaptiveQualityV3OrientedGeometry` | `1` | Developer A/B control for motion-oriented cardinal/diagonal support. Off deliberately requests geometry V2; restart required |
-| `AdaptiveQualityV3StabilityMode` | `2` | `1` selects tile-only Local Stable; `2` requests Temporal Stable (default). Invalid values normalize to Local Stable. Temporal mode activates only after exact-provider CUDA/ABI/phase validation and otherwise falls back locally; restart required |
-| `AdaptiveQualityV3InpaintMode` | `2` | `0` keeps V2 Compatibility, `1` selects Local V3, and `2` requests Temporal V3 (default when the key is absent). Existing saved choices remain unchanged; invalid values normalize to V2 Compatibility; restart required |
+| `AdaptiveQualityV3StabilityMode` | `1` effective | Local Stable in the official release and border-axis candidate. Saved temporal selections are ignored without rewriting them; research builds are separate. |
+| `AdaptiveQualityV3InpaintMode` | `0` effective | V2 Compatibility in the official release and border-axis candidate. Saved V3/temporal selections are ignored without rewriting them. |
 | `ThinGeometryIntermediateScatter` | `1` | Experimental recommended default: retains more motion information while constructing intermediate generated frames; keeps the separate depth test and requires the validated full Blackwell path. Disable per game if it adds ghosting or disocclusion artifacts |
 | `ThinGeometryValidatedWarpBlend` | `1` | Experimental recommended default paired with Intermediate scatter retention: validates warped candidates before gradually increasing their blend weight; may reduce thin-detail flicker but can increase temporal persistence. Requires a restart |
 | `ThinGeometryPreviousScatter` | `0` | Unstable advanced research control for a separate previous-to-current motion-rejection path; not recommended for normal use |
 | `BoundaryArtifactMitigationMode` | `1` | `0` restores the 0.9 intermediate-retention behavior, `1` is **Balanced** (recommended default for fresh configurations), and `2` is Aggressive. Existing saved choices are preserved; changing it requires a restart |
 | `ForceMultiplier` | `0` | `0` respects the game's own choice; `2`–`6` requests that exact multiplier, whether it is higher or lower than the game's choice |
-| `DynamicMFG` | `0` | Requests native NVIDIA Dynamic MFG only on the validated 310.9.1 + 2.14.1 D3D12 stack after the provider reports support; takes priority over `ForceMultiplier` while active |
+| `DynamicMFG` | `0` | Requests native NVIDIA Dynamic MFG only on the supported 310.9.1/310.9.16 + 2.14.1/2.14.16 D3D12 runtimes after the provider reports support; takes priority over `ForceMultiplier` while active |
 | `DynamicTargetFPS` | `0` | Dynamic output target; `0` follows display refresh. With VSync active, Streamline ignores a nonzero value and follows refresh instead |
 | `ReflexSourceFpsCap` | `0` | Compatibility key for **Output FPS Cap (Reflex)**. Despite the historical key name, the number is the final/output FPS ceiling; `120` targets up to approximately 120 displayed FPS |
 | `ReflexModeOverride` | `0` | `0` preserves the game setting; `1` uses FG-safe Off by keeping Streamline at Low Latency and bypassing only `slReflexSleep`; `2` forces On; `3` forces On + Boost |
@@ -872,7 +830,7 @@ the effective downstream request separately.
 
 ### Dynamic MFG is not recognized or ignores my target
 
-- Confirm the panel observes **DLSS-G 310.9.1**, **Streamline 2.14.1**, D3D12,
+- Confirm the panel observes supported versions: **DLSS-G 310.9.1/310.9.16**, **Streamline 2.14.1/2.14.16**, D3D12,
   a driver version of at least **595.41**, and
   `bIsDynamicMFGSupported = true`. A DLL merely present beside the game is not
   proof that Streamline selected it.
@@ -981,10 +939,11 @@ in [`addon.cpp`](src/addons/mfgunlock/addon.cpp).
 
 ## Release Validation
 
-Code-side release checks use MSVC Release builds, native static analysis, and
-the tests in `tests/`. The project source is warning-clean in the latest check;
-the analyzer reports only existing warnings in external ReShade/Streamline
-headers. The final manual gate used a controlled STALKER 2 presentation trace.
+Release 1.4.3 is checked with MSVC Release builds, the automated suite, CUDA
+assembly/driver JIT, a synthetic GPU oracle and the final PE audit. Initial
+in-game feedback was positive; comparative 1.4.2/1.4.3 performance measurements
+remain pending. The field traces below document earlier versions and are not
+measurements of the new border-axis path.
 
 > **STALKER 2 frame-pacing validation (September 10, 2026):** one 45-second
 > release-gate run used DLSS-G 310.9.1, Streamline 2.14.1, Dynamic MFG with
@@ -1055,40 +1014,39 @@ GPUs.
 
 ## Building
 
-For the **1.4.2 local-stability release**, configure `tests/CMakeLists.txt`
-with `RENODX_SOURCE_DIR` pointing to an existing RenoDX dependency checkout,
-then build the Release target `mfgunlock_local_low_overhead`. This target defines
-`MFGUNLOCK_LOCAL_LOW_OVERHEAD` and `MFGUNLOCK_LOCAL_STABILITY`; the generic/research
-compile target does not. The output is `renodx-mfgunlock.addon64`. Audit it with
-`tests/audit_local_low_overhead.ps1 -AddonPath <path>`. Generated provider cubin
-tables remain locally generated and excluded from source control.
+Use an existing RenoDX dependency checkout and Python 3. The **official local
+release target** is `mfgunlock_local_low_overhead`. The generic RenoDX addon target
+and `mfgunlock_addon_compile` are research/compile checks and do not select the
+release's local-only policy.
 
-Generate the separate local-stability table with `tools/build_local_stability.py`,
-using the approved original table as `--baseline`, an exactly matched local provider,
-the `local_stability_warp_tests` executable as `--emitter`, and ptxas/nvdisasm.
-The generated `thin_geometry_stability.generated.hpp` is private build input, not
-source to commit. The release target fails compilation if it is missing.
+1. Generate private provider tables locally; never commit the derived headers.
+2. Configure `tests/CMakeLists.txt` with `RENODX_SOURCE_DIR`.
+3. Build `release_warp_tests` and generate the local table with
+   `tools/build_local_stability.py --variant release-1.4.3`. Supply the exact provider,
+   approved baseline table, emitter, ptxas, nvdisasm and an output directory.
+4. Build `mfgunlock_local_low_overhead` and run
+   `tests/audit_local_low_overhead.ps1 -AddonPath <addon> -Variant release-1.4.3`.
 
-The addon is built as part of a [RenoDX](https://github.com/clshortfuse/renodx)
-tree, which supplies ReShade, ImGui, Detours, and the NGX/Streamline headers.
+For the 1.4.2 control, use `mfgunlock_1_4_2_control`, `local_stability_warp_tests`
+and the `control` generator/audit variant. Its binary has a distinct filename.
 
-```bash
-git clone --recursive https://github.com/clshortfuse/renodx
-cp -r src/addons/mfgunlock <renodx>/src/addons/
-cd <renodx>
-cmake --preset vs-x64
-cmake --build build.vs --config Release --target mfgunlock
-```
+The separate `mfgunlock_border_axis_candidate` target defines
+`MFGUNLOCK_CONTINUOUS_BORDER_AXES` in addition to the local release flags and outputs
+`renodx-mfgunlock-border-axis-candidate.addon64`. Validate it with
+`border_axis_warp_tests`, `build_local_stability.py --variant border-axis-candidate`
+and the matching PE audit variant. Geometry/inpaint payload policy is identical
+to the control; the candidate changes only the emitted border warp fragment.
 
-The build globs `src/**/**/addon.cpp`, so no CMake changes are needed. The output
-is `build.vs/Release/renodx-mfgunlock.addon64`.
+Each addon build writes an adjacent JSON manifest containing the baseline,
+variant, binary/source hashes and private payload-table identities. Assembly
+reports can be attached using `tools/write_build_manifest.py --validation <report>`;
+variant, source and generated-table hashes must match. Generate manifests after
+final source changes. These reports do not certify in-game activation or latency.
 
-Prebuilt binaries are attached to [Releases](../../releases).
-
-The separate, read-only diagnostic addon and capture tools used for Streamline
-input and PresentMon analysis are documented in
-[`src/addons/mfgdiagnostics/README.md`](src/addons/mfgdiagnostics/README.md).
-They are developer tools and are not required for normal use.
+Run CTest and see [the research workflow](docs/research/post-1.4.2.md) for CUDA
+correctness, SASS inspection and controlled game captures. No full NVIDIA DLL or
+provider package is included. The diagnostic companion is optional and should
+be removed during performance measurements.
 
 ## Credits
 

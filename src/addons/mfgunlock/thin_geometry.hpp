@@ -29,6 +29,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 #include "adaptive_quality.hpp"
 #include "adaptive_quality_v2.hpp"
@@ -112,13 +113,16 @@ struct ProviderProfile {
   const char* version;
 };
 
-// Exact PE metadata for the inspected 310.9.0 OTA and 310.9.1 release
+// Exact PE metadata for the inspected 310.9.0 OTA and 310.9.1/310.9.16 release
 // providers. PTX identity is validated independently below, so metadata alone
 // can never authorize a patch.
 constexpr ProviderProfile kProviderProfiles[] = {
     {0x6A8745ADu, 7565312u, "310.9.0"},
     {0x6A986031u, 7565312u, "310.9.1"},
+    {0x6AB69977u, 7618560u, "310.9.16"},
 };
+
+enum class BlendLayout { Legacy, V310916 };
 
 struct PtxProfile {
   Mechanism mechanism;
@@ -128,6 +132,7 @@ struct PtxProfile {
   uint64_t raw_fnv1a64;
   const char* entry_name;
   const char* parameter_signature;
+  BlendLayout blend_layout = BlendLayout::Legacy;
 };
 
 constexpr PtxProfile kPtxProfiles[] = {
@@ -137,6 +142,10 @@ constexpr PtxProfile kPtxProfiles[] = {
     {Mechanism::PreviousScatter, kAdaArch, 8933u, 8607u,
      0xf9a5baf8aff7d9caull, "Kernel_EstimatePrev2CurrScatter",
      ".param .align 16 .b8 Kernel_EstimatePrev2CurrScatter_param_0[144]"},
+    {Mechanism::ValidatedWarpBlend, kBlackwellArch, 39834u, 39833u,
+     0x4e730b28bfb4e935ull, "Kernel_BlendCandidatesFused",
+     ".param .align 8 .b8 Kernel_BlendCandidatesFused_param_0[248]",
+     BlendLayout::V310916},
 };
 
 inline uint16_t ReadU16(const uint8_t* bytes) {
@@ -237,7 +246,8 @@ inline bool RewritePreviousScatter(std::string& ptx, std::string& why) {
 
 inline bool RewriteValidatedWarpBlend(std::string& ptx,
                                       adaptivequality::Profile profile,
-                                      std::string& why) {
+                                      std::string& why,
+                                      BlendLayout layout = BlendLayout::Legacy) {
   if (ptx.find("MFGUNLOCK_VALIDATED_WARP_BLEND_V1") != std::string::npos) {
     why = "validated-warp PTX is already modified";
     return false;
@@ -254,7 +264,9 @@ inline bool RewriteValidatedWarpBlend(std::string& ptx,
     return false;
   }
 
-  constexpr char kInsertion[] = "ld.param.u8 %rs8, [%rd6+220];\n";
+  const char* kInsertion = layout == BlendLayout::V310916
+                               ? "ld.param.u8 %rs5, [%rd6+128];\n"
+                               : "ld.param.u8 %rs8, [%rd6+220];\n";
   constexpr char kProgram[] = R"ptx(// MFGUNLOCK_VALIDATED_WARP_BLEND_V1
 cvt.rn.f32.u32 %qf0, %r10;
 cvt.rn.f32.u32 %qf1, %r11;
@@ -401,7 +413,9 @@ sub.f32 %qf4, %f133, %f121;
                 : absolute_rgb_errors;
         if (directional_border) {
           error_program =
-#if defined(MFGUNLOCK_LOCAL_STABILITY)
+#if defined(MFGUNLOCK_CONTINUOUS_BORDER_AXES)
+              adaptivequalityv3::ContinuousAxisBorderProgram() +
+#elif defined(MFGUNLOCK_LOCAL_STABILITY)
               adaptivequalityv3::ContinuousBorderProgram() +
 #else
               std::string(adaptivequalityv3::kDirectionalBorderDistances) +
@@ -471,6 +485,21 @@ sub.f32 %qf4, %f133, %f121;
       }
     }
   }
+  if (layout == BlendLayout::V310916) {
+    // NVIDIA swapped the two RGB destination triplets in 310.9.16. The
+    // candidate colors, coordinates, validity predicates and weights retain
+    // their meanings. Preserve the new native output layout and UI flag load.
+    for (const auto& registers : {
+             std::pair{"@%qv0 fma.rn.f32 %f39,", "@%qv0 fma.rn.f32 %f43,"},
+             std::pair{"@%qv0 fma.rn.f32 %f38,", "@%qv0 fma.rn.f32 %f42,"},
+             std::pair{"@%qv0 fma.rn.f32 %f37,", "@%qv0 fma.rn.f32 %f41,"},
+             std::pair{"@%qv1 fma.rn.f32 %f43,", "@%qv1 fma.rn.f32 %f39,"},
+             std::pair{"@%qv1 fma.rn.f32 %f42,", "@%qv1 fma.rn.f32 %f38,"},
+             std::pair{"@%qv1 fma.rn.f32 %f41,", "@%qv1 fma.rn.f32 %f37,"}}) {
+      if (!ReplaceOnce(program, registers.first, registers.second, why))
+        return false;
+    }
+  }
 #if defined(MFGUNLOCK_LOCAL_STABILITY)
   std::string candidate = ptx;
   if (adaptive_v3 && g_adaptive_quality_v3_directional_border &&
@@ -494,9 +523,12 @@ inline const ProviderProfile* MatchProvider(const IMAGE_NT_HEADERS64* nt) {
   return nullptr;
 }
 
-inline const PtxProfile* ProfileFor(Mechanism mechanism) {
+inline const PtxProfile* ProfileFor(
+    Mechanism mechanism, BlendLayout layout = BlendLayout::Legacy) {
   for (const auto& profile : kPtxProfiles) {
-    if (profile.mechanism == mechanism) return &profile;
+    if (profile.mechanism == mechanism &&
+        (mechanism != Mechanism::ValidatedWarpBlend ||
+         profile.blend_layout == layout)) return &profile;
   }
   return nullptr;
 }
@@ -574,7 +606,7 @@ inline bool BuildRedirectedFatbin(const uint8_t* fatbin, size_t fatbin_size,
     const auto requested = g_adaptive_quality_enabled
                                ? g_adaptive_quality_profile
                                : adaptivequality::Profile::kStableV1;
-    if (RewriteValidatedWarpBlend(ptx, requested, why)) {
+    if (RewriteValidatedWarpBlend(ptx, requested, why, profile.blend_layout)) {
       version = !g_adaptive_quality_enabled
                     ? adaptivequality::ComponentVersion::kNative
                     : requested ==
@@ -593,12 +625,12 @@ inline bool BuildRedirectedFatbin(const uint8_t* fatbin, size_t fatbin_size,
               : adaptivequality::Profile::kStableV1;
       ptx = original_ptx;
       std::string fallback_reason;
-      if (!RewriteValidatedWarpBlend(ptx, fallback, fallback_reason)) {
+      if (!RewriteValidatedWarpBlend(ptx, fallback, fallback_reason, profile.blend_layout)) {
         if (fallback == adaptivequality::Profile::kFlickerReducedV2) {
           ptx = original_ptx;
           std::string v1_reason;
           if (!RewriteValidatedWarpBlend(
-                  ptx, adaptivequality::Profile::kStableV1, v1_reason)) {
+                  ptx, adaptivequality::Profile::kStableV1, v1_reason, profile.blend_layout)) {
             why = requested_failure + "; V2 fallback failed: " +
                   fallback_reason + "; V1 fallback failed: " + v1_reason;
             return false;
@@ -875,7 +907,10 @@ inline bool Apply(HMODULE module, const Options& options,
   const auto apply_one = [&](Mechanism mechanism, bool requested,
                              MechanismResult* mechanism_result) {
     if (!requested) return;
-    const auto* profile = internal::ProfileFor(mechanism);
+    const auto layout = provider_version == "310.9.16"
+                            ? internal::BlendLayout::V310916
+                            : internal::BlendLayout::Legacy;
+    const auto* profile = internal::ProfileFor(mechanism, layout);
     if (profile == nullptr) {
       mechanism_result->detail = "internal profile is missing";
       return;

@@ -3475,9 +3475,9 @@ void QueueProviderVramEstimateFromCapture() {
   // NVIDIA documents this as an occasional, relatively expensive query. Keep
   // it user-visible and exact-stack-only; never run it continuously in Present.
   if (g_is_star_wars_outlaws ||
-      !mfgunlock::framecount::g_dlssg_310_9_1_seen.load(
+      !mfgunlock::framecount::g_dlssg_dynamic_version_seen.load(
           std::memory_order_acquire) ||
-      !mfgunlock::framecount::g_streamline_2_14_1_active.load(
+      !mfgunlock::framecount::g_streamline_dynamic_version_active.load(
           std::memory_order_acquire)) {
     mfgunlock::framecount::g_vram_estimate_status.store(
         static_cast<unsigned int>(
@@ -5020,7 +5020,7 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
   ImGui::Separator();
   bool dynamic_mfg =
       mfgunlock::framecount::g_dynamic_mfg_enabled.load(std::memory_order_relaxed);
-  if (ImGui::Checkbox("Use NVIDIA Dynamic MFG (310.9.1 + SL 2.14.1)", &dynamic_mfg)) {
+  if (ImGui::Checkbox("Use NVIDIA Dynamic MFG", &dynamic_mfg)) {
     mfgunlock::framecount::g_dynamic_mfg_enabled.store(dynamic_mfg,
                                                         std::memory_order_relaxed);
     mfgunlock::framecount::NotifyDynamicModeChanged();
@@ -5039,7 +5039,7 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
                               dynamic_target);
   }
   ImGui::TextDisabled(
-      "Requires D3D12, driver 595.41+, DLSS-G 310.9.1 and Streamline 2.14.1.\n"
+      "Requires D3D12, driver 595.41+, DLSS-G 310.9.1/310.9.16 and Streamline 2.14.1/2.14.16.\n"
       "0 = display refresh. Uses Streamline's native eDynamic scheduler; no Present hook.\n"
       "When VSync is active, Streamline ignores this number and targets display refresh.\n"
       "Toggle frame generation off/on after changing Dynamic settings.");
@@ -5058,7 +5058,7 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
                 static_cast<unsigned int>((streamline_version >> 32u) & 0xffffu),
                 static_cast<unsigned int>((streamline_version >> 16u) & 0xffffu),
                 static_cast<unsigned int>(streamline_version & 0xffffu),
-                mfgunlock::framecount::g_streamline_2_14_1_active.load(
+                mfgunlock::framecount::g_streamline_dynamic_version_active.load(
                     std::memory_order_relaxed) ? " (supported)" : " (not Dynamic-supported)");
   }
   if (mfgunlock::framecount::g_dlssg_version_seen.load(std::memory_order_acquire)) {
@@ -5067,7 +5067,7 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
                 static_cast<unsigned int>((dlssg_version >> 32u) & 0xffffu),
                 static_cast<unsigned int>((dlssg_version >> 16u) & 0xffffu),
                 static_cast<unsigned int>(dlssg_version & 0xffffu),
-                mfgunlock::framecount::g_dlssg_310_9_1_seen.load(
+                mfgunlock::framecount::g_dlssg_dynamic_version_seen.load(
                     std::memory_order_relaxed) ? " (supported candidate seen)"
                                                : " (not Dynamic-supported)");
   }
@@ -5078,11 +5078,11 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
              !mfgunlock::framecount::g_dlssg_version_seen.load(
                  std::memory_order_acquire)) {
     ImGui::TextDisabled("Dynamic MFG waiting for the loaded Streamline/DLSS-G versions.");
-  } else if (!mfgunlock::framecount::g_streamline_2_14_1_active.load(
+  } else if (!mfgunlock::framecount::g_streamline_dynamic_version_active.load(
                  std::memory_order_acquire) ||
-             !mfgunlock::framecount::g_dlssg_310_9_1_seen.load(
+             !mfgunlock::framecount::g_dlssg_dynamic_version_seen.load(
                  std::memory_order_acquire)) {
-    ImGui::TextDisabled("Dynamic MFG unavailable: this release requires exact versions 2.14.1 and 310.9.1.");
+    ImGui::TextDisabled("Dynamic MFG unavailable: requires DLSS-G 310.9.1/310.9.16 and Streamline 2.14.1/2.14.16.");
   } else if (!mfgunlock::framecount::g_dynamic_support_seen.load(
                  std::memory_order_acquire)) {
     ImGui::TextDisabled("Dynamic MFG support has not been reported by DLSS-G yet.");
@@ -5514,9 +5514,9 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
   const std::string dlssg_text = PackedVersionString(dlssg_version, dlssg_seen);
 
   const bool dynamic_versions_ready =
-      mfgunlock::framecount::g_streamline_2_14_1_active.load(
+      mfgunlock::framecount::g_streamline_dynamic_version_active.load(
           std::memory_order_acquire) &&
-      mfgunlock::framecount::g_dlssg_310_9_1_seen.load(
+      mfgunlock::framecount::g_dlssg_dynamic_version_seen.load(
           std::memory_order_acquire);
   const bool dynamic_support_seen =
       mfgunlock::framecount::g_dynamic_support_seen.load(
@@ -5839,7 +5839,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
   } else if (dynamic_hard_unavailable) {
     ImGui::TextColored(
         kUiWarning,
-        "Dynamic MFG requires DLSS-G 310.9.1 + Streamline 2.14.1.");
+        "Dynamic MFG requires DLSS-G 310.9.1/310.9.16 + Streamline 2.14.1/2.14.16.");
     ImGui::TextDisabled("Detected: DLSS-G %s | Streamline %s",
                         dlssg_text.c_str(), streamline_text.c_str());
     HelpMarker(
@@ -6112,7 +6112,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
                                  : (dynamic_hard_unavailable
                                         ? "Required runtime is unavailable."
                                         : "Waiting for runtime detection.")),
-        "Lets NVIDIA's native scheduler choose the generated-frame count. Requires D3D12, driver 595.41 or newer, DLSS-G 310.9.1 and Streamline 2.14.1. Star Wars Outlaws is kept on fixed/game-controlled MFG because its integration breaks on the Dynamic path. Toggle Frame Generation off/on after changing it.");
+        "Lets NVIDIA's native scheduler choose the generated-frame count. Requires D3D12, driver 595.41 or newer, DLSS-G 310.9.1/310.9.16 and Streamline 2.14.1/2.14.16. Star Wars Outlaws is kept on fixed/game-controlled MFG because its integration breaks on the Dynamic path. Toggle Frame Generation off/on after changing it.");
     ImGui::TableNextColumn();
     const bool block_dynamic_enable =
         dynamic_game_blocked || (dynamic_hard_unavailable && !dynamic_mfg);
@@ -7139,7 +7139,15 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
 #if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
             kUiMuted);
 #if defined(MFGUNLOCK_LOCAL_STABILITY)
+#if defined(MFGUNLOCK_RELEASE_1_4_4)
+        StatusRow("Build", "Release 1.4.4; DLSS-G 310.9.16 + Streamline 2.14.16 hotfix", kUiPositive);
+#elif defined(MFGUNLOCK_RELEASE_1_4_3)
+        StatusRow("Build", "Release 1.4.3; continuous border axes + paired diagonals", kUiPositive);
+#elif defined(MFGUNLOCK_CONTINUOUS_BORDER_AXES)
+        StatusRow("Build", "1.4.2-base; continuous-axis border candidate; in-game validation pending", kUiMuted);
+#else
         StatusRow("Build", "Release 1.4.2; continuous borders + paired diagonals", kUiPositive);
+#endif
 #else
         StatusRow("Build", "Local low-overhead; no V3 inpaint or confidence history", kUiPositive);
 #endif
@@ -7521,7 +7529,13 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
            << "V3.2 Stability effective: "
 #if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
            << "History disabled; dedicated Local cubin requested (see installed variant above)" << '\n'
-#if defined(MFGUNLOCK_LOCAL_STABILITY)
+#if defined(MFGUNLOCK_RELEASE_1_4_4)
+           << "Build: Release 1.4.4; DLSS-G 310.9.16 + Streamline 2.14.16 hotfix; Local Stable; V2 inpaint" << '\n'
+#elif defined(MFGUNLOCK_RELEASE_1_4_3)
+           << "Build: Release 1.4.3; continuous border axes; paired diagonal consensus; V2 inpaint" << '\n'
+#elif defined(MFGUNLOCK_CONTINUOUS_BORDER_AXES)
+           << "Build: 1.4.2-base; continuous-axis border candidate; in-game validation pending" << '\n'
+#elif defined(MFGUNLOCK_LOCAL_STABILITY)
            << "Build: Release 1.4.2; continuous border transition; paired diagonal consensus; V2 inpaint" << '\n'
 #else
            << "Build: Local low-overhead; no V3 inpaint or confidence history" << '\n'
@@ -8243,7 +8257,16 @@ void LoadConfig() {
 #if defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
   reshade::log::message(reshade::log::level::info,
       "mfgunlock: Local low-overhead build; V2 inpaint; confidence history, CUDA/NVAPI launch hooks and backend barriers disabled. Saved temporal keys preserved but ignored; native pacing remains the default. Output caps require a native sleep path; Game controlled accepts fresh driver-confirmed MFG.");
-#if defined(MFGUNLOCK_LOCAL_STABILITY)
+#if defined(MFGUNLOCK_RELEASE_1_4_4)
+  reshade::log::message(reshade::log::level::info,
+      "mfgunlock: Release 1.4.4; DLSS-G 310.9.16 + Streamline 2.14.16 hotfix; exact provider and kernel validation; Local Stable geometry; V2 inpaint.");
+#elif defined(MFGUNLOCK_RELEASE_1_4_3)
+  reshade::log::message(reshade::log::level::info,
+      "mfgunlock: Release 1.4.3; continuous border axes (48 registers, zero local/spill); paired diagonal consensus; V2 inpaint; no new resource reads.");
+#elif defined(MFGUNLOCK_CONTINUOUS_BORDER_AXES)
+  reshade::log::message(reshade::log::level::info,
+      "mfgunlock: 1.4.2-base Border Axis Candidate; both border axes interpolated continuously; no new resource reads; in-game validation pending.");
+#elif defined(MFGUNLOCK_LOCAL_STABILITY)
   reshade::log::message(reshade::log::level::info,
       "mfgunlock: Release 1.4.2; continuous subpixel border (48 registers, zero local/spill); paired diagonal consensus (40 registers, 39680 B text, 7776 B shared, zero local/spill); InputMvecProcessing unchanged.");
 #endif
@@ -8254,7 +8277,13 @@ void LoadConfig() {
 
 extern "C" __declspec(dllexport) constexpr const char* NAME = "MFG Unlock";
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
-#if defined(MFGUNLOCK_LOCAL_STABILITY)
+#if defined(MFGUNLOCK_RELEASE_1_4_4)
+    "Release 1.4.4 - DLSS-G 310.9.16 Hotfix; Streamline 2.14.16; Local low-overhead; V2 inpaint; no confidence history or CUDA/NVAPI launch interception";
+#elif defined(MFGUNLOCK_RELEASE_1_4_3)
+    "Release 1.4.3 - Continuous Border Stability; Local low-overhead; V2 inpaint; no confidence history or CUDA/NVAPI launch interception";
+#elif defined(MFGUNLOCK_CONTINUOUS_BORDER_AXES)
+    "1.4.2-base - Border Axis Candidate; Local low-overhead; V2 inpaint; no confidence history or CUDA/NVAPI launch interception";
+#elif defined(MFGUNLOCK_LOCAL_STABILITY)
     "Release 1.4.2 - Local Stability & CPU Overhead; Local low-overhead; V2 inpaint; no confidence history or CUDA/NVAPI launch interception";
 #elif defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
     "Local low-overhead; V2 inpaint; no confidence history or CUDA/NVAPI launch interception";

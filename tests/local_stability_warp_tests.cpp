@@ -20,11 +20,15 @@ int main(int argc, char** argv) {
   tg::g_adaptive_quality_v3_photometric = true;
   tg::g_adaptive_quality_v3_directional_border = true;
   std::string why;
-  if (argc == 4 && std::string(argv[1]) == "--emit") {
+  if (argc == 4 && (std::string(argv[1]) == "--emit" ||
+                    std::string(argv[1]) == "--emit-310916")) {
     std::ifstream input(argv[2], std::ios::binary);
     CHECK(input.good());
     std::string source{std::istreambuf_iterator<char>(input), {}};
-    CHECK(tg::internal::RewriteValidatedWarpBlend(source, tg::g_adaptive_quality_profile, why));
+    const auto layout = std::string(argv[1]) == "--emit-310916"
+                            ? tg::internal::BlendLayout::V310916
+                            : tg::internal::BlendLayout::Legacy;
+    CHECK(tg::internal::RewriteValidatedWarpBlend(source, tg::g_adaptive_quality_profile, why, layout));
     std::filesystem::create_directories(argv[3]);
     std::ofstream output(std::filesystem::path(argv[3]) / "warp-preset-0.ptx", std::ios::binary);
     output << source;
@@ -34,7 +38,13 @@ int main(int argc, char** argv) {
   const std::string source = ".entry Kernel_BlendCandidatesFused(\n.maxntid 256, 1, 1\n.reg .pred %p<260>;\nld.param.u8 %rs8, [%rd6+220];\n";
   auto patched = source;
   CHECK(tg::internal::RewriteValidatedWarpBlend(patched, tg::g_adaptive_quality_profile, why));
+#if defined(MFGUNLOCK_CONTINUOUS_BORDER_AXES)
+  CHECK(Count(patched, "MFGUNLOCK_AXIS_BLEND_CANDIDATE") == 2);
+  CHECK(Count(patched, "MFGUNLOCK_CONTINUOUS_BORDER_STABILITY") == 0);
+#else
   CHECK(Count(patched, "MFGUNLOCK_CONTINUOUS_BORDER_STABILITY") == 2);
+  CHECK(Count(patched, "MFGUNLOCK_AXIS_BLEND_CANDIDATE") == 0);
+#endif
   CHECK(Count(patched, ".maxnreg 48") == 1);
   CHECK(Count(patched, "ld.") == Count(source, "ld."));
   for (const auto* forbidden : {"ld.global", "st.global", "tex.", "suld.", "sust.", ".local", "history", "WARP_LAB"})
@@ -45,6 +55,7 @@ int main(int argc, char** argv) {
   // BuildRedirectedFatbin owns a private PTX copy and restores its original
   // before trying V2/V1. The rejected helper must not insert the new program.
   CHECK(malformed.find("MFGUNLOCK_CONTINUOUS_BORDER_STABILITY") == std::string::npos);
+  CHECK(malformed.find("MFGUNLOCK_AXIS_BLEND_CANDIDATE") == std::string::npos);
   CHECK(malformed.find(".maxnreg 48") == std::string::npos);
   tg::g_adaptive_quality_v3_directional_border = false;
   patched = source;

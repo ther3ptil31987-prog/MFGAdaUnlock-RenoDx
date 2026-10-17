@@ -412,16 +412,16 @@ inline void ResetVramEstimate() {
   g_vram_estimate_flags.store(0, std::memory_order_relaxed);
 }
 
-// Dynamic MFG is release-supported only on the validated 310.9.1 / 2.14.1
-// stack. The provider capability bit remains authoritative, while these loaded
-// module checks prevent an older OTA Streamline wrapper from masquerading as
-// the manually installed 2.14.1 runtime.
+// Dynamic MFG accepts the explicitly supported 310.9.1/310.9.16 and
+// 2.14.1/2.14.16 runtimes. The provider capability bit remains authoritative.
+// Check loaded modules so an older OTA wrapper cannot masquerade as the
+// manually installed runtime. Kernel patches retain independent exact checks.
 inline std::atomic_bool g_dlssg_version_seen{false};
-inline std::atomic_bool g_dlssg_310_9_1_seen{false};
+inline std::atomic_bool g_dlssg_dynamic_version_seen{false};
 inline std::atomic_bool g_dlssg_other_version_seen{false};
 inline std::atomic<uint64_t> g_last_dlssg_version{0};
 inline std::atomic_bool g_streamline_version_seen{false};
-inline std::atomic_bool g_streamline_2_14_1_active{false};
+inline std::atomic_bool g_streamline_dynamic_version_active{false};
 inline std::atomic<uint64_t> g_active_streamline_version{0};
 inline std::atomic_bool g_streamline_function_owner_seen{false};
 
@@ -429,14 +429,14 @@ inline void ObserveDlssgProviderVersion(HMODULE module) {
   const auto version = runtimeversion::FromModule(module);
   if (!version.valid) return;
   const uint64_t packed = runtimeversion::Pack(version);
-  const bool supported = runtimeversion::Is(packed, 310, 9, 1);
-  if (supported || !g_dlssg_310_9_1_seen.load(std::memory_order_acquire)) {
+  const bool supported = runtimeversion::IsDynamicDlssgVersion(packed);
+  if (supported || !g_dlssg_dynamic_version_seen.load(std::memory_order_acquire)) {
     g_last_dlssg_version.store(packed, std::memory_order_release);
   }
   g_dlssg_version_seen.store(true, std::memory_order_release);
   bool first_version_class = false;
   if (supported) {
-    first_version_class = !g_dlssg_310_9_1_seen.exchange(
+    first_version_class = !g_dlssg_dynamic_version_seen.exchange(
         true, std::memory_order_acq_rel);
   } else {
     first_version_class = !g_dlssg_other_version_seen.exchange(
@@ -470,8 +470,8 @@ inline void ObserveStreamlinePluginVersion(HMODULE module,
   const uint64_t previous = g_active_streamline_version.exchange(
       packed, std::memory_order_acq_rel);
   g_streamline_version_seen.store(true, std::memory_order_release);
-  const bool supported = runtimeversion::Is(packed, 2, 14, 1);
-  g_streamline_2_14_1_active.store(supported, std::memory_order_release);
+  const bool supported = runtimeversion::IsDynamicStreamlineVersion(packed);
+  g_streamline_dynamic_version_active.store(supported, std::memory_order_release);
   if (previous != packed) {
     std::vector<char> path(32768);
     const DWORD path_length = GetModuleFileNameA(
@@ -750,8 +750,8 @@ inline bool ShouldKeepAddonReflexTarget() {
 }
 
 inline bool DynamicVersionStackReady() {
-  return g_streamline_2_14_1_active.load(std::memory_order_acquire) &&
-         g_dlssg_310_9_1_seen.load(std::memory_order_acquire);
+  return g_streamline_dynamic_version_active.load(std::memory_order_acquire) &&
+         g_dlssg_dynamic_version_seen.load(std::memory_order_acquire);
 }
 
 inline bool IsTransientDynamicFailure(sl::Result result) {
@@ -2214,7 +2214,7 @@ inline sl::Result HookedGetState(const sl::ViewportHandle& viewport, sl::DLSSGSt
   constexpr unsigned int kMaxDynamicProbeFailures = 8;
   const bool probe_dynamic_state =
       g_dynamic_d3d12.load(std::memory_order_relaxed) &&
-      g_streamline_2_14_1_active.load(std::memory_order_acquire) &&
+      g_streamline_dynamic_version_active.load(std::memory_order_acquire) &&
       caller_version >= sl::kStructVersion1 &&
       caller_version < sl::kStructVersion4 &&
       !g_dynamic_game_compat_blocked.load(std::memory_order_relaxed) &&

@@ -948,7 +948,9 @@ def patch_validated_warp_blend(source: str) -> str:
     )
     source = replace_once(source, declarations, extra_declarations, "blend register declaration")
 
-    anchor = "ld.param.u8 %rs8, [%rd6+220];\n"
+    updated_layout = "Kernel_BlendCandidatesFused_param_0[248]" in source
+    anchor = ("ld.param.u8 %rs5, [%rd6+128];\n" if updated_layout else
+              "ld.param.u8 %rs8, [%rd6+220];\n")
     program = """// MFGUNLOCK_VALIDATED_WARP_BLEND_V1
 cvt.rn.f32.u32 %qf0, %r10;
 cvt.rn.f32.u32 %qf1, %r11;
@@ -1036,6 +1038,13 @@ sub.f32 %qf4, %f133, %f121;
 @%qv1 fma.rn.f32 %f42, %qf1, %qf3, %f120;
 @%qv1 fma.rn.f32 %f41, %qf1, %qf4, %f121;
 """
+    if updated_layout:
+        # 310.9.16 retains candidate semantics but swaps the RGB destinations.
+        for predicate, old, new in ((0, 39, 43), (0, 38, 42), (0, 37, 41),
+                                    (1, 43, 39), (1, 42, 38), (1, 41, 37)):
+            program = replace_once(
+                program, f"@%qv{predicate} fma.rn.f32 %f{old},",
+                f"@%qv{predicate} fma.rn.f32 %f{new},", "blend RGB destination")
     return replace_once(source, anchor, program + anchor, "blend UIR insertion point")
 
 

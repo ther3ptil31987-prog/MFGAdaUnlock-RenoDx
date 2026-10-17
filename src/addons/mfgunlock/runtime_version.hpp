@@ -40,6 +40,16 @@ inline constexpr bool Is(uint64_t packed, uint16_t major, uint16_t minor,
   return packed != 0 && packed == Pack(major, minor, patch, 0);
 }
 
+// Keep the Dynamic API allowlist separate from the kernel fingerprint checks.
+// A newer file version alone must never authorize a binary/kernel patch.
+inline constexpr bool IsDynamicDlssgVersion(uint64_t packed) {
+  return Is(packed, 310, 9, 1) || Is(packed, 310, 9, 16);
+}
+
+inline constexpr bool IsDynamicStreamlineVersion(uint64_t packed) {
+  return Is(packed, 2, 14, 1) || Is(packed, 2, 14, 16);
+}
+
 inline bool IsMappedImage(HMODULE module) {
   if (module == nullptr) return false;
   MEMORY_BASIC_INFORMATION info{};
