@@ -22,6 +22,7 @@
 #include <detours.h>
 
 #include <sstream>
+#include "module_session.hpp"
 #include <tuple>
 #include <vector>
 
@@ -34,31 +35,56 @@ using HookItem = std::tuple<const char*, void**, void*>;
 
 namespace internal {
 
-// Every thread in this process except the caller.
-inline std::vector<HANDLE> OpenOtherThreads() {
-  std::vector<HANDLE> threads;
-  const DWORD pid = GetCurrentProcessId();
-  const DWORD self = GetCurrentThreadId();
-  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-  if (snap == INVALID_HANDLE_VALUE) return threads;
-
-  THREADENTRY32 te = {};
-  te.dwSize = sizeof(te);
-  if (Thread32First(snap, &te)) {
-    do {
-      if (te.dwSize < FIELD_OFFSET(THREADENTRY32, th32OwnerProcessID)
-                          + sizeof(te.th32OwnerProcessID)) {
-        continue;
+struct ThreadOperations {
+  decltype(&CreateToolhelp32Snapshot) snapshot = &CreateToolhelp32Snapshot;
+  decltype(&Thread32First) first = &Thread32First;
+  decltype(&Thread32Next) next = &Thread32Next;
+  decltype(&OpenThread) open = &OpenThread;
+  decltype(&CloseHandle) close = &CloseHandle;
+};
+inline ThreadOperations thread_operations{};
+struct DetourOperations {
+  decltype(&DetourTransactionBegin) begin = &DetourTransactionBegin;
+  decltype(&DetourTransactionAbort) abort = &DetourTransactionAbort;
+  decltype(&DetourTransactionCommit) commit = &DetourTransactionCommit;
+  decltype(&DetourUpdateThread) update = &DetourUpdateThread;
+  LONG (WINAPI *attach)(PVOID*, PVOID) = &DetourAttach;
+  LONG (WINAPI *detach)(PVOID*, PVOID) = &DetourDetach;
+};
+inline DetourOperations detours{};
+struct ThreadCoverage {
+  std::vector<HANDLE> handles;
+  DWORD error = ERROR_SUCCESS;
+  bool complete = false;
+  void Close() { for (auto h : handles) thread_operations.close(h); handles.clear(); }
+};
+inline ThreadCoverage OpenOtherThreads() {
+  ThreadCoverage result;
+  const DWORD pid = GetCurrentProcessId(), self = GetCurrentThreadId();
+  HANDLE snap = thread_operations.snapshot(TH32CS_SNAPTHREAD, 0);
+  if (snap == INVALID_HANDLE_VALUE) { result.error = GetLastError(); return result; }
+  THREADENTRY32 entry{}; entry.dwSize = sizeof(entry);
+  bool found = thread_operations.first(snap, &entry) != FALSE;
+  if (!found) result.error = GetLastError();
+  while (found) {
+    if (entry.dwSize < FIELD_OFFSET(THREADENTRY32, th32OwnerProcessID) + sizeof(entry.th32OwnerProcessID)) {
+      result.error = ERROR_BAD_LENGTH; break;
+    }
+    if (entry.th32OwnerProcessID == pid && entry.th32ThreadID != self) {
+      HANDLE handle = thread_operations.open(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT,
+                                              FALSE, entry.th32ThreadID);
+      if (handle) result.handles.push_back(handle);
+      else if (GetLastError() != ERROR_INVALID_PARAMETER) {
+        result.error = GetLastError(); break;  // Access denied is not an exited thread.
       }
-      if (te.th32OwnerProcessID != pid) continue;
-      if (te.th32ThreadID == self) continue;
-      HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT,
-                            FALSE, te.th32ThreadID);
-      if (h != nullptr) threads.push_back(h);
-    } while (Thread32Next(snap, &te));
+    }
+    entry.dwSize = sizeof(entry);
+    found = thread_operations.next(snap, &entry) != FALSE;
+    if (!found) result.error = GetLastError();
   }
-  CloseHandle(snap);
-  return threads;
+  thread_operations.close(snap);
+  result.complete = result.error == ERROR_NO_MORE_FILES;
+  return result;
 }
 
 }  // namespace internal
@@ -86,28 +112,28 @@ inline bool Install(HMODULE module, const std::vector<HookItem>& hooks,
       return false;
     }
     if (*real != nullptr) {
-      clear_resolved();
-      return false;  // already installed
+      return false;  // already installed; preserve live trampolines
     }
-    *real = reinterpret_cast<void*>(proc);
     resolved.emplace_back(real, replacement);
   }
 
-  if (DetourTransactionBegin() != NO_ERROR) {
+  if (!modulesession::Acquire(module)) return false;
+  for (const auto& [name, real, replacement] : hooks) *real = reinterpret_cast<void*>(GetProcAddress(module, name));
+  if (internal::detours.begin() != NO_ERROR) {
     clear_resolved();
     return false;
   }
 
   auto threads = internal::OpenOtherThreads();
-  bool threads_ok = true;
-  for (HANDLE h : threads) {
-    if (DetourUpdateThread(h) != NO_ERROR) threads_ok = false;
+  bool threads_ok = threads.complete;
+  for (HANDLE h : threads.handles) {
+    if (internal::detours.update(h) != NO_ERROR) threads_ok = false;
   }
-  if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR) threads_ok = false;
+  if (internal::detours.update(GetCurrentThread()) != NO_ERROR) threads_ok = false;
 
   if (!threads_ok) {
-    DetourTransactionAbort();
-    for (HANDLE h : threads) CloseHandle(h);
+    internal::detours.abort();
+    threads.Close();
     clear_resolved();
     reshade::log::message(
         reshade::log::level::error,
@@ -119,15 +145,15 @@ inline bool Install(HMODULE module, const std::vector<HookItem>& hooks,
 
   bool ok = true;
   for (auto& [real, replacement] : resolved) {
-    if (DetourAttach(real, replacement) != NO_ERROR) {
+    if (internal::detours.attach(real, replacement) != NO_ERROR) {
       ok = false;
       break;
     }
   }
 
-  if (!ok || DetourTransactionCommit() != NO_ERROR) {
-    if (!ok) DetourTransactionAbort();
-    for (HANDLE h : threads) CloseHandle(h);
+  if (!ok || internal::detours.commit() != NO_ERROR) {
+    if (!ok) internal::detours.abort();
+    threads.Close();
     clear_resolved();
     std::stringstream s;
     s << "mfgunlock::hook: failed to install hooks in " << module_label << ".";
@@ -135,26 +161,29 @@ inline bool Install(HMODULE module, const std::vector<HookItem>& hooks,
     return false;
   }
 
-  for (HANDLE h : threads) CloseHandle(h);
+  const auto thread_count = threads.handles.size();
+  threads.Close();
   std::stringstream s;
   s << "mfgunlock::hook: installed " << resolved.size() << " hook(s) in "
-    << module_label << ", with " << threads.size()
+    << module_label << ", with " << thread_count
     << " other thread(s) registered with the transaction.";
   reshade::log::message(reshade::log::level::info, s.str().c_str());
   return true;
 }
 
-// Mirror of Install. Best-effort: used only on process detach.
-inline void Uninstall(const std::vector<HookItem>& hooks) {
-  if (DetourTransactionBegin() != NO_ERROR) return;
+// Return success explicitly. Callers must retain trampoline/state on failure.
+inline bool Uninstall(const std::vector<HookItem>& hooks) {
+  if (internal::detours.begin() != NO_ERROR) return false;
   auto threads = internal::OpenOtherThreads();
-  for (HANDLE h : threads) DetourUpdateThread(h);
-  DetourUpdateThread(GetCurrentThread());
-  for (const auto& [name, real, replacement] : hooks) {
-    if (*real != nullptr) DetourDetach(real, replacement);
-  }
-  if (DetourTransactionCommit() != NO_ERROR) DetourTransactionAbort();
-  for (HANDLE h : threads) CloseHandle(h);
+  bool ok = threads.complete;
+  for (auto h : threads.handles) if (internal::detours.update(h) != NO_ERROR) ok = false;
+  if (internal::detours.update(GetCurrentThread()) != NO_ERROR) ok = false;
+  if (ok) for (const auto& [name, real, replacement] : hooks)
+    if (*real && internal::detours.detach(real, replacement) != NO_ERROR) { ok = false; break; }
+  if (ok) ok = internal::detours.commit() == NO_ERROR;
+  else internal::detours.abort();
+  threads.Close();
+  return ok;
 }
 
 }  // namespace mfgunlock::hook

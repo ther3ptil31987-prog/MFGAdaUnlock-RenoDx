@@ -34,6 +34,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <array>
 #include <cwctype>
 #include <vector>
 
@@ -86,19 +87,26 @@ inline void Notify(HMODULE module, const wchar_t* path) {
   // Driver OTA snippets are commonly mapped from ...\models\dlssg\... under
   // opaque numeric .bin names. The loader call may receive only that basename,
   // so also inspect the resolved module path after the mapping completes.
-  std::vector<wchar_t> resolved_path(32768);
-  const DWORD length = GetModuleFileNameW(
-      module, resolved_path.data(), static_cast<DWORD>(resolved_path.size()));
-  if (length >= resolved_path.size()) resolved_path[0] = L'\0';
+  std::array<wchar_t, 512> short_path{};
+  std::vector<wchar_t> long_path;
+  wchar_t* resolved = short_path.data();
+  DWORD length = GetModuleFileNameW(module, resolved, static_cast<DWORD>(short_path.size()));
+  if (length >= short_path.size()) {
+    long_path.resize(32768);
+    resolved = long_path.data();
+    length = GetModuleFileNameW(module, resolved, static_cast<DWORD>(long_path.size()));
+    if (length >= long_path.size()) resolved[0] = L'\0';
+  }
   const bool is_dlssg =
       NameContains(path, kNeedle) || NameContains(path, kOtaNeedle) ||
-      NameContains(resolved_path.data(), kNeedle) ||
-      NameContains(resolved_path.data(), kOtaNeedle);
+      NameContains(resolved, kNeedle) ||
+      NameContains(resolved, kOtaNeedle);
   const bool is_dlssg_plugin =
       NameContains(path, kDlssgPluginNeedle) ||
       NameContains(path, kDlssgPluginOtaNeedle) ||
-      NameContains(resolved_path.data(), kDlssgPluginNeedle) ||
-      NameContains(resolved_path.data(), kDlssgPluginOtaNeedle);
+      NameContains(resolved, kDlssgPluginNeedle) ||
+      NameContains(resolved, kDlssgPluginOtaNeedle);
+  const bool is_interposer = NameContains(path, kInterposerNeedle) || NameContains(resolved, kInterposerNeedle);
   if (g_on_dlssg_plugin_loaded != nullptr && is_dlssg_plugin) {
     g_on_dlssg_plugin_loaded(module);
   }
@@ -106,7 +114,7 @@ inline void Notify(HMODULE module, const wchar_t* path) {
     g_catches.fetch_add(1, std::memory_order_relaxed);
     g_on_dlssg_loaded(module);
   }
-  if (g_on_interposer_loaded != nullptr && NameContains(path, kInterposerNeedle)) {
+  if (g_on_interposer_loaded != nullptr && is_interposer) {
     g_on_interposer_loaded();
   }
 }
@@ -165,7 +173,7 @@ inline void TryInstall() {
 
 inline void Uninstall() {
   if (!g_hooked.load(std::memory_order_acquire)) return;
-  hook::Uninstall(internal::kHooks);
+  if (!hook::Uninstall(internal::kHooks)) return;
   g_hooked.store(false, std::memory_order_release);
 }
 

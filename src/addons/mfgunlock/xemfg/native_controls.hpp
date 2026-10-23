@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+#include <cstdint>
+#include "native_window.hpp"
+namespace mfgunlock::xemfg::native {
+enum class LatencyInput : uint32_t { Auto, StreamlineReflex };
+enum class LatencyOutput : uint32_t { Auto, XeLL, Reflex };
+struct ControlSettings {
+  uint32_t version{5};
+  LatencyInput input{LatencyInput::Auto};
+  LatencyOutput output{LatencyOutput::Auto};
+  bool queueAhead{true};
+  bool flipMetering{true}, forceBorderless{}, uiComposition{},sdkDeadlines{};
+};
+struct ControlStatus {
+  uint32_t version{5};
+  ControlSettings settings;
+  WindowStatus window;
+  bool reflexObserved{}, xellObserved{}, nativeReflexDisabled{};
+  uint32_t gameReflexMode{};
+  uint64_t sleeps{}, markers{};
+  uint64_t modeUpdates{}, lastSleepUs{};
+  bool uiCompositionAvailable{}, uiCompositionApplied{}, uiCompositionKnown{};
+  int uiCompositionResult{};
+  uint64_t uiCompositionUpdates{};
+  bool modelPort{}, modelInitialized{}, modelUpdating{}, cudaUpdating{}, settingsSaved{true},invalidConfiguration{};
+  uint32_t cudaState{}, cudaLayers{};
+  int cudaMajor{}, cudaMinor{};
+  uint64_t cudaLaunches{}, cudaFallbacks{};
+  bool flipAvailable{}, flipInstalled{}, flipRegistered{}, flipQueue{}, flipBusy{};
+  bool flipRequested{}, flipEnabled{}, flipConfigured{}, flipMetered{}, flipRefused{};
+  uint32_t flipOutputs{}, flipFeedback{};
+  int flipResult{};
+  uint64_t flipCalls{};
+  bool sdkDeadlinesRequested{},sdkDeadlinesActive{};
+  bool queueAheadActive{}; uint64_t queueAheadDeadlines{};
+  uint32_t hudIssues{},hudInputs{};
+  uint64_t hudRejected{};
+  char cudaReason[128]{};
+  LatencyOutput activeLatencyOutput{LatencyOutput::XeLL};
+  bool latencyRestartPending{},reflexOutputObserved{},reflexOptionsReady{};
+  uint64_t reflexSleeps{},xellSleeps{};
+};
+void LoadControls();
+ControlSettings ControlsSettings();
+bool ConfigureControls(const ControlSettings& settings);
+ControlStatus ControlsSnapshot();
+enum class PanelPage { General, Quality, Latency, Diagnostics };
+void DrawControls(PanelPage page);
+}

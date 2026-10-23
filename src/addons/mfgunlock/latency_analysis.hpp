@@ -38,6 +38,7 @@ template <class Frame> struct Report {
   uint32_t source_timing_issue_mask = kTimingOk;
   Units timestamp_units = Units::kUnknown;
   uint64_t qpc_frequency = 0;
+  uint64_t window_first_frame = UINT64_MAX, window_last_frame = 0;
   bool fresh = false, source_timing_confident = false;
   bool queue_timing_confident = false;
 };
@@ -135,6 +136,8 @@ Report<Frame> Analyze(const Frame (&frames)[N], uint64_t frequency,
   for (size_t i = 0; i < N; ++i) {
     const auto& f = frames[i];
     if (!Complete(f)) { run = 0; continue; }
+    out.window_first_frame = (std::min)(out.window_first_frame, uint64_t(f.frame_id));
+    out.window_last_frame = (std::max)(out.window_last_frame, uint64_t(f.frame_id));
     ++out.valid_latency_frames;
     out.previous = out.latest; out.latest = f;
     if (i && Complete(frames[i-1]) && frames[i-1].frame_id != UINT64_MAX &&

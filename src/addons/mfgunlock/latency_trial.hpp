@@ -9,66 +9,70 @@ namespace mfgunlock::latency {
 
 // Conservative bounded source-rate trial, not a replacement for NVIDIA's
 // frame scheduler.
+enum class QueueTrialPhase { kIdle, kWaitingForApplication, kMeasuring, kAccepted, kWaitingForRestoration };
 struct QueueTrial {
-  uint64_t epoch = 0, started = 0, cooldown_until = 0;
-  uint32_t cap = 0, candidate = 0, stable = 0, multiplier = 0;
+  uint64_t epoch = 0, started = 0, proposed = 0, cooldown_until = 0;
+  uint64_t after_frame = 0;
+  uint32_t cap = 0, candidate = 0, stable = 0, multiplier = 0, measured_windows = 0;
   uint32_t baseline_interval = 0, baseline_queue = 0, baseline_latency = 0;
   bool accepted = false;
+  QueueTrialPhase phase = QueueTrialPhase::kIdle;
   void Stop(uint64_t now) {
-    cap = candidate = stable = 0;
-    accepted = false;
+    cap = candidate = stable = measured_windows = 0; accepted = false;
     cooldown_until = now + 30000;
+    phase = QueueTrialPhase::kWaitingForRestoration;
   }
   uint32_t Update(uint64_t now, uint64_t new_epoch, uint32_t multi,
                   bool safe, uint32_t recommended, uint32_t interval,
-                  uint32_t queue, uint32_t pipeline) {
+                  uint32_t queue, uint32_t pipeline,
+                  uint32_t acknowledged_cap = UINT32_MAX, uint64_t first_frame = 0,
+                  uint64_t last_frame = 0) {
     if (new_epoch != epoch || multi != multiplier) {
-      Stop(now);
-      epoch = new_epoch;
-      multiplier = multi;
+      Stop(now); epoch = new_epoch; multiplier = multi;
     }
-    if (!safe) {
-      if (cap) Stop(now);
-      stable = 0;
-      return 0;
+    if (!safe) { if (cap) Stop(now); stable = 0; return 0; }
+    if (phase == QueueTrialPhase::kWaitingForRestoration) {
+      if (acknowledged_cap != 0) return 0;
+      phase = QueueTrialPhase::kIdle;
     }
     if (cap) {
+      if (phase == QueueTrialPhase::kWaitingForApplication) {
+        if (acknowledged_cap == cap && last_frame != 0) {
+          phase = QueueTrialPhase::kMeasuring; started = 0;
+          after_frame = last_frame; measured_windows = 0;
+        } else if (now - proposed >= 3000) Stop(now);
+        return cap;
+      }
+      if (acknowledged_cap != cap) { Stop(now); return 0; }
+      if (now - proposed >= 30000) { Stop(now); return 0; }
+      // Reports contain rolling NVAPI windows. Do not count old or overlapping
+      // frames as independent evidence for a newly applied cap.
+      if (first_frame <= after_frame || last_frame < first_frame) return cap;
+      after_frame = last_frame;
       if (uint64_t(interval) * 100 > uint64_t(baseline_interval) * 108 ||
           uint64_t(interval) * 100 < uint64_t(baseline_interval) * 85 ||
-          pipeline > baseline_latency + 1000) {
-        Stop(now);
-        return 0;
-      }
-      if (!accepted && now - started >= 4000) {
+          pipeline > baseline_latency + 1000) { Stop(now); return 0; }
+      if (!measured_windows++) started = now;
+      if (!accepted && measured_windows >= 3 && now - started >= 4000) {
         accepted = uint64_t(queue) * 100 <= uint64_t(baseline_queue) * 80 &&
                    pipeline + 250 < baseline_latency;
-        if (!accepted) {
-          Stop(now);
-          return 0;
-        }
-      }
-      if (now - started >= 30000) {
-        Stop(now);
-        return 0;
+        if (!accepted) { Stop(now); return 0; }
+        phase = QueueTrialPhase::kAccepted;
       }
       return cap;
     }
-    if (now < cooldown_until || recommended == 0) {
-      stable = 0;
-      return 0;
+    if (now < cooldown_until || recommended == 0 || first_frame == 0 || last_frame < first_frame) {
+      stable = 0; return 0;
     }
-    const auto difference = recommended > candidate
-                                ? recommended - candidate
-                                : candidate - recommended;
+    if (last_frame <= after_frame) return 0;
+    after_frame = last_frame;
+    const auto difference = recommended > candidate ? recommended - candidate : candidate - recommended;
     stable = candidate && difference <= 1 ? stable + 1 : 1;
     candidate = recommended;
     if (stable >= 4) {
-      cap = candidate;
-      started = now;
-      accepted = false;
-      baseline_interval = interval;
-      baseline_queue = queue;
-      baseline_latency = pipeline;
+      cap = candidate; proposed = now; started = 0; accepted = false;
+      baseline_interval = interval; baseline_queue = queue; baseline_latency = pipeline;
+      phase = QueueTrialPhase::kWaitingForApplication;
     }
     return cap;
   }
@@ -243,6 +247,8 @@ struct MultiplierTrial {
   static constexpr uint64_t kCooldownMs = 30000;
 
   uint64_t epoch = 0;
+  uint64_t measurement_after_frame = 0;
+  bool frame_window_seen = false;
   uint64_t phase_started = 0;
   uint64_t accepted_started = 0;
   uint64_t cooldown_until = 0;
@@ -263,6 +269,7 @@ struct MultiplierTrial {
   void Reset(uint64_t now, uint64_t new_epoch, uint32_t configured_value,
              bool cooldown = false) {
     epoch = new_epoch;
+    measurement_after_frame = 0; frame_window_seen = false;
     configured = configured_value;
     approved_multiplier = configured_value;
     candidate_multiplier = 0;
@@ -284,6 +291,7 @@ struct MultiplierTrial {
 
   void StartBaseline(uint64_t now, ResponsiveTrialReason new_reason) {
     reason = new_reason;
+    frame_window_seen = false;
     phase = MultiplierTrialPhase::kCollectingBaseline;
     phase_started = now;
     baseline_window.Clear();
@@ -330,7 +338,16 @@ struct MultiplierTrial {
                   uint32_t configured_value, uint32_t live_multiplier,
                   bool safe, ResponsiveTrialReason trigger_reason,
                   const MultiplierTrialSample& sample,
-                  bool sample_ready = true) {
+                  bool sample_ready = true, uint64_t first_frame = 0,
+                  uint64_t last_frame = 0) {
+    const bool frame_ids = first_frame != 0 || last_frame != 0;
+    const auto fresh_window = [&]() {
+      if (!frame_ids) return true; // Pure historical harnesses have no runtime frame IDs.
+      if (first_frame == UINT64_MAX || last_frame < first_frame || last_frame == 0 ||
+          (frame_window_seen && first_frame <= measurement_after_frame)) return false;
+      measurement_after_frame = last_frame; frame_window_seen = true;
+      return true;
+    };
     if (new_epoch != epoch || configured_value != configured)
       Reset(now, new_epoch, configured_value);
     if (!safe || configured < 4 || configured > 6) {
@@ -365,6 +382,7 @@ struct MultiplierTrial {
         baseline_window.Clear();
         return override_multiplier;
       }
+      if (!fresh_window()) return override_multiplier;
       if (!baseline_window.Add(sample)) {
         HoldApproved(now, false);
         return override_multiplier;
@@ -381,6 +399,7 @@ struct MultiplierTrial {
         phase = MultiplierTrialPhase::kMeasuringCandidate;
         phase_started = now;
         candidate_window.Clear();
+        if (frame_ids) { measurement_after_frame = last_frame; frame_window_seen = true; return override_multiplier; }
         if (!candidate_window.Add(sample)) {
           HoldApproved(now, true);
           return override_multiplier;
@@ -398,6 +417,7 @@ struct MultiplierTrial {
         phase_started = now;
         return override_multiplier;
       }
+      if (live_multiplier == candidate_multiplier && !fresh_window()) return override_multiplier;
       if (live_multiplier != candidate_multiplier ||
           !candidate_window.Add(sample)) {
         HoldApproved(now, true);
@@ -440,6 +460,7 @@ struct MultiplierTrial {
         phase = MultiplierTrialPhase::kMeasuringOriginal;
         phase_started = now;
         candidate_window.Clear();
+        if (frame_ids) { measurement_after_frame = last_frame; frame_window_seen = true; return override_multiplier; }
         if (!candidate_window.Add(sample)) {
           HoldApproved(now, false);
           return override_multiplier;
@@ -457,6 +478,7 @@ struct MultiplierTrial {
         phase_started = now;
         return override_multiplier;
       }
+      if (live_multiplier == configured && !fresh_window()) return override_multiplier;
       if (live_multiplier != configured || !candidate_window.Add(sample)) {
         HoldApproved(now, false);
         return override_multiplier;

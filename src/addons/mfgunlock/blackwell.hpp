@@ -29,6 +29,8 @@
 
 #include "adaptive_quality.hpp"
 #include "quality_build_policy.hpp"
+#include "kernel_identities.hpp"
+#include "pointer_redirect.hpp"
 
 #if __has_include("./blackwell_cubins.generated.hpp")
 namespace mfgunlock::blackwell::generated {
@@ -179,6 +181,7 @@ inline const char* RoleName(KernelRole role) {
 struct Patch {
   uint8_t* payload = nullptr;
   std::vector<uint8_t> original;
+  std::vector<uint8_t> replacement;
 };
 
 struct Result {
@@ -250,12 +253,15 @@ struct ElfFingerprint {
   uint32_t text = 0;
   uint32_t shared = 0;
   uint32_t registers = 0;
+  size_t payload_size = 0;
+  uint64_t payload_hash = 0;
 };
 
 inline bool FingerprintElf(const uint8_t* bytes, size_t size, ElfFingerprint& out) {
   out = {};
   if (bytes == nullptr || size < 0x40 || bytes[0] != 0x7f || bytes[1] != 'E' ||
-      bytes[2] != 'L' || bytes[3] != 'F') {
+      bytes[2] != 'L' || bytes[3] != 'F' || bytes[4] != 2 ||
+      bytes[5] != 1 || bytes[6] != 1 || ReadU16(bytes + 18) != 190) {
     return false;
   }
 
@@ -275,6 +281,7 @@ inline bool FingerprintElf(const uint8_t* bytes, size_t size, ElfFingerprint& ou
   const uint64_t string_size = ReadU64(string_header + 0x20);
   if (string_offset >= size || string_size > size - string_offset) return false;
 
+  size_t text_sections = 0;
   for (uint16_t index = 0; index < section_count; ++index) {
     const uint8_t* section =
         bytes + static_cast<size_t>(section_offset) + static_cast<size_t>(index) * section_entry_size;
@@ -288,8 +295,10 @@ inline bool FingerprintElf(const uint8_t* bytes, size_t size, ElfFingerprint& ou
 
     const uint64_t section_size = ReadU64(section + 0x20);
     const uint32_t info = ReadU32(section + 0x2c);
+    const uint64_t offset = ReadU64(section + 0x18);
+    if (ReadU32(section + 4) != 8 && (offset > size || section_size > size - offset)) return false;
     if (std::strncmp(name, ".text.", 6) == 0) {
-      if (section_size > UINT32_MAX) return false;
+      if (++text_sections != 1 || section_size > UINT32_MAX) return false;
       out.text = static_cast<uint32_t>(section_size);
       out.registers = (info >> 24u) & 0xffu;
     } else if (std::strncmp(name, ".nv.shared", 10) == 0) {
@@ -297,6 +306,8 @@ inline bool FingerprintElf(const uint8_t* bytes, size_t size, ElfFingerprint& ou
       out.shared = static_cast<uint32_t>(section_size);
     }
   }
+  out.payload_size = size;
+  out.payload_hash = Fnv1a64(bytes, size);
   return out.text != 0;
 }
 
@@ -312,6 +323,9 @@ inline KernelRole RoleFromSharedMemory(uint32_t shared) {
 #if MFGUNLOCK_HAS_GENERATED_BLACKWELL_CUBINS
 inline const generated::CubinPatch* MatchReplacement(const ElfFingerprint& fingerprint,
                                                       size_t slot_size) {
+  if (fingerprint.payload_size != slot_size ||
+      !kernelidentity::Known(fingerprint.text, fingerprint.shared,
+                             fingerprint.registers, slot_size, fingerprint.payload_hash)) return nullptr;
   for (const auto& replacement : generated::kCubinPatches) {
     if (replacement.text == fingerprint.text && replacement.shared == fingerprint.shared &&
         replacement.regs == fingerprint.registers && replacement.orig_size == slot_size &&
@@ -517,7 +531,7 @@ inline bool RedirectOversizedCubin(
   const uint64_t expected = reinterpret_cast<uint64_t>(candidate.fatbin);
   const uint64_t redirected = reinterpret_cast<uint64_t>(allocation);
   const auto* section = IMAGE_FIRST_SECTION(nt);
-  size_t descriptor_count = 0;
+  std::vector<uint64_t*> slots;
   for (WORD index = 0; index < nt->FileHeader.NumberOfSections; ++index, ++section) {
     if ((section->Characteristics & IMAGE_SCN_MEM_READ) == 0 ||
         (section->Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0 ||
@@ -532,29 +546,15 @@ inline bool RedirectOversizedCubin(
       uint64_t value = 0;
       std::memcpy(&value, bytes + offset, sizeof(value));
       if (value != expected) continue;
-      auto* slot = bytes + offset;
-      DWORD old_protection = 0;
-      if (!VirtualProtect(slot, sizeof(uint64_t), PAGE_READWRITE,
-                          &old_protection)) {
-        continue;
-      }
-      Patch patch;
-      patch.payload = slot;
-      patch.original.assign(slot, slot + sizeof(uint64_t));
-      std::memcpy(slot, &redirected, sizeof(redirected));
-      DWORD ignored = 0;
-      VirtualProtect(slot, sizeof(uint64_t), old_protection, &ignored);
-      patches.push_back(std::move(patch));
-      ++descriptor_count;
+      slots.push_back(reinterpret_cast<uint64_t*>(bytes + offset));
     }
   }
-  if (descriptor_count == 0 || descriptor_count > 32) {
-    std::ostringstream stream;
-    stream << "oversized V3 descriptor reference count is "
-           << descriptor_count << ", expected 1..32";
-    why = stream.str();
-    return false;
-  }
+  std::vector<patching::Write> writes;
+  const bool committed = pointerredirect::Apply(slots, expected, allocation, writes);
+  for (auto& write : writes) if (write.applied)
+    patches.push_back({write.address, std::move(write.original), std::move(write.replacement)});
+  if (!committed) { why = "oversized V3 descriptor transaction failed or count is outside 1..32"; return false; }
+  const size_t descriptor_count = slots.size();
   std::ostringstream stream;
   stream << "redirected " << descriptor_count
          << " exact descriptor reference(s) to a " << rebuilt_size
@@ -571,28 +571,22 @@ inline constexpr bool HasGeneratedCubins() {
 }
 
 inline void Restore(std::vector<Patch>& patches, std::vector<void*>& allocations) {
-  bool restored_all = true;
-  for (auto patch = patches.rbegin(); patch != patches.rend(); ++patch) {
-    if (patch->payload == nullptr || patch->original.empty()) continue;
-    DWORD old_protection = 0;
-    if (VirtualProtect(patch->payload, patch->original.size(), PAGE_READWRITE, &old_protection)) {
-      std::memcpy(patch->payload, patch->original.data(), patch->original.size());
-      DWORD ignored = 0;
-      VirtualProtect(patch->payload, patch->original.size(), old_protection, &ignored);
-    } else {
-      restored_all = false;
-    }
+  std::vector<patching::Write> writes;
+  for (const auto& patch : patches) {
+    if (!patch.payload || patch.original.empty() || patch.replacement.empty()) continue;
+    writes.push_back({patch.payload, patch.original, patch.replacement, true});
   }
-  patches.clear();
-  // Never free a redirected fatbin while a descriptor might still reference
-  // it. A bounded leak on abnormal provider unload is safer than a dangling
-  // CUDA registration pointer.
-  if (restored_all) {
-    for (void* allocation : allocations) {
-      if (allocation != nullptr) VirtualFree(allocation, 0, MEM_RELEASE);
-    }
+  patching::Restore(writes);
+  // Retain every failed/conflicted record so a later safe restore can retry.
+  std::erase_if(patches, [&](const Patch& patch) {
+    return std::any_of(writes.begin(), writes.end(), [&](const auto& w) {
+      return w.address == patch.payload && !w.applied;
+    });
+  });
+  if (patches.empty()) {
+    for (void* allocation : allocations) if (allocation) VirtualFree(allocation, 0, MEM_RELEASE);
+    allocations.clear();
   }
-  allocations.clear();
 }
 
 inline bool Apply(HMODULE module, std::vector<Patch>& patches, std::vector<void*>& allocations,
@@ -601,8 +595,7 @@ inline bool Apply(HMODULE module, std::vector<Patch>& patches, std::vector<void*
                   SilhouetteGuardMode silhouette_guard_mode =
                       SilhouetteGuardMode::Off,
                   bool enable_adaptive_quality = false) {
-  patches.clear();
-  allocations.clear();
+  if (!patches.empty() || !allocations.empty()) { detail = "previous restore is pending"; return false; }
   result = {};
   result.intermediate_scatter_requested = enable_intermediate_scatter;
   result.silhouette_guard_requested =
@@ -898,6 +891,8 @@ inline bool Apply(HMODULE module, std::vector<Patch>& patches, std::vector<void*
     Patch patch;
     patch.payload = candidate.payload;
     patch.original.assign(candidate.payload, candidate.payload + candidate.slot_size);
+    patch.replacement.assign(replacement_data, replacement_data + replacement_size);
+    patch.replacement.resize(candidate.slot_size, 0);
 
     DWORD old_protection = 0;
     if (!VirtualProtect(candidate.payload, candidate.slot_size, PAGE_READWRITE, &old_protection)) {

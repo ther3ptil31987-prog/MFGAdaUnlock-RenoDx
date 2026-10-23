@@ -1227,8 +1227,9 @@ inline void TryInstall() {
 }
 
 inline void Uninstall() {
-  const bool hooked = g_hooked.exchange(false, std::memory_order_acq_rel);
-  if (hooked) hook::Uninstall(internal::g_hooks);
+  const bool hooked = g_hooked.load(std::memory_order_acquire);
+  if (hooked && !hook::Uninstall(internal::g_hooks)) return;
+  g_hooked.store(false, std::memory_order_release);
   // Device allocations are context-owned and intentionally left for CUDA
   // context teardown. Freeing while provider worker streams may still execute
   // would be less safe than bounded process-lifetime retention.

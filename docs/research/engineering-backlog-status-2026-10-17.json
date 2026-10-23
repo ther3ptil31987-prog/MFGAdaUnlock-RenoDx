@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "baseline_commit": "3e898157fd59ed9eef65c181619060ddb305c6bd",
+  "branch": "experimental/1.4.4-engineering-20261017",
+  "gameplay_validation": "pending",
+  "performance_gain_demonstrated": false,
+  "image_quality_gain_demonstrated": false,
+  "items": [
+    {
+      "id": "B01",
+      "status": "implementado",
+      "partial": false,
+      "work": "Manifesto de fonte, flags, payloads, dependencias reais do compilador e captura ligada ao hash do addon.",
+      "remaining_or_limitation": "Provider/feature ativo ainda exige evidencia na captura."
+    },
+    {
+      "id": "M01",
+      "status": "implementado",
+      "partial": false,
+      "work": "Schema semantico e comparator com recusas por dominio, coluna e PresentMode.",
+      "remaining_or_limitation": "Summaries antigos nao ganham identidade retroativa."
+    },
+    {
+      "id": "R01",
+      "status": "implementado",
+      "partial": false,
+      "work": "Identidade integral dos sete cubins originais conhecidos e mutacoes de instrucoes/ABI/metadados.",
+      "remaining_or_limitation": "Providers desconhecidos usam fallback conservador."
+    },
+    {
+      "id": "R02",
+      "status": "implementado",
+      "partial": true,
+      "work": "Dez perfis exatos e transacao de memoria/rollback.",
+      "remaining_or_limitation": "Quiescencia de execucao multibyte e gate do adapter/feature nao foram provados pelo host/runtime."
+    },
+    {
+      "id": "R03",
+      "status": "implementado",
+      "partial": false,
+      "work": "Preflight de referencias e alocacao retida no restore incompleto em todos os redirecionadores.",
+      "remaining_or_limitation": "Conflito excepcional pode reter alocacao ate encerrar o processo."
+    },
+    {
+      "id": "R04",
+      "status": "implementado",
+      "partial": true,
+      "work": "Geracao de modulo, hash normalizado ASLR, ownership e leases limitadas.",
+      "remaining_or_limitation": "Identidade completa de feature/device/recurso e aposentadoria quente dependem da integracao; leases impedem unload."
+    },
+    {
+      "id": "R05",
+      "status": "implementado",
+      "partial": true,
+      "work": "Erros de enumeracao/abertura/registro/attach/commit/detach preservam estado e recusam sucesso falso.",
+      "remaining_or_limitation": "Quiescencia global e unload antes do primeiro Present nao provados; build experimental residente depois dele."
+    },
+    {
+      "id": "L01",
+      "status": "implementado",
+      "partial": false,
+      "work": "Ack serializado, epoch/funcao, timeout/restauracao e janelas novas nao sobrepostas.",
+      "remaining_or_limitation": "Ack de API nao comprova cap fisico nem beneficio de latencia."
+    },
+    {
+      "id": "L02",
+      "status": "bloqueado_dependencia_externa",
+      "partial": false,
+      "work": "Waits NVIDIA preservados; captura antiga nao cobre execucao GPU do jogo.",
+      "remaining_or_limitation": "Captura real com frame/slot/fence/execucao/exibicao e ownership do consumidor."
+    },
+    {
+      "id": "L03",
+      "status": "bloqueado_dependencia_externa",
+      "partial": false,
+      "work": "Loop original mantido; CPU antiga nao demonstra erro de deadline.",
+      "remaining_or_limitation": "Observacao correlacionada de deadline QPC, wakeup, fence e Present no plugin em execucao."
+    },
+    {
+      "id": "P01",
+      "status": "bloqueado_dependencia_externa",
+      "partial": false,
+      "work": "Dez kernels completos compilados e atributos/hashes registrados, sem mudar formulas.",
+      "remaining_or_limitation": "Duracao por dispatch, launch shape, stalls e caminho critico do runtime."
+    },
+    {
+      "id": "P02",
+      "status": "implementado",
+      "partial": false,
+      "work": "Buffer local comum com fallback longo; 10000 Notify aquecidos sem alocacao C++ de heap.",
+      "remaining_or_limitation": "FPS e demais custos de observacao nao medidos em jogo."
+    },
+    {
+      "id": "P03",
+      "status": "bloqueado_dependencia_externa",
+      "partial": false,
+      "work": "Ownership nativo mantido e contratos de memoria existentes testados.",
+      "remaining_or_limitation": "Alloc/free, copias, residencia e lifetime de consumidores reais em ciclos FG/resize."
+    },
+    {
+      "id": "Q01",
+      "status": "bloqueado_dependencia_externa",
+      "partial": false,
+      "work": "Ablacoes estruturais e roundtrips offline disponiveis.",
+      "remaining_or_limitation": "Comparacao visual cega em movimento com frames gerados/fase e desempenho correlacionados."
+    },
+    {
+      "id": "Q02",
+      "status": "validado_sem_mudanca",
+      "partial": false,
+      "work": "16384 casos do fragmento fotometrico V3 executados na GPU contra oracle FP32, sem falha.",
+      "remaining_or_limitation": "Dominio de cor/encoding e beneficio visual no jogo ainda sem demonstracao."
+    },
+    {
+      "id": "Q03",
+      "status": "bloqueado_dependencia_externa",
+      "partial": false,
+      "work": "Diagnostico de tags/constantes preservado, sem reescrever inputs.",
+      "remaining_or_limitation": "Conteudo real de MV/depth/jitter e fase temporal correlacionados."
+    },
+    {
+      "id": "X01",
+      "status": "bloqueado_dependencia_externa",
+      "partial": false,
+      "work": "Backend existente permanece excluido pela politica estavel; testes existentes passaram.",
+      "remaining_or_limitation": "Geracoes de recurso/contexto, ordenacao, resets e custo real precisam de validacao antes da ativacao."
+    },
+    {
+      "id": "X02",
+      "status": "bloqueado_dependencia_externa",
+      "partial": false,
+      "work": "Pacer nativo/laboratorio existentes preservados; nenhum segundo consumer de sinal.",
+      "remaining_or_limitation": "Interface demonstrada com ownership exclusivo de waitable/Present/markers. Port direto Intel e polling GPU como display engine rejeitados sem esse contrato."
+    }
+  ]
+}

@@ -237,6 +237,9 @@ inline std::atomic_bool g_latency_guard_queue_timing_confident{false};
 inline std::atomic<unsigned int> g_latency_guard_timing_issue_mask{
     latency::kTimingNotFresh};
 inline std::atomic_bool g_latency_guard_oversubscribed{false};
+inline std::atomic<uint32_t> g_queue_cap_ack{0};
+inline std::atomic<uint64_t> g_queue_cap_ack_epoch{0};
+inline std::atomic<uintptr_t> g_queue_cap_ack_function{0};
 inline std::atomic_bool g_latency_guard_auto_cap_ready{false};
 inline std::atomic<unsigned int> g_latency_guard_stable_samples{0};
 inline std::atomic<unsigned int> g_latency_guard_clear_samples{0};
@@ -766,7 +769,7 @@ inline bool IsTransientDynamicFailure(sl::Result result) {
 inline void ObserveStreamlineFunctionOwner(const void* function) {
   HMODULE owner = nullptr;
   const auto version = runtimeversion::FromAddress(function, &owner);
-  if (!version.valid || owner == nullptr) return;
+  if (!version.valid || owner == nullptr || !modulesession::Acquire(owner)) return;
 
   std::vector<wchar_t> path(32768);
   const DWORD length =
@@ -785,6 +788,20 @@ inline void ObserveStreamlineFunctionOwner(const void* function) {
       std::wcsstr(path.data(), L"\\models\\sl_dlss_g_0\\") != nullptr ||
       std::wcsstr(path.data(), L"sl.interposer") != nullptr;
   if (is_streamline_owner) ObserveStreamlinePluginVersion(owner, true);
+}
+
+// The submission lock publishes the cap, epoch and function as one snapshot.
+// Contention is unknown, never an acknowledgment or a reason to block Present.
+inline uint32_t ReadQueueCapAck() {
+  if (!TryAcquireSRWLockShared(&g_reflex_submit_lock)) return UINT32_MAX;
+  const auto epoch = g_latency_guard_epoch.load(std::memory_order_acquire);
+  const auto real = g_real_reflex_set_options.load(std::memory_order_acquire);
+  const bool valid = g_last_accepted_reflex_valid &&
+      g_queue_cap_ack_epoch.load(std::memory_order_acquire) == epoch &&
+      g_queue_cap_ack_function.load(std::memory_order_relaxed) == reinterpret_cast<uintptr_t>(real);
+  const auto cap = valid ? g_queue_cap_ack.load(std::memory_order_relaxed) : UINT32_MAX;
+  ReleaseSRWLockShared(&g_reflex_submit_lock);
+  return cap;
 }
 
 inline sl::Result SubmitReflexOptions(const sl::ReflexOptions& native_options, bool refresh = false) {
@@ -900,6 +917,13 @@ inline sl::Result SubmitReflexOptions(const sl::ReflexOptions& native_options, b
       new_source = static_cast<unsigned int>(ReflexTargetSource::kVrrHeadroom);
     }
   }
+  g_queue_cap_ack.store(result == sl::Result::eOk &&
+      new_source == static_cast<unsigned int>(ReflexTargetSource::kLatencyGuard)
+          ? g_latency_guard_active_source_cap_fps.load(std::memory_order_relaxed) : 0,
+      std::memory_order_relaxed);
+  g_queue_cap_ack_function.store(reinterpret_cast<uintptr_t>(real), std::memory_order_relaxed);
+  g_queue_cap_ack_epoch.store(result == sl::Result::eOk
+      ? g_latency_guard_epoch.load(std::memory_order_acquire) : 0, std::memory_order_release);
   const unsigned int previous_source =
       g_reflex_limit_source.exchange(new_source, std::memory_order_acq_rel);
   const bool was_applied = g_reflex_limit_applied.exchange(
@@ -2638,7 +2662,7 @@ inline void TryInstall() {
 
 inline void Uninstall() {
   if (!g_hooked.load(std::memory_order_acquire)) return;
-  if (!internal::g_installed_hooks.empty()) hook::Uninstall(internal::g_installed_hooks);
+  if (!internal::g_installed_hooks.empty() && !hook::Uninstall(internal::g_installed_hooks)) return;
   internal::g_installed_hooks.clear();
   g_hooked.store(false, std::memory_order_release);
 }

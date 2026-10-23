@@ -1,0 +1,245 @@
+{
+  "profiles": [
+    {
+      "name": "nvngx_dlssg.dll",
+      "sha256": "ff6e90eb78b827927dff5b4ecc6b1c870c2e9bca29ed9f48c7d348cc9e170b82",
+      "timestamp": 1788370993,
+      "image_size": 7565312,
+      "code_hash": "1a387508badc32e6",
+      "sites": [
+        {
+          "kind": "arch",
+          "rva": 92258,
+          "before": "81fdb0010000",
+          "after": "81fd90010000"
+        },
+        {
+          "kind": "arch",
+          "rva": 220751,
+          "before": "3db0010000",
+          "after": "3d90010000"
+        }
+      ],
+      "legacy_field": null,
+      "legacy_value": null
+    },
+    {
+      "name": "nvngx_dlssg.dll",
+      "sha256": "8d59d49b36410dd6b62fef2503a5871d347415bd85d943fa0848563a95dd50c7",
+      "timestamp": 1790351735,
+      "image_size": 7618560,
+      "code_hash": "271265bff0e6ceb7",
+      "sites": [
+        {
+          "kind": "arch",
+          "rva": 92498,
+          "before": "81fdb0010000",
+          "after": "81fd90010000"
+        },
+        {
+          "kind": "arch",
+          "rva": 222101,
+          "before": "3db0010000",
+          "after": "3d90010000"
+        }
+      ],
+      "legacy_field": null,
+      "legacy_value": null
+    },
+    {
+      "name": "sl.dlss_g.dll",
+      "sha256": "3ed9538df724993bea8a050195a6a78b9c8c8a566d5b05ade477aab3c390e90f",
+      "timestamp": 1791300598,
+      "image_size": 643072,
+      "code_hash": "c65031e00e065c12",
+      "sites": [
+        {
+          "kind": "ceiling",
+          "rva": 366082,
+          "before": "ba050000003bca0f42d1",
+          "after": "ba050000003bca0f42d2"
+        },
+        {
+          "kind": "legacy",
+          "rva": 259470,
+          "before": "4088bb20450000",
+          "after": "c6832045000001"
+        }
+      ],
+      "legacy_field": 17696,
+      "legacy_value": 1
+    },
+    {
+      "name": "sl.dlss_g.dll",
+      "sha256": "d7fa7559194b7b31487ed31697282f27f1c25adc6ac3332ad1c1ee5f42cf09da",
+      "timestamp": 1750271984,
+      "image_size": 454656,
+      "code_hash": "5e365664658fbb7d",
+      "sites": [
+        {
+          "kind": "ceiling",
+          "rva": 223892,
+          "before": "ba030000003bca0f42d1",
+          "after": "ba030000003bca0f42d2"
+        },
+        {
+          "kind": "legacy",
+          "rva": 129871,
+          "before": "c683bc38000001",
+          "after": "c683bc38000000"
+        },
+        {
+          "kind": "legacy",
+          "rva": 130131,
+          "before": "c683bc38000001",
+          "after": "c683bc38000000"
+        }
+      ],
+      "legacy_field": 14524,
+      "legacy_value": 0
+    },
+    {
+      "name": "160_E658700.bin",
+      "sha256": "83230804a087272c6d7eb4c805ac5925ce1188c70f150cc8dbd5cd843f53946a",
+      "timestamp": 1772742300,
+      "image_size": 7606272,
+      "code_hash": "9b7b82e0dc23aff8",
+      "sites": [
+        {
+          "kind": "arch",
+          "rva": 106566,
+          "before": "81feb0010000",
+          "after": "81fe90010000"
+        },
+        {
+          "kind": "arch",
+          "rva": 212767,
+          "before": "3db0010000",
+          "after": "3d90010000"
+        }
+      ],
+      "legacy_field": null,
+      "legacy_value": null
+    },
+    {
+      "name": "160_E658700.bin",
+      "sha256": "20c18281e88f376bd6a0c1ab5ecfcb6f1bed931b928f956299d3489703b84cc3",
+      "timestamp": 1786753737,
+      "image_size": 7622656,
+      "code_hash": "3bd61c418cacd0d1",
+      "sites": [
+        {
+          "kind": "arch",
+          "rva": 108956,
+          "before": "81fdb0010000",
+          "after": "81fd90010000"
+        },
+        {
+          "kind": "arch",
+          "rva": 237263,
+          "before": "3db0010000",
+          "after": "3d90010000"
+        }
+      ],
+      "legacy_field": null,
+      "legacy_value": null
+    },
+    {
+      "name": "160_E658700.bin",
+      "sha256": "c64928fdb7c48a57722ea8eef2662171edc323473adea66c29a206a23f1a2bed",
+      "timestamp": 1787250093,
+      "image_size": 7565312,
+      "code_hash": "be345258bca023c6",
+      "sites": [
+        {
+          "kind": "arch",
+          "rva": 92274,
+          "before": "81fdb0010000",
+          "after": "81fd90010000"
+        },
+        {
+          "kind": "arch",
+          "rva": 220783,
+          "before": "3db0010000",
+          "after": "3d90010000"
+        }
+      ],
+      "legacy_field": null,
+      "legacy_value": null
+    },
+    {
+      "name": "160_E658700.bin",
+      "sha256": "cadee1aa6db3907babdc3285da2aebc4553d92b89c38ba3eae8abd8bba1bea72",
+      "timestamp": 1790351735,
+      "image_size": 7618560,
+      "code_hash": "dd8907b9b05a303f",
+      "sites": [
+        {
+          "kind": "arch",
+          "rva": 92514,
+          "before": "81fdb0010000",
+          "after": "81fd90010000"
+        },
+        {
+          "kind": "arch",
+          "rva": 222133,
+          "before": "3db0010000",
+          "after": "3d90010000"
+        }
+      ],
+      "legacy_field": null,
+      "legacy_value": null
+    }
+  ],
+  "kernel_identities": [
+    [
+      12032,
+      784,
+      48,
+      15008,
+      "393c0362ab39ca20"
+    ],
+    [
+      12032,
+      784,
+      48,
+      15008,
+      "ba2ad98ffeafb4f5"
+    ],
+    [
+      12032,
+      784,
+      48,
+      15136,
+      "c4a5eb4a8694f835"
+    ],
+    [
+      14464,
+      3920,
+      23,
+      17440,
+      "b0c33a7b62325f66"
+    ],
+    [
+      14464,
+      3920,
+      23,
+      17568,
+      "1ba6454ab039f9dd"
+    ],
+    [
+      36992,
+      7776,
+      39,
+      39712,
+      "dd991f74dc082e37"
+    ],
+    [
+      36992,
+      7776,
+      39,
+      39968,
+      "9642092def23b3df"
+    ]
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "schema": 1,
+  "note": "Field sessions copied from the game folders. Expectations change only with new field evidence.",
+  "sessions": {
+    "plague-tale-rc4.jsonl": {
+      "game": "Resonance: A Plague Tale Legacy (Xbox)",
+      "addon_sha256": "0c989c75e655260d40dec3fe14d13f94484a838cad64b3b4b41ae446a35c6e92",
+      "route": "streamline",
+      "fg_requested": true,
+      "interpolated": false,
+      "blocker": "source_wait_not_completed",
+      "cause": "source_wait_missing",
+      "explicit_sleep_rejections": 0
+    },
+    "plague-tale-rc5.jsonl": {
+      "game": "Resonance: A Plague Tale Legacy (Xbox)",
+      "addon_sha256": "490cee05516a2691",
+      "route": "streamline",
+      "fg_requested": true,
+      "interpolated": false,
+      "blocker": "source_wait_not_completed",
+      "cause": "boundary_sleep_failed",
+      "boundary_sleep_result": 14,
+      "explicit_sleep_rejections": 0
+    },
+    "death-stranding-2-rc3-streamline.jsonl": {
+      "game": "Death Stranding 2 (Steam)",
+      "addon_sha256": "rc3",
+      "route": "streamline",
+      "fg_requested": true,
+      "interpolated": false,
+      "blocker": "constants_incompatible",
+      "cause": "jittered_motion_unsupported"
+    },
+    "death-stranding-2-rc4.jsonl": {
+      "game": "Death Stranding 2 (Steam)",
+      "addon_sha256": "0c989c75e655260d40dec3fe14d13f94484a838cad64b3b4b41ae446a35c6e92",
+      "route": "native_xefg",
+      "interpolated": false,
+      "cause": "jittered_motion_unsupported"
+    },
+    "death-stranding-2-rc5.jsonl": {
+      "game": "Death Stranding 2 (Steam)",
+      "addon_sha256": "490cee05516a2691",
+      "route": "native_xefg",
+      "interpolated": false,
+      "cause": "jittered_motion_unsupported"
+    },
+    "plague-tale-1.4-xell.jsonl": {
+      "game": "Resonance: A Plague Tale Legacy (Xbox)",
+      "addon_sha256": "plan item 1.4 build (local)",
+      "route": "streamline",
+      "fg_requested": true,
+      "interpolated": false,
+      "blocker": "source_wait_not_completed",
+      "cause": "xell_frame_sequence_gap",
+      "xell_failure": {
+        "operation": "sleep",
+        "xell_result": -4
+      }
+    },
+    "plague-tale-1.4-trace.jsonl": {
+      "game": "Resonance: A Plague Tale Legacy (Xbox), StallTrace=1",
+      "addon_sha256": "plan item 1.4 build (local)",
+      "route": "streamline",
+      "fg_requested": true,
+      "interpolated": false,
+      "cause": "xell_frame_sequence_gap"
+    },
+    "plague-tale-2.0-interpolating.jsonl": {
+      "game": "Resonance: A Plague Tale Legacy (Xbox)",
+      "addon_sha256": "plan item 2.0 build (local)",
+      "route": "streamline",
+      "fg_requested": true,
+      "interpolated": true,
+      "blocker": "ready",
+      "cause": "interpolating"
+    },
+    "death-stranding-2-final-interpolating.jsonl": {
+      "game": "Death Stranding 2 (Steam)",
+      "addon_sha256": "d3d2b5694d70206e66f639320d01edbe61d04f143be91aade9f1a1d93bb440a3",
+      "route": "streamline",
+      "fg_requested": true,
+      "interpolated": true,
+      "blocker": "ready",
+      "cause": "interpolating",
+      "explicit_sleep_rejections": 0
+    }
+  }
+}

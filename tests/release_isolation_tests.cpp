@@ -21,10 +21,12 @@ int main() {
   const auto addon = Read(root / "src/addons/mfgunlock/addon.cpp");
   CHECK(addon.find("Release 1.4.3 - Continuous Border Stability") != std::string::npos);
   CHECK(addon.find("Release 1.4.4 - DLSS-G 310.9.16 Hotfix") != std::string::npos);
+  CHECK(addon.find("Release 1.4.5 - Engineering & Reliability") != std::string::npos);
   CHECK(addon.find("Release 1.4.2 - Local Stability & CPU Overhead") != std::string::npos);
   CHECK(addon.find("Stability Lab experimental") == std::string::npos);
   const auto build = Read(root / "tests/CMakeLists.txt");
   CHECK(build.find("MFGUNLOCK_RELEASE_1_4_4") != std::string::npos);
+  CHECK(build.find("MFGUNLOCK_RELEASE_1_4_5") != std::string::npos);
   CHECK(build.find("release-1.4.4") != std::string::npos);
   CHECK(build.find("MFGUNLOCK_LOCAL_LOW_OVERHEAD MFGUNLOCK_LOCAL_STABILITY") != std::string::npos);
   CHECK(build.find("MFGUNLOCK_NVAPI_TEMPORAL") == std::string::npos);

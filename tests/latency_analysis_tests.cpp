@@ -70,14 +70,18 @@ int main() {
   CHECK(a.source_timing_confident && !a.queue_timing_confident);
 
   latency::QueueTrial trial;
-  CHECK(trial.Update(0,1,4,true,97,10000,3000,12000)==0);
-  for(uint64_t t=30000;t<31500;t+=500) CHECK(trial.Update(t,1,4,true,97,10000,3000,12000)==0);
-  CHECK(trial.Update(31500,1,4,true,97,10000,3000,12000)==97);
-  CHECK(trial.Update(35500,1,4,true,0,10300,1000,11000)==97);
-  CHECK(trial.accepted); // beneficial low queue must not immediately remove its own cap
-  CHECK(trial.Update(36000,1,4,true,0,14000,1000,11000)==0); // base-FPS loss rolls back
-  CHECK(trial.Update(36500,1,4,true,97,10000,3000,12000)==0); // cooldown
-  CHECK(trial.Update(67000,1,4,false,97,10000,3000,12000)==0);
+  CHECK(trial.Update(0,1,4,true,97,10000,3000,12000,0,1,64)==0);
+  for(uint64_t t=30000;t<31500;t+=500)
+    CHECK(trial.Update(t,1,4,true,97,10000,3000,12000,0,t,t+63)==0);
+  CHECK(trial.Update(31500,1,4,true,97,10000,3000,12000,0,31500,31563)==97);
+  CHECK(trial.Update(32000,1,4,true,0,10300,1000,11000,97,32000,32063)==97);
+  CHECK(trial.Update(32500,1,4,true,0,10300,1000,11000,97,32100,32163)==97);
+  CHECK(trial.Update(34500,1,4,true,0,10300,1000,11000,97,32200,32263)==97);
+  CHECK(trial.Update(36500,1,4,true,0,10300,1000,11000,97,32300,32363)==97);
+  CHECK(trial.accepted);
+  CHECK(trial.Update(37000,1,4,true,0,14000,1000,11000,97,32400,32463)==0);
+  CHECK(trial.Update(37500,1,4,true,97,10000,3000,12000,0,32500,32563)==0);
+  CHECK(trial.Update(68000,1,4,false,97,10000,3000,12000)==0);
 
   using latency::MultiplierTrialPhase;
   using latency::ResponsiveTrialReason;

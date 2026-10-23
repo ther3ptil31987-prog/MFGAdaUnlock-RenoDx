@@ -106,6 +106,10 @@ int wmain(int argc, wchar_t** argv) {
     return 3;
   }
 
+  const auto* image_base = reinterpret_cast<const uint8_t*>(module);
+  const auto* image_dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(image_base);
+  const auto* image_nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(image_base + image_dos->e_lfanew);
+  const std::vector<uint8_t> image_before(image_base, image_base + image_nt->OptionalHeader.SizeOfImage);
   std::cout << "arch_gates=" << CountArchGates(module) << '\n';
   std::cout << "has_flip_meter_marker="
             << (Contains(module, "FG1 DLL has been detected") ? "yes" : "no") << '\n';
@@ -202,6 +206,9 @@ int wmain(int argc, wchar_t** argv) {
             << '\n';
   std::cout << "temporal_detail=" << detail << '\n';
   mfgunlock::midpoint::Restore(patches, allocation);
+  const bool restored = std::memcmp(image_base, image_before.data(), image_before.size()) == 0;
+  std::cout << "complete_image_restore=" << (restored ? "yes" : "no") << '\n';
+  if (!restored) return 5;
   FreeLibrary(module);
   return temporal_supported && (!refined ||
       (silhouette_result.refined_geometry && thin_result.validated_warp_blend.applied)) &&

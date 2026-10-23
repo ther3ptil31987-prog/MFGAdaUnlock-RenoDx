@@ -1,0 +1,546 @@
+{"tick":21122218,"pid":24404,"event":"native_factory_hooks","legacy":true,"hwnd":true}
+{"tick":21122218,"pid":24404,"event":"runtime_selection","provider_path":"C:\\Program Files (x86)\\Steam\\steamapps\\common\\DEATH STRANDING 2 - ON THE BEACH\\libxess_fg.dll","xell_path":"C:\\Program Files (x86)\\Steam\\steamapps\\common\\DEATH STRANDING 2 - ON THE BEACH\\libxell.dll","provider_sha256":"ec5e0c65e075570c6ede72618bb666d0be0c2e10b2ea9762c0fe8cb8e375ab27","xell_sha256":"61aeeab7fdcfb6d1742f86c14c68c663d759607d01a6132645c857291eaebb86"}
+{"tick":21122281,"pid":24404,"event":"ready","provider_sha256":"ec5e0c65e075570c6ede72618bb666d0be0c2e10b2ea9762c0fe8cb8e375ab27","xell_sha256":"61aeeab7fdcfb6d1742f86c14c68c663d759607d01a6132645c857291eaebb86"}
+{"tick":21122859,"pid":24404,"event":"native_presentation_isolation","boundary":"slSetD3DDevice","result":0,"isolated":true,"game_loaded":true}
+{"tick":21124531,"pid":24404,"event":"native_marker_hook","api":"slPCLSetMarker","aliased":false}
+{"tick":21124562,"pid":24404,"event":"native_marker_hook","api":"slReflexSetMarker","aliased":false}
+{"tick":21124562,"pid":24404,"event":"native_game_state","native_status":0,"reported_status":0}
+{"tick":21124671,"pid":24404,"event":"shader_port_applied","programs":54,"replacements":7}
+{"tick":21124687,"pid":24404,"event":"model_port_applied","donor_model":15,"target_model":16,"portable_layout":true,"edits":167,"reconstruction_texture":true,"mfg_weights_preserved":true,"real_vendor_preserved":true}
+{"tick":21124687,"pid":24404,"event":"model_prepared_before_create","owner":"game","caller":"DS2.exe"}
+{"tick":21124718,"pid":24404,"event":"context_create","result":0,"mfg_model":true,"owner":"game","handle":1921853179424}
+{"tick":21126625,"pid":24404,"event":"native_transport_identity","output":1,"queue_unwrapped":true,"factory_unwrapped":true}
+{"tick":21126703,"pid":24404,"event":"cuda_route","state":"active","compute_capability":"8.9","kernels":16,"layers":17,"device_vtables":1,"device":"runtime"}
+{"tick":21126750,"pid":24404,"event":"context_create","result":0,"mfg_model":true,"owner":"host","handle":1921853194752}
+{"tick":21126750,"pid":24404,"event":"native_latency_binding","output":"XeLL","external_profile":false,"result":0}
+{"tick":21126937,"pid":24404,"event":"native_final_overlay","manual_runtime":true}
+{"tick":21126937,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":1}
+{"tick":21126937,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":2}
+{"tick":21126937,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":3}
+{"tick":21126937,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":4}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3382932007451256887951","bytes":7296,"sha256":"a6aefb7a73e48f5ce04cf3b34ecd66ed4b5b0692fc30042c3da6609da19398e7"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3372932007451256887951","bytes":4324,"sha256":"3eb241c8b60e7894423ed26cb028dbaeb33b8070041fed16b4ce067792414029"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3412932007451256887951","bytes":6676,"sha256":"ced2990ca1b3d8b547be11205800645626689043a5a79b2760b4910fbd668b05"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3402932007451256887951","bytes":4680,"sha256":"79a113c97b8d043c1a28bad600c59f34ed1cfa3ea012fc97dd1d5515342ffb64"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3422298236854294675230","bytes":2684,"sha256":"0be5240659a663a1fe5ca4c13130abb6f12caea712ca925913486cf3377173fd"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3422298239053317931652","bytes":2320,"sha256":"93506b10b8d35e77ffe511f967a4dcded6cb468d0293bc33c1a18d85b5dfe8c7"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3422298242351852816285","bytes":2204,"sha256":"b2f8fd5c6c6c51a3dd61c83747c2a5a2b256b1e845890b49a92db2fa925800b4"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"34212412349243503113810","bytes":2552,"sha256":"fc68cb621ecb3dd6483376cafdc6394f7d5edd3f899a70ccf6e4b4e1589c0bf3"}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"345629657834658089628","bytes":9204}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3459900000412734828113","bytes":15788}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"34518137713159675323900","bytes":13704,"sha256":"8c1d7667722c8692b376ed7511723b5e58efd61d4a4b8c4b61a1233f75df76ee"}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3452159554838854843181","bytes":15948}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3454723847365348416138","bytes":15948}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3452733261465573612279","bytes":15948}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"34515410463317489640932","bytes":15948}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"34515657724417237518993","bytes":15948}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"34516380930220257970286","bytes":15948}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3459485083775095487499","bytes":15948}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3461420893142609508058","bytes":7332}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3524380691093124776041","bytes":5272}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3538061481683726607905","bytes":5520}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3538061477285680095061","bytes":5520}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3538061483882749864327","bytes":5520}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3538061481683726607905","bytes":5520}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"34811228111448562003997","bytes":4824}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"34511160110267935226759","bytes":20372}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3459329944122678765355","bytes":23508,"sha256":"338f19578972fb48fdba84ef5f4759f8033cee115827d1a3bb71caae84492259"}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"34517926239615626135843","bytes":26164}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"34512590224519095474266","bytes":23912,"sha256":"09887269759ef4d7588315f29e71126c899fde79f9edb336eedd598c662d4aea"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"34516686212240680670709","bytes":23912,"sha256":"09887269759ef4d7588315f29e71126c899fde79f9edb336eedd598c662d4aea"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3454213313733648621780","bytes":23912,"sha256":"09887269759ef4d7588315f29e71126c899fde79f9edb336eedd598c662d4aea"}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3452703420262894380461","bytes":26164}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"34513405466145798375150","bytes":26164}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3453044563380101633987","bytes":26164}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"34510549607087156077416","bytes":26164}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"346228873022202761969","bytes":6848}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"3523094507705513878191","bytes":5284}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"35410973953344258585239","bytes":4012,"sha256":"c3649191906bdd300462dbafe6add8f82b09e8e10c41e92784a209d99513224b"}
+{"tick":21127015,"pid":24404,"event":"shader_replaced","key":"35410973953344258585239","native_sha256":"c3649191906bdd300462dbafe6add8f82b09e8e10c41e92784a209d99513224b","replacement":"shaders/splat_motion_aware_inverted.dxil","bytes":5328}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3564680502281068082690","bytes":3852,"sha256":"9ef8c15d23bf0e2f8b8086e046e6705c497d4499ea8e41ec922474cd2582e42f"}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"35118300971948070613363","bytes":49580}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"35118300970848558985152","bytes":49372}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"351747859676298538780","bytes":49580}
+{"tick":21127015,"pid":24404,"event":"shader_supplied","key":"351747860775810166991","bytes":49372}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"34317823417859496897316","bytes":47728,"sha256":"8c2efb9e955f39379a91887ed3d90412c4b7ae2c142a874e3da5f699de197f7c"}
+{"tick":21127015,"pid":24404,"event":"shader_replaced","key":"34317823417859496897316","native_sha256":"8c2efb9e955f39379a91887ed3d90412c4b7ae2c142a874e3da5f699de197f7c","replacement":"shaders/unet_aa016078.dxil","bytes":92932}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"34312074563541326125447","bytes":53304,"sha256":"aac1354a8004fe0aae02947a372f622a84b8d61c1691fc77d7fddedaf74ad36b"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"34316725787741163284230","bytes":54196,"sha256":"ba5c8b9ea1aa3aa3ce12acb4c2ff4c7c32d2bccab304c539246ad83f737523a0"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3438921062876375065645","bytes":54224,"sha256":"40e159414d5b839ba7e0e07cbf8ff4ef425ee026c216b2928ef3bb6dd0e20d40"}
+{"tick":21127015,"pid":24404,"event":"shader_replaced","key":"3438921062876375065645","native_sha256":"40e159414d5b839ba7e0e07cbf8ff4ef425ee026c216b2928ef3bb6dd0e20d40","replacement":"shaders/unet_efbe3788.dxil","bytes":54388}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3436720865263060046332","bytes":56256,"sha256":"fea66ef764b267613725fd37be22dc279b23280ffa132e53c285a798ac27df5e"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"344884884304795382346","bytes":57376,"sha256":"8291bbc36b1100b07d0788f35a3a9fadfbfcc2267ff0ccb7afb114d76f5d69fe"}
+{"tick":21127015,"pid":24404,"event":"shader_replaced","key":"344884884304795382346","native_sha256":"8291bbc36b1100b07d0788f35a3a9fadfbfcc2267ff0ccb7afb114d76f5d69fe","replacement":"shaders/unet_748b0baf.dxil","bytes":38104}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"34310445887535512481599","bytes":56280,"sha256":"51f5754a8f4dd34791351f2156f121c4cf119a5fae63bce76266a66b7a097d9a"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"34416741796308765268048","bytes":57372,"sha256":"a60f7488872a675d66afd2bec02b0b89e3cc38c1c4ed1d25d745a7b2fe677412"}
+{"tick":21127015,"pid":24404,"event":"shader_replaced","key":"34416741796308765268048","native_sha256":"a60f7488872a675d66afd2bec02b0b89e3cc38c1c4ed1d25d745a7b2fe677412","replacement":"shaders/unet_cb391582.dxil","bytes":38124}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3439542084639968277989","bytes":35316,"sha256":"3cdf1a4746fc91bf161f320e0256dbbccc954e774add6ac53caf50b7d1be69f7"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"34416316347250620665556","bytes":35852,"sha256":"01c8beac27d3f3f82ecba8f3dc2d9d8b60d4c175a41df3c24a24e8643f5578f5"}
+{"tick":21127015,"pid":24404,"event":"shader_replaced","key":"34416316347250620665556","native_sha256":"01c8beac27d3f3f82ecba8f3dc2d9d8b60d4c175a41df3c24a24e8643f5578f5","replacement":"shaders/unet_3ed03daf.dxil","bytes":37760}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"3434482239887615102243","bytes":28764,"sha256":"8cffea0f51779e7ddea756043802e9635d6b853d6aee2176ffb1f25a605750c0"}
+{"tick":21127015,"pid":24404,"event":"shader_replaced","key":"34416316347250620665556","native_sha256":"01c8beac27d3f3f82ecba8f3dc2d9d8b60d4c175a41df3c24a24e8643f5578f5","replacement":"shaders/unet_3ed03daf.dxil","bytes":37760}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"34716470472788444214591","bytes":6108,"sha256":"efc1536e7b04f1ea3a4a5deacabad372464e198b0a1ff6e1891b02ef6332cd54"}
+{"tick":21127015,"pid":24404,"event":"shader_native_lookup","key":"34714867538610518839140","bytes":6032,"sha256":"cd506291d980f99decc55b3d1595b021b805cd499991ea6750b44e0fe6222249"}
+{"tick":21127015,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":5}
+{"tick":21127546,"pid":24404,"event":"cuda_layer","program":"3452733","kernel":"L_3452733"}
+{"tick":21127546,"pid":24404,"event":"cuda_layer","program":"3459485","kernel":"L_3459485"}
+{"tick":21127578,"pid":24404,"event":"cuda_layer","program":"fc1b8a04","kernel":"L_fc1b8a04"}
+{"tick":21127765,"pid":24404,"event":"cuda_layer","program":"55e5d6b9","kernel":"L_flow16_acc17"}
+{"tick":21127765,"pid":24404,"event":"cuda_layer","program":"34517926","kernel":"L_flow16_acc17"}
+{"tick":21127765,"pid":24404,"event":"cuda_layer","program":"3453044","kernel":"L_3453044"}
+{"tick":21128015,"pid":24404,"event":"cuda_layer","program":"9481d452","kernel":"L_9481d452"}
+{"tick":21128109,"pid":24404,"event":"cuda_layer","program":"06e97933","kernel":"L_06e97933"}
+{"tick":21128109,"pid":24404,"event":"cuda_layer","program":"3ed03daf","kernel":"L_3ed03daf","source":"rtxmfg"}
+{"tick":21128218,"pid":24404,"event":"cuda_layer","program":"748b0baf","kernel":"L_748b0baf","source":"rtxmfg"}
+{"tick":21128265,"pid":24404,"event":"cuda_layer","program":"198d6bf8","kernel":"L_198d6bf8"}
+{"tick":21128281,"pid":24404,"event":"cuda_layer","program":"cb391582","kernel":"L_cb391582","source":"rtxmfg"}
+{"tick":21128296,"pid":24404,"event":"cuda_layer","program":"dcd8becf","kernel":"L_dcd8becf"}
+{"tick":21128312,"pid":24404,"event":"cuda_layer","program":"efbe3788","kernel":"L_efbe3788","source":"rtxmfg"}
+{"tick":21128343,"pid":24404,"event":"cuda_layer","program":"50f0c205","kernel":"L_50f0c205"}
+{"tick":21128390,"pid":24404,"event":"cuda_layer","program":"a3c3caa1","kernel":"L_a3c3caa1"}
+{"tick":21128406,"pid":24404,"event":"cuda_layer","program":"aa016078","kernel":"L_aa016078","source":"rtxmfg"}
+{"tick":21128437,"pid":24404,"event":"flip_metering_available","lead_us":2500}
+{"tick":21128546,"pid":24404,"event":"extra_pacing_hook","native_present_rva":2225968,"extra_return_rva":2228973,"first_return_rva":2231730,"real_return_rva":2229351,"deadline_hook":true,"profile_verified":true,"first_caller_verified":true,"family":"fg78"}
+{"tick":21128546,"pid":24404,"event":"flip_metering_queue","generation":2,"resolved":true,"queue":1921857234240,"enabled":true,"lead_ns":2500000,"first_caller_verified":true}
+{"tick":21128546,"pid":24404,"event":"extra_pacing_owner","generation":2,"handle":1921853194752,"sdk_swapchain":1921864504144,"presenter":1922069178080,"native_swapchain":1921825025376,"application_device":1921340572944,"presenter_device":1921340572944,"native_device_identity_used":false}
+{"tick":21128546,"pid":24404,"event":"context_initialized","paced":true,"owner":"host","generation":2}
+{"tick":21128546,"pid":24404,"event":"native_window_bind","hwnd":460024,"thread":27256,"available":true,"error":0}
+{"tick":21128546,"pid":24404,"event":"native_bridge","detail":"XeMFG swapchain ready; waiting for Streamline inputs and XeLL markers"}
+{"tick":21128781,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21128781,"pid":24404,"event":"native_bypass_present_id","id":1,"result":0}
+{"tick":21128781,"pid":24404,"event":"native_frame_admission","id":1,"native_off":0,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21128781,"pid":24404,"event":"native_bridge","detail":"The game has paused frame generation"}
+{"tick":21128812,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21132187,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132187,"pid":24404,"event":"native_bypass_present_id","id":2,"result":0}
+{"tick":21132187,"pid":24404,"event":"native_frame_admission","id":2,"native_off":0,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21132203,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21132203,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132203,"pid":24404,"event":"native_bypass_present_id","id":3,"result":0}
+{"tick":21132203,"pid":24404,"event":"native_frame_admission","id":3,"native_off":0,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21132312,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132312,"pid":24404,"event":"native_bypass_present_id","id":4,"result":0}
+{"tick":21132312,"pid":24404,"event":"native_frame_admission","id":4,"native_off":0,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21132312,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132312,"pid":24404,"event":"native_bypass_present_id","id":5,"result":0}
+{"tick":21132328,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132328,"pid":24404,"event":"native_bypass_present_id","id":6,"result":0}
+{"tick":21132328,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132328,"pid":24404,"event":"native_bypass_present_id","id":7,"result":0}
+{"tick":21132328,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132328,"pid":24404,"event":"native_bypass_present_id","id":8,"result":0}
+{"tick":21132343,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132359,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132359,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132359,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132359,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132359,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132375,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21132375,"pid":24404,"event":"native_viewport_options","viewport":0,"mode":0,"selected":4294967295}
+{"tick":21133500,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21133796,"pid":24404,"event":"native_game_options","viewport":0,"mode":1,"version":5,"native_disable_result":0}
+{"tick":21133796,"pid":24404,"event":"native_frame_admission","id":221,"native_off":1,"requested":1,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"depth_unavailable","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21133796,"pid":24404,"event":"native_bridge","detail":"Waiting for a depth input for this frame"}
+{"tick":21133953,"pid":24404,"event":"native_game_options","viewport":0,"mode":0,"version":5,"native_disable_result":0}
+{"tick":21133953,"pid":24404,"event":"native_bridge","detail":"The game has paused frame generation"}
+{"tick":21133968,"pid":24404,"event":"native_late_submit_end","id":226,"markers":95}
+{"tick":21133968,"pid":24404,"event":"native_late_submit_end","id":227,"markers":95}
+{"tick":21133984,"pid":24404,"event":"native_late_submit_end","id":228,"markers":95}
+{"tick":21133984,"pid":24404,"event":"native_late_submit_end","id":229,"markers":95}
+{"tick":21134140,"pid":24404,"event":"native_overlay_request","open":true,"source":1,"owner":"ReShade"}
+{"tick":21134500,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21134812,"pid":24404,"event":"native_frame_admission","id":389,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":87,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":87,"first_input_failure":"ready"}
+{"tick":21135500,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21136250,"pid":24404,"event":"native_frame_admission","id":730,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21136500,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21137250,"pid":24404,"event":"native_frame_admission","id":969,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":87,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":87,"first_input_failure":"ready"}
+{"tick":21137500,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21138281,"pid":24404,"event":"native_frame_admission","id":1217,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21138562,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21139281,"pid":24404,"event":"native_frame_admission","id":1362,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":87,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":87,"first_input_failure":"ready"}
+{"tick":21139562,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21140328,"pid":24404,"event":"native_frame_admission","id":1615,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21140562,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21141328,"pid":24404,"event":"native_frame_admission","id":1820,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":87,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":87,"first_input_failure":"ready"}
+{"tick":21141562,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21142421,"pid":24404,"event":"native_frame_admission","id":2081,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21142562,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21143437,"pid":24404,"event":"native_frame_admission","id":2294,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":87,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":87,"first_input_failure":"ready"}
+{"tick":21143562,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21144640,"pid":24404,"event":"native_frame_admission","id":2406,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21144640,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21145671,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21145781,"pid":24404,"event":"native_frame_admission","id":2447,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":87,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":87,"first_input_failure":"ready"}
+{"tick":21146671,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21146781,"pid":24404,"event":"native_frame_admission","id":2587,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21147671,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21149125,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21150125,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21150609,"pid":24404,"event":"native_overlay_request","open":false,"source":1,"owner":"ReShade"}
+{"tick":21151125,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21151843,"pid":24404,"event":"native_frame_admission","id":2941,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":87,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":87,"first_input_failure":"ready"}
+{"tick":21152125,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21153343,"pid":24404,"event":"native_frame_admission","id":3180,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21153359,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21154359,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21155359,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21156359,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21157359,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21158359,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21159359,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21160359,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21161359,"pid":24404,"event":"output_status","handle":1921853194752,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21163656,"pid":24404,"event":"native_reframework_retire","output":1,"v1":false,"decision":0,"raw_result":4294967295,"path":"","sha256":""}
+{"tick":21163687,"pid":24404,"event":"native_final_output_retired","native":1922069412016,"remaining_refs":0}
+{"tick":21163750,"pid":24404,"event":"native_output_retired","output":1,"disable_result":0,"destroy_result":0,"sleep_in_flight":false}
+{"tick":21163781,"pid":24404,"event":"native_transport_identity","output":2,"queue_unwrapped":true,"factory_unwrapped":true}
+{"tick":21163921,"pid":24404,"event":"context_create","result":0,"mfg_model":true,"owner":"host","handle":1951414648096}
+{"tick":21163921,"pid":24404,"event":"native_latency_binding","output":"XeLL","external_profile":false,"result":0}
+{"tick":21164078,"pid":24404,"event":"native_final_overlay","manual_runtime":true}
+{"tick":21164093,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":1}
+{"tick":21164093,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":2}
+{"tick":21164093,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":3}
+{"tick":21164093,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":4}
+{"tick":21164203,"pid":24404,"event":"shader_supplied","key":"345629657834658089628","bytes":9204}
+{"tick":21164203,"pid":24404,"event":"shader_supplied","key":"3459900000412734828113","bytes":15788}
+{"tick":21164203,"pid":24404,"event":"shader_supplied","key":"3452159554838854843181","bytes":15948}
+{"tick":21164203,"pid":24404,"event":"shader_supplied","key":"3454723847365348416138","bytes":15948}
+{"tick":21164203,"pid":24404,"event":"shader_supplied","key":"3452733261465573612279","bytes":15948}
+{"tick":21164203,"pid":24404,"event":"shader_supplied","key":"34515410463317489640932","bytes":15948}
+{"tick":21164203,"pid":24404,"event":"shader_supplied","key":"34515657724417237518993","bytes":15948}
+{"tick":21164203,"pid":24404,"event":"shader_supplied","key":"34516380930220257970286","bytes":15948}
+{"tick":21164203,"pid":24404,"event":"shader_supplied","key":"3459485083775095487499","bytes":15948}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"3461420893142609508058","bytes":7332}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"3524380691093124776041","bytes":5272}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"3538061481683726607905","bytes":5520}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"3538061477285680095061","bytes":5520}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"3538061483882749864327","bytes":5520}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"3538061481683726607905","bytes":5520}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"34811228111448562003997","bytes":4824}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"34511160110267935226759","bytes":20372}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"34517926239615626135843","bytes":26164}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"3452703420262894380461","bytes":26164}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"34513405466145798375150","bytes":26164}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"3453044563380101633987","bytes":26164}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"34510549607087156077416","bytes":26164}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"346228873022202761969","bytes":6848}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"3523094507705513878191","bytes":5284}
+{"tick":21164218,"pid":24404,"event":"shader_replaced","key":"35410973953344258585239","native_sha256":"c3649191906bdd300462dbafe6add8f82b09e8e10c41e92784a209d99513224b","replacement":"shaders/splat_motion_aware_inverted.dxil","bytes":5328}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"35118300971948070613363","bytes":49580}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"35118300970848558985152","bytes":49372}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"351747859676298538780","bytes":49580}
+{"tick":21164218,"pid":24404,"event":"shader_supplied","key":"351747860775810166991","bytes":49372}
+{"tick":21164218,"pid":24404,"event":"shader_replaced","key":"34317823417859496897316","native_sha256":"8c2efb9e955f39379a91887ed3d90412c4b7ae2c142a874e3da5f699de197f7c","replacement":"shaders/unet_aa016078.dxil","bytes":92932}
+{"tick":21164218,"pid":24404,"event":"shader_replaced","key":"3438921062876375065645","native_sha256":"40e159414d5b839ba7e0e07cbf8ff4ef425ee026c216b2928ef3bb6dd0e20d40","replacement":"shaders/unet_efbe3788.dxil","bytes":54388}
+{"tick":21164218,"pid":24404,"event":"shader_replaced","key":"344884884304795382346","native_sha256":"8291bbc36b1100b07d0788f35a3a9fadfbfcc2267ff0ccb7afb114d76f5d69fe","replacement":"shaders/unet_748b0baf.dxil","bytes":38104}
+{"tick":21164218,"pid":24404,"event":"shader_replaced","key":"34416741796308765268048","native_sha256":"a60f7488872a675d66afd2bec02b0b89e3cc38c1c4ed1d25d745a7b2fe677412","replacement":"shaders/unet_cb391582.dxil","bytes":38124}
+{"tick":21164218,"pid":24404,"event":"shader_replaced","key":"34416316347250620665556","native_sha256":"01c8beac27d3f3f82ecba8f3dc2d9d8b60d4c175a41df3c24a24e8643f5578f5","replacement":"shaders/unet_3ed03daf.dxil","bytes":37760}
+{"tick":21164218,"pid":24404,"event":"shader_replaced","key":"34416316347250620665556","native_sha256":"01c8beac27d3f3f82ecba8f3dc2d9d8b60d4c175a41df3c24a24e8643f5578f5","replacement":"shaders/unet_3ed03daf.dxil","bytes":37760}
+{"tick":21164218,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":5}
+{"tick":21164328,"pid":24404,"event":"flip_metering_queue","generation":3,"resolved":true,"queue":1947844004912,"enabled":true,"lead_ns":2500000,"first_caller_verified":true}
+{"tick":21164328,"pid":24404,"event":"extra_pacing_owner","generation":3,"handle":1951414648096,"sdk_swapchain":1952381196032,"presenter":1922069202480,"native_swapchain":1946824496944,"application_device":1921340572944,"presenter_device":1921340572944,"native_device_identity_used":false}
+{"tick":21164328,"pid":24404,"event":"context_initialized","paced":true,"owner":"host","generation":3}
+{"tick":21164328,"pid":24404,"event":"native_window_bind","hwnd":460024,"thread":27256,"available":true,"error":0}
+{"tick":21164328,"pid":24404,"event":"native_bridge","detail":"XeMFG swapchain ready; waiting for Streamline inputs and XeLL markers"}
+{"tick":21164625,"pid":24404,"event":"native_frame_admission","id":0,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":0,"constants":0,"valid":0,"failed":0,"sleep":0,"blocker":"game_fg_disabled","observed_markers":0,"first_input_failure":"ready"}
+{"tick":21164625,"pid":24404,"event":"native_bridge","detail":"The game has paused frame generation"}
+{"tick":21164671,"pid":24404,"event":"output_status","handle":1951414648096,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21165671,"pid":24404,"event":"output_status","handle":1951414648096,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21166671,"pid":24404,"event":"output_status","handle":1951414648096,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21166937,"pid":24404,"event":"native_reframework_retire","output":2,"v1":false,"decision":0,"raw_result":4294967295,"path":"","sha256":""}
+{"tick":21166984,"pid":24404,"event":"native_final_output_retired","native":1950847514496,"remaining_refs":0}
+{"tick":21167046,"pid":24404,"event":"native_output_retired","output":2,"disable_result":0,"destroy_result":0,"sleep_in_flight":false}
+{"tick":21167078,"pid":24404,"event":"native_transport_identity","output":3,"queue_unwrapped":true,"factory_unwrapped":true}
+{"tick":21167218,"pid":24404,"event":"context_create","result":0,"mfg_model":true,"owner":"host","handle":1952303722304}
+{"tick":21167218,"pid":24404,"event":"native_latency_binding","output":"XeLL","external_profile":false,"result":0}
+{"tick":21167328,"pid":24404,"event":"native_final_overlay","manual_runtime":true}
+{"tick":21167343,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":1}
+{"tick":21167343,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":2}
+{"tick":21167343,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":3}
+{"tick":21167343,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":4}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"345629657834658089628","bytes":9204}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3459900000412734828113","bytes":15788}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3452159554838854843181","bytes":15948}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3454723847365348416138","bytes":15948}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3452733261465573612279","bytes":15948}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"34515410463317489640932","bytes":15948}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"34515657724417237518993","bytes":15948}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"34516380930220257970286","bytes":15948}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3459485083775095487499","bytes":15948}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3461420893142609508058","bytes":7332}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3524380691093124776041","bytes":5272}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3538061481683726607905","bytes":5520}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3538061477285680095061","bytes":5520}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3538061483882749864327","bytes":5520}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3538061481683726607905","bytes":5520}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"34811228111448562003997","bytes":4824}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"34511160110267935226759","bytes":20372}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"34517926239615626135843","bytes":26164}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3452703420262894380461","bytes":26164}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"34513405466145798375150","bytes":26164}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3453044563380101633987","bytes":26164}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"34510549607087156077416","bytes":26164}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"346228873022202761969","bytes":6848}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"3523094507705513878191","bytes":5284}
+{"tick":21167421,"pid":24404,"event":"shader_replaced","key":"35410973953344258585239","native_sha256":"c3649191906bdd300462dbafe6add8f82b09e8e10c41e92784a209d99513224b","replacement":"shaders/splat_motion_aware_inverted.dxil","bytes":5328}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"35118300971948070613363","bytes":49580}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"35118300970848558985152","bytes":49372}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"351747859676298538780","bytes":49580}
+{"tick":21167421,"pid":24404,"event":"shader_supplied","key":"351747860775810166991","bytes":49372}
+{"tick":21167421,"pid":24404,"event":"shader_replaced","key":"34317823417859496897316","native_sha256":"8c2efb9e955f39379a91887ed3d90412c4b7ae2c142a874e3da5f699de197f7c","replacement":"shaders/unet_aa016078.dxil","bytes":92932}
+{"tick":21167437,"pid":24404,"event":"shader_replaced","key":"3438921062876375065645","native_sha256":"40e159414d5b839ba7e0e07cbf8ff4ef425ee026c216b2928ef3bb6dd0e20d40","replacement":"shaders/unet_efbe3788.dxil","bytes":54388}
+{"tick":21167437,"pid":24404,"event":"shader_replaced","key":"344884884304795382346","native_sha256":"8291bbc36b1100b07d0788f35a3a9fadfbfcc2267ff0ccb7afb114d76f5d69fe","replacement":"shaders/unet_748b0baf.dxil","bytes":38104}
+{"tick":21167437,"pid":24404,"event":"shader_replaced","key":"34416741796308765268048","native_sha256":"a60f7488872a675d66afd2bec02b0b89e3cc38c1c4ed1d25d745a7b2fe677412","replacement":"shaders/unet_cb391582.dxil","bytes":38124}
+{"tick":21167437,"pid":24404,"event":"shader_replaced","key":"34416316347250620665556","native_sha256":"01c8beac27d3f3f82ecba8f3dc2d9d8b60d4c175a41df3c24a24e8643f5578f5","replacement":"shaders/unet_3ed03daf.dxil","bytes":37760}
+{"tick":21167437,"pid":24404,"event":"shader_replaced","key":"34416316347250620665556","native_sha256":"01c8beac27d3f3f82ecba8f3dc2d9d8b60d4c175a41df3c24a24e8643f5578f5","replacement":"shaders/unet_3ed03daf.dxil","bytes":37760}
+{"tick":21167437,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":5}
+{"tick":21167546,"pid":24404,"event":"flip_metering_queue","generation":4,"resolved":true,"queue":1952305795696,"enabled":true,"lead_ns":2500000,"first_caller_verified":true}
+{"tick":21167546,"pid":24404,"event":"extra_pacing_owner","generation":4,"handle":1952303722304,"sdk_swapchain":1952361124448,"presenter":1922183548720,"native_swapchain":1946820320784,"application_device":1921340572944,"presenter_device":1921340572944,"native_device_identity_used":false}
+{"tick":21167546,"pid":24404,"event":"context_initialized","paced":true,"owner":"host","generation":4}
+{"tick":21167546,"pid":24404,"event":"native_window_bind","hwnd":460024,"thread":27256,"available":true,"error":0}
+{"tick":21167812,"pid":24404,"event":"native_bypass_present_id","id":4791,"result":0}
+{"tick":21167812,"pid":24404,"event":"native_frame_admission","id":4791,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":0,"constants":0,"valid":0,"failed":1,"sleep":0,"blocker":"game_fg_disabled","observed_markers":30,"first_input_failure":"source_wait_not_completed"}
+{"tick":21167812,"pid":24404,"event":"native_bridge","detail":"The game has paused frame generation"}
+{"tick":21167828,"pid":24404,"event":"output_status","handle":1952303722304,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21167843,"pid":24404,"event":"native_bypass_present_id","id":4792,"result":0}
+{"tick":21167859,"pid":24404,"event":"native_bypass_present_id","id":4793,"result":0}
+{"tick":21167859,"pid":24404,"event":"native_bypass_present_id","id":4794,"result":0}
+{"tick":21167875,"pid":24404,"event":"native_bypass_present_id","id":4795,"result":0}
+{"tick":21167890,"pid":24404,"event":"native_bypass_present_id","id":4796,"result":0}
+{"tick":21167921,"pid":24404,"event":"native_bypass_present_id","id":4797,"result":0}
+{"tick":21167937,"pid":24404,"event":"native_bypass_present_id","id":4798,"result":0}
+{"tick":21168812,"pid":24404,"event":"native_frame_admission","id":4881,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21168828,"pid":24404,"event":"output_status","handle":1952303722304,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21169828,"pid":24404,"event":"output_status","handle":1952303722304,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21170046,"pid":24404,"event":"native_reframework_retire","output":3,"v1":false,"decision":0,"raw_result":4294967295,"path":"","sha256":""}
+{"tick":21170093,"pid":24404,"event":"native_final_output_retired","native":1950862683824,"remaining_refs":0}
+{"tick":21170156,"pid":24404,"event":"native_output_retired","output":3,"disable_result":0,"destroy_result":0,"sleep_in_flight":false}
+{"tick":21170187,"pid":24404,"event":"native_transport_identity","output":4,"queue_unwrapped":true,"factory_unwrapped":true}
+{"tick":21170328,"pid":24404,"event":"context_create","result":0,"mfg_model":true,"owner":"host","handle":1952323651520}
+{"tick":21170328,"pid":24404,"event":"native_latency_binding","output":"XeLL","external_profile":false,"result":0}
+{"tick":21170453,"pid":24404,"event":"native_final_overlay","manual_runtime":true}
+{"tick":21170468,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":1}
+{"tick":21170468,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":2}
+{"tick":21170468,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":3}
+{"tick":21170468,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":4}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"345629657834658089628","bytes":9204}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3459900000412734828113","bytes":15788}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3452159554838854843181","bytes":15948}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3454723847365348416138","bytes":15948}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3452733261465573612279","bytes":15948}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"34515410463317489640932","bytes":15948}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"34515657724417237518993","bytes":15948}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"34516380930220257970286","bytes":15948}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3459485083775095487499","bytes":15948}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3461420893142609508058","bytes":7332}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3524380691093124776041","bytes":5272}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3538061481683726607905","bytes":5520}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3538061477285680095061","bytes":5520}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3538061483882749864327","bytes":5520}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3538061481683726607905","bytes":5520}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"34811228111448562003997","bytes":4824}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"34511160110267935226759","bytes":20372}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"34517926239615626135843","bytes":26164}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3452703420262894380461","bytes":26164}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"34513405466145798375150","bytes":26164}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3453044563380101633987","bytes":26164}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"34510549607087156077416","bytes":26164}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"346228873022202761969","bytes":6848}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"3523094507705513878191","bytes":5284}
+{"tick":21170546,"pid":24404,"event":"shader_replaced","key":"35410973953344258585239","native_sha256":"c3649191906bdd300462dbafe6add8f82b09e8e10c41e92784a209d99513224b","replacement":"shaders/splat_motion_aware_inverted.dxil","bytes":5328}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"35118300971948070613363","bytes":49580}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"35118300970848558985152","bytes":49372}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"351747859676298538780","bytes":49580}
+{"tick":21170546,"pid":24404,"event":"shader_supplied","key":"351747860775810166991","bytes":49372}
+{"tick":21170546,"pid":24404,"event":"shader_replaced","key":"34317823417859496897316","native_sha256":"8c2efb9e955f39379a91887ed3d90412c4b7ae2c142a874e3da5f699de197f7c","replacement":"shaders/unet_aa016078.dxil","bytes":92932}
+{"tick":21170546,"pid":24404,"event":"shader_replaced","key":"3438921062876375065645","native_sha256":"40e159414d5b839ba7e0e07cbf8ff4ef425ee026c216b2928ef3bb6dd0e20d40","replacement":"shaders/unet_efbe3788.dxil","bytes":54388}
+{"tick":21170546,"pid":24404,"event":"shader_replaced","key":"344884884304795382346","native_sha256":"8291bbc36b1100b07d0788f35a3a9fadfbfcc2267ff0ccb7afb114d76f5d69fe","replacement":"shaders/unet_748b0baf.dxil","bytes":38104}
+{"tick":21170546,"pid":24404,"event":"shader_replaced","key":"34416741796308765268048","native_sha256":"a60f7488872a675d66afd2bec02b0b89e3cc38c1c4ed1d25d745a7b2fe677412","replacement":"shaders/unet_cb391582.dxil","bytes":38124}
+{"tick":21170546,"pid":24404,"event":"shader_replaced","key":"34416316347250620665556","native_sha256":"01c8beac27d3f3f82ecba8f3dc2d9d8b60d4c175a41df3c24a24e8643f5578f5","replacement":"shaders/unet_3ed03daf.dxil","bytes":37760}
+{"tick":21170546,"pid":24404,"event":"shader_replaced","key":"34416316347250620665556","native_sha256":"01c8beac27d3f3f82ecba8f3dc2d9d8b60d4c175a41df3c24a24e8643f5578f5","replacement":"shaders/unet_3ed03daf.dxil","bytes":37760}
+{"tick":21170546,"pid":24404,"event":"cuda_list","created":"list","type":"direct","table":"own","held":5}
+{"tick":21170671,"pid":24404,"event":"flip_metering_queue","generation":5,"resolved":true,"queue":1952201370864,"enabled":true,"lead_ns":2500000,"first_caller_verified":true}
+{"tick":21170671,"pid":24404,"event":"extra_pacing_owner","generation":5,"handle":1952323651520,"sdk_swapchain":1952416344592,"presenter":1922069222976,"native_swapchain":1946785381472,"application_device":1921340572944,"presenter_device":1921340572944,"native_device_identity_used":false}
+{"tick":21170671,"pid":24404,"event":"native_window_bind","hwnd":460024,"thread":27256,"available":true,"error":0}
+{"tick":21170906,"pid":24404,"event":"native_bypass_present_id","id":5027,"result":0}
+{"tick":21170906,"pid":24404,"event":"native_frame_admission","id":5027,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":0,"constants":0,"valid":0,"failed":1,"sleep":0,"blocker":"game_fg_disabled","observed_markers":30,"first_input_failure":"source_wait_not_completed"}
+{"tick":21170906,"pid":24404,"event":"native_bridge","detail":"The game has paused frame generation"}
+{"tick":21170937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21170937,"pid":24404,"event":"native_bypass_present_id","id":5028,"result":0}
+{"tick":21170953,"pid":24404,"event":"native_bypass_present_id","id":5029,"result":0}
+{"tick":21170968,"pid":24404,"event":"native_bypass_present_id","id":5030,"result":0}
+{"tick":21170984,"pid":24404,"event":"native_bypass_present_id","id":5031,"result":0}
+{"tick":21171000,"pid":24404,"event":"native_bypass_present_id","id":5032,"result":0}
+{"tick":21171031,"pid":24404,"event":"native_bypass_present_id","id":5033,"result":0}
+{"tick":21171031,"pid":24404,"event":"native_bypass_present_id","id":5034,"result":0}
+{"tick":21171906,"pid":24404,"event":"native_frame_admission","id":5119,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21171937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21172937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21173875,"pid":24404,"event":"native_overlay_request","open":true,"source":1,"owner":"ReShade"}
+{"tick":21173937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21174578,"pid":24404,"event":"native_overlay_request","open":false,"source":1,"owner":"ReShade"}
+{"tick":21174937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21175937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21176937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21177937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21178937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21179937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21180937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21181937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21182937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21183937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21184937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21185937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21186937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21187937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21188812,"pid":24404,"event":"native_frame_admission","id":8174,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":87,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":87,"first_input_failure":"ready"}
+{"tick":21188937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21189812,"pid":24404,"event":"native_frame_admission","id":8391,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":0,"valid":0,"failed":0,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"ready"}
+{"tick":21189937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21190937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21191937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21192937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21193937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21194937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21195937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21196937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21197937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21198937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21199937,"pid":24404,"event":"output_status","handle":1952323651520,"frames_presented":1,"enabled":0,"interpolation_result":0,"tensor_launches":0}
+{"tick":21220734,"pid":24404,"event":"native_game_options","viewport":0,"mode":1,"version":5,"native_disable_result":0}
+{"tick":21220734,"pid":24404,"event":"native_bridge","detail":"Waiting for a depth input for this frame"}
+{"tick":21220750,"pid":24404,"event":"native_constants_status","id":13714,"issues":16,"version":2,"camera_motion":1,"motion_3d":0,"inverted":1,"jittered":1,"reset":1}
+{"tick":21220781,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13714 - ignoring new input."}
+{"tick":21220781,"pid":24404,"event":"native_tag_rejected","id":13714,"type":2,"reason":"sdk_tag","lifecycle":1,"tag_version":1,"resource_version":1,"state":64,"format":34,"width":1712,"height":968,"array_size":1,"extent_x":0,"extent_y":0,"extent_width":1712,"extent_height":968,"command":true,"sdk_result":-9}
+{"tick":21220781,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13714 - ignoring new input."}
+{"tick":21220781,"pid":24404,"event":"native_tag_rejected","id":13714,"type":1,"reason":"sdk_tag","lifecycle":1,"tag_version":1,"resource_version":1,"state":64,"format":19,"width":1712,"height":968,"array_size":1,"extent_x":0,"extent_y":0,"extent_width":1712,"extent_height":968,"command":true,"sdk_result":-9}
+{"tick":21220781,"pid":24404,"event":"native_hud_input","type":0,"format":28,"output_format":28,"width":2560,"height":1440,"encoding_verified":false}
+{"tick":21220781,"pid":24404,"event":"native_hud_filtered","id":13714,"type":3,"issues":2}
+{"tick":21220781,"pid":24404,"event":"native_tag_rejected","id":13714,"type":3,"reason":"optional_hud","lifecycle":1,"tag_version":1,"resource_version":1,"state":4,"format":29,"width":2560,"height":1440,"array_size":1,"extent_x":0,"extent_y":0,"extent_width":2560,"extent_height":1440,"command":true,"sdk_result":0}
+{"tick":21220812,"pid":24404,"event":"native_frame_admission","id":13714,"native_off":1,"requested":1,"reflex_off":1,"resources":7,"markers":87,"constants":1,"valid":0,"failed":1,"sleep":1,"blocker":"constants_incompatible","observed_markers":87,"first_input_failure":"input_rejected"}
+{"tick":21220812,"pid":24404,"event":"native_bridge","detail":"Camera or motion conventions do not match the initialized output"}
+{"tick":21220875,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13715 - ignoring new input."}
+{"tick":21220875,"pid":24404,"event":"native_tag_rejected","id":13715,"type":2,"reason":"sdk_tag","lifecycle":1,"tag_version":1,"resource_version":1,"state":64,"format":34,"width":1712,"height":968,"array_size":1,"extent_x":0,"extent_y":0,"extent_width":1712,"extent_height":968,"command":true,"sdk_result":-9}
+{"tick":21220875,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13715 - ignoring new input."}
+{"tick":21220875,"pid":24404,"event":"native_tag_rejected","id":13715,"type":1,"reason":"sdk_tag","lifecycle":1,"tag_version":1,"resource_version":1,"state":64,"format":19,"width":1712,"height":968,"array_size":1,"extent_x":0,"extent_y":0,"extent_width":1712,"extent_height":968,"command":true,"sdk_result":-9}
+{"tick":21220875,"pid":24404,"event":"native_hud_filtered","id":13715,"type":3,"issues":2}
+{"tick":21220875,"pid":24404,"event":"native_tag_rejected","id":13715,"type":3,"reason":"optional_hud","lifecycle":1,"tag_version":1,"resource_version":1,"state":4,"format":29,"width":2560,"height":1440,"array_size":1,"extent_x":0,"extent_y":0,"extent_width":2560,"extent_height":1440,"command":true,"sdk_result":0}
+{"tick":21220953,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13716 - ignoring new input."}
+{"tick":21220953,"pid":24404,"event":"native_tag_rejected","id":13716,"type":2,"reason":"sdk_tag","lifecycle":1,"tag_version":1,"resource_version":1,"state":64,"format":34,"width":1712,"height":968,"array_size":1,"extent_x":0,"extent_y":0,"extent_width":1712,"extent_height":968,"command":true,"sdk_result":-9}
+{"tick":21220953,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13716 - ignoring new input."}
+{"tick":21220953,"pid":24404,"event":"native_tag_rejected","id":13716,"type":1,"reason":"sdk_tag","lifecycle":1,"tag_version":1,"resource_version":1,"state":64,"format":19,"width":1712,"height":968,"array_size":1,"extent_x":0,"extent_y":0,"extent_width":1712,"extent_height":968,"command":true,"sdk_result":-9}
+{"tick":21220953,"pid":24404,"event":"native_hud_filtered","id":13716,"type":3,"issues":2}
+{"tick":21220953,"pid":24404,"event":"native_tag_rejected","id":13716,"type":3,"reason":"optional_hud","lifecycle":1,"tag_version":1,"resource_version":1,"state":4,"format":29,"width":2560,"height":1440,"array_size":1,"extent_x":0,"extent_y":0,"extent_width":2560,"extent_height":1440,"command":true,"sdk_result":0}
+{"tick":21221046,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13717 - ignoring new input."}
+{"tick":21221046,"pid":24404,"event":"native_tag_rejected","id":13717,"type":2,"reason":"sdk_tag","lifecycle":1,"tag_version":1,"resource_version":1,"state":64,"format":34,"width":1712,"height":968,"array_size":1,"extent_x":0,"extent_y":0,"extent_width":1712,"extent_height":968,"command":true,"sdk_result":-9}
+{"tick":21221046,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13717 - ignoring new input."}
+{"tick":21221046,"pid":24404,"event":"native_tag_rejected","id":13717,"type":1,"reason":"sdk_tag","lifecycle":1,"tag_version":1,"resource_version":1,"state":64,"format":19,"width":1712,"height":968,"array_size":1,"extent_x":0,"extent_y":0,"extent_width":1712,"extent_height":968,"command":true,"sdk_result":-9}
+{"tick":21221046,"pid":24404,"event":"native_hud_filtered","id":13717,"type":3,"issues":2}
+{"tick":21221046,"pid":24404,"event":"native_tag_rejected","id":13717,"type":3,"reason":"optional_hud","lifecycle":1,"tag_version":1,"resource_version":1,"state":4,"format":29,"width":2560,"height":1440,"array_size":1,"extent_x":0,"extent_y":0,"extent_width":2560,"extent_height":1440,"command":true,"sdk_result":0}
+{"tick":21221156,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13718 - ignoring new input."}
+{"tick":21221156,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13718 - ignoring new input."}
+{"tick":21221156,"pid":24404,"event":"native_hud_filtered","id":13718,"type":3,"issues":2}
+{"tick":21221187,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13719 - ignoring new input."}
+{"tick":21221187,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13719 - ignoring new input."}
+{"tick":21221187,"pid":24404,"event":"native_hud_filtered","id":13719,"type":3,"issues":2}
+{"tick":21221203,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13720 - ignoring new input."}
+{"tick":21221203,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13720 - ignoring new input."}
+{"tick":21221203,"pid":24404,"event":"native_hud_filtered","id":13720,"type":3,"issues":2}
+{"tick":21221234,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13721 - ignoring new input."}
+{"tick":21221234,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13721 - ignoring new input."}
+{"tick":21221234,"pid":24404,"event":"native_hud_filtered","id":13721,"type":3,"issues":2}
+{"tick":21221250,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13722 - ignoring new input."}
+{"tick":21221250,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13722 - ignoring new input."}
+{"tick":21221281,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13723 - ignoring new input."}
+{"tick":21221281,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13723 - ignoring new input."}
+{"tick":21221296,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13724 - ignoring new input."}
+{"tick":21221296,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13724 - ignoring new input."}
+{"tick":21221312,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13725 - ignoring new input."}
+{"tick":21221312,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13725 - ignoring new input."}
+{"tick":21221343,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13726 - ignoring new input."}
+{"tick":21221343,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13726 - ignoring new input."}
+{"tick":21221375,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13727 - ignoring new input."}
+{"tick":21221375,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13727 - ignoring new input."}
+{"tick":21221390,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13728 - ignoring new input."}
+{"tick":21221390,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13728 - ignoring new input."}
+{"tick":21221406,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13729 - ignoring new input."}
+{"tick":21221406,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13729 - ignoring new input."}
+{"tick":21221437,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13730 - ignoring new input."}
+{"tick":21221437,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13730 - ignoring new input."}
+{"tick":21221453,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13731 - ignoring new input."}
+{"tick":21221453,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13731 - ignoring new input."}
+{"tick":21221468,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13732 - ignoring new input."}
+{"tick":21221468,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13732 - ignoring new input."}
+{"tick":21221500,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13733 - ignoring new input."}
+{"tick":21221500,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13733 - ignoring new input."}
+{"tick":21221531,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13734 - ignoring new input."}
+{"tick":21221531,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13734 - ignoring new input."}
+{"tick":21221546,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13735 - ignoring new input."}
+{"tick":21221546,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13735 - ignoring new input."}
+{"tick":21221578,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13736 - ignoring new input."}
+{"tick":21221578,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13736 - ignoring new input."}
+{"tick":21221593,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13737 - ignoring new input."}
+{"tick":21221593,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13737 - ignoring new input."}
+{"tick":21221625,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13738 - ignoring new input."}
+{"tick":21221625,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13738 - ignoring new input."}
+{"tick":21221640,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13739 - ignoring new input."}
+{"tick":21221640,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13739 - ignoring new input."}
+{"tick":21221671,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13740 - ignoring new input."}
+{"tick":21221671,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13740 - ignoring new input."}
+{"tick":21221687,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13741 - ignoring new input."}
+{"tick":21221687,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13741 - ignoring new input."}
+{"tick":21221718,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13742 - ignoring new input."}
+{"tick":21221718,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13742 - ignoring new input."}
+{"tick":21221750,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13743 - ignoring new input."}
+{"tick":21221750,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13743 - ignoring new input."}
+{"tick":21221765,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13744 - ignoring new input."}
+{"tick":21221765,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13744 - ignoring new input."}
+{"tick":21221781,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13745 - ignoring new input."}
+{"tick":21221781,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13745 - ignoring new input."}
+{"tick":21221796,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13746 - ignoring new input."}
+{"tick":21221796,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13746 - ignoring new input."}
+{"tick":21221812,"pid":24404,"event":"native_frame_admission","id":13746,"native_off":1,"requested":1,"reflex_off":1,"resources":7,"markers":95,"constants":1,"valid":0,"failed":1,"sleep":1,"blocker":"constants_incompatible","observed_markers":95,"first_input_failure":"input_rejected"}
+{"tick":21221828,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13747 - ignoring new input."}
+{"tick":21221828,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13747 - ignoring new input."}
+{"tick":21221843,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13748 - ignoring new input."}
+{"tick":21221843,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13748 - ignoring new input."}
+{"tick":21221859,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13749 - ignoring new input."}
+{"tick":21221859,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13749 - ignoring new input."}
+{"tick":21221875,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13750 - ignoring new input."}
+{"tick":21221875,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13750 - ignoring new input."}
+{"tick":21221906,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13751 - ignoring new input."}
+{"tick":21221906,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13751 - ignoring new input."}
+{"tick":21221921,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13752 - ignoring new input."}
+{"tick":21221921,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13752 - ignoring new input."}
+{"tick":21221937,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13753 - ignoring new input."}
+{"tick":21221937,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13753 - ignoring new input."}
+{"tick":21221953,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13754 - ignoring new input."}
+{"tick":21221953,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13754 - ignoring new input."}
+{"tick":21221968,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13755 - ignoring new input."}
+{"tick":21221968,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13755 - ignoring new input."}
+{"tick":21222000,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13756 - ignoring new input."}
+{"tick":21222000,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13756 - ignoring new input."}
+{"tick":21222015,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13757 - ignoring new input."}
+{"tick":21222015,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13757 - ignoring new input."}
+{"tick":21222031,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13758 - ignoring new input."}
+{"tick":21222031,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13758 - ignoring new input."}
+{"tick":21222062,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13759 - ignoring new input."}
+{"tick":21222062,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13759 - ignoring new input."}
+{"tick":21222093,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13760 - ignoring new input."}
+{"tick":21222093,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13760 - ignoring new input."}
+{"tick":21222109,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13761 - ignoring new input."}
+{"tick":21222109,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13761 - ignoring new input."}
+{"tick":21222125,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13762 - ignoring new input."}
+{"tick":21222125,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13762 - ignoring new input."}
+{"tick":21222156,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource MOTION_VECTORS was already tagged for frame 13763 - ignoring new input."}
+{"tick":21222156,"pid":24404,"event":"native_sdk_log","level":3,"message":"Resource DEPTH was already tagged for frame 13763 - ignoring new input."}
+{"tick":21222828,"pid":24404,"event":"native_frame_admission","id":13803,"native_off":1,"requested":1,"reflex_off":1,"resources":7,"markers":87,"constants":1,"valid":0,"failed":1,"sleep":1,"blocker":"constants_incompatible","observed_markers":87,"first_input_failure":"input_rejected"}
+{"tick":21223828,"pid":24404,"event":"native_frame_admission","id":13858,"native_off":1,"requested":1,"reflex_off":1,"resources":7,"markers":95,"constants":1,"valid":0,"failed":1,"sleep":1,"blocker":"constants_incompatible","observed_markers":95,"first_input_failure":"input_rejected"}
+{"tick":21224921,"pid":24404,"event":"native_frame_admission","id":13922,"native_off":1,"requested":1,"reflex_off":1,"resources":7,"markers":87,"constants":1,"valid":0,"failed":1,"sleep":1,"blocker":"constants_incompatible","observed_markers":87,"first_input_failure":"input_rejected"}
+{"tick":21225968,"pid":24404,"event":"native_frame_admission","id":13985,"native_off":1,"requested":1,"reflex_off":1,"resources":7,"markers":95,"constants":1,"valid":0,"failed":1,"sleep":1,"blocker":"constants_incompatible","observed_markers":95,"first_input_failure":"input_rejected"}
+{"tick":21226687,"pid":24404,"event":"native_game_options","viewport":0,"mode":0,"version":5,"native_disable_result":0}
+{"tick":21226687,"pid":24404,"event":"native_bridge","detail":"The game has paused frame generation"}
+{"tick":21226968,"pid":24404,"event":"native_frame_admission","id":14043,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":87,"constants":1,"valid":0,"failed":1,"sleep":1,"blocker":"game_fg_disabled","observed_markers":87,"first_input_failure":"input_rejected"}
+{"tick":21228078,"pid":24404,"event":"native_frame_admission","id":14112,"native_off":1,"requested":0,"reflex_off":1,"resources":0,"markers":95,"constants":1,"valid":0,"failed":1,"sleep":1,"blocker":"game_fg_disabled","observed_markers":95,"first_input_failure":"input_rejected"}
+{"tick":21229281,"pid":24404,"event":"native_streamline_shutdown","phase":"drained"}
+{"tick":21229343,"pid":24404,"event":"native_streamline_shutdown","phase":"complete","result":0}

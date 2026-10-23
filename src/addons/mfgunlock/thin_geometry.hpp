@@ -36,6 +36,7 @@
 #include "adaptive_quality_v3.hpp"
 #include "quality_border.hpp"
 #include "quality_refinement.hpp"
+#include "pointer_redirect.hpp"
 
 namespace mfgunlock::thingeometry {
 // Set once during addon initialization, before provider discovery starts.
@@ -81,6 +82,7 @@ struct Redirect {
   Mechanism mechanism = Mechanism::ValidatedWarpBlend;
   std::vector<DescriptorPatch> descriptors;
   void* allocation = nullptr;
+  std::vector<patching::Write> writes;
 };
 
 struct MechanismResult {
@@ -764,14 +766,6 @@ inline bool RedirectFatbin(HMODULE module, const PtxProfile& profile,
                               rebuilt, version, detail)) {
     return false;
   }
-  void* allocation = VirtualAlloc(nullptr, rebuilt.size(),
-                                  MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-  if (allocation == nullptr) {
-    detail = "replacement fatbin allocation failed";
-    return false;
-  }
-  std::memcpy(allocation, rebuilt.data(), rebuilt.size());
-
   auto* base = reinterpret_cast<uint8_t*>(module);
   const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
   const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
@@ -779,6 +773,7 @@ inline bool RedirectFatbin(HMODULE module, const PtxProfile& profile,
   const uint64_t expected = reinterpret_cast<uint64_t>(located.address);
   const auto* section = IMAGE_FIRST_SECTION(nt);
   redirect.mechanism = profile.mechanism;
+  std::vector<uint64_t*> slots;
   for (WORD index = 0; index < nt->FileHeader.NumberOfSections; ++index, ++section) {
     if ((section->Characteristics & IMAGE_SCN_MEM_READ) == 0 ||
         (section->Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0 ||
@@ -794,28 +789,33 @@ inline bool RedirectFatbin(HMODULE module, const PtxProfile& profile,
       std::memcpy(&value, bytes + offset, sizeof(value));
       if (value != expected) continue;
       auto* slot = reinterpret_cast<uint64_t*>(bytes + offset);
-      DWORD old_protection = 0;
-      if (!VirtualProtect(slot, sizeof(uint64_t), PAGE_READWRITE, &old_protection)) continue;
-      redirect.descriptors.push_back({slot, *slot});
-      *slot = reinterpret_cast<uint64_t>(allocation);
-      DWORD ignored = 0;
-      VirtualProtect(slot, sizeof(uint64_t), old_protection, &ignored);
+      slots.push_back(slot);
     }
   }
-  if (redirect.descriptors.empty() || redirect.descriptors.size() > 32) {
-    for (const auto& patch : redirect.descriptors) {
-      DWORD old_protection = 0;
-      if (VirtualProtect(patch.slot, sizeof(uint64_t), PAGE_READWRITE, &old_protection)) {
-        *patch.slot = patch.original;
-        DWORD ignored = 0;
-        VirtualProtect(patch.slot, sizeof(uint64_t), old_protection, &ignored);
-      }
-    }
-    redirect.descriptors.clear();
-    VirtualFree(allocation, 0, MEM_RELEASE);
+  // Count every reference, including unwritable ones, before allocating or writing.
+  if (slots.empty() || slots.size() > 32) {
     detail = "descriptor reference count is outside the safe 1..32 range";
     return false;
   }
+  void* allocation = VirtualAlloc(nullptr, rebuilt.size(),
+                                  MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if (allocation == nullptr) {
+    detail = "replacement fatbin allocation failed";
+    return false;
+  }
+  std::memcpy(allocation, rebuilt.data(), rebuilt.size());
+
+  redirect.allocation = allocation;
+  if (!pointerredirect::Apply(slots, expected, allocation, redirect.writes)) {
+    if (!pointerredirect::Pending(redirect.writes)) {
+      VirtualFree(allocation, 0, MEM_RELEASE);
+      redirect.allocation = nullptr;
+      redirect.writes.clear();
+    }
+    detail = "descriptor transaction failed; pending references retain their allocation";
+    return false;
+  }
+  for (auto* slot : slots) redirect.descriptors.push_back({slot, expected});
   redirect.allocation = allocation;
   std::ostringstream stream;
   stream << "redirected " << redirect.descriptors.size()
@@ -866,33 +866,26 @@ inline bool IsSupportedProvider(HMODULE module, std::string& version,
 }
 
 inline void Restore(std::vector<Redirect>& redirects) {
-  for (auto redirect = redirects.rbegin(); redirect != redirects.rend(); ++redirect) {
-    bool restored_all = true;
-    for (const auto& patch : redirect->descriptors) {
-      DWORD old_protection = 0;
-      if (VirtualProtect(patch.slot, sizeof(uint64_t), PAGE_READWRITE, &old_protection)) {
-        *patch.slot = patch.original;
-        DWORD ignored = 0;
-        VirtualProtect(patch.slot, sizeof(uint64_t), old_protection, &ignored);
-      } else {
-        restored_all = false;
-      }
+  for (auto& redirect : redirects) {
+    if (!redirect.writes.empty()) {
+      patching::Restore(redirect.writes);
+      if (pointerredirect::Pending(redirect.writes)) continue;
+    } else if (!redirect.descriptors.empty()) {
+      // An untracked legacy reference cannot be safely reclaimed.
+      continue;
     }
-    redirect->descriptors.clear();
-    // Never free a replacement while a live descriptor may still point at it.
-    // A small leak during an abnormal unload is safer than a dangling pointer.
-    if (restored_all && redirect->allocation != nullptr) {
-      VirtualFree(redirect->allocation, 0, MEM_RELEASE);
-      redirect->allocation = nullptr;
-    }
+    if (redirect.allocation != nullptr) VirtualFree(redirect.allocation, 0, MEM_RELEASE);
+    redirect.allocation = nullptr;
+    redirect.descriptors.clear();
+    redirect.writes.clear();
   }
-  redirects.clear();
+  std::erase_if(redirects, [](const Redirect& r) { return r.allocation == nullptr; });
 }
 
 inline bool Apply(HMODULE module, const Options& options,
                   std::vector<Redirect>& redirects, Result& result,
                   std::string& provider_version) {
-  redirects.clear();
+  if (!redirects.empty()) return false;  // Pending restore still owns memory.
   result = {};
   result.validated_warp_blend.requested = options.validated_warp_blend;
   result.previous_scatter.requested = options.previous_scatter;
@@ -927,6 +920,7 @@ inline bool Apply(HMODULE module, const Options& options,
     if (!internal::RedirectFatbin(module, *profile, redirect,
                                   mechanism_result->adaptive_version,
                                   mechanism_result->detail)) {
+      if (redirect.allocation != nullptr) redirects.push_back(std::move(redirect));
       return;
     }
     mechanism_result->applied = true;

@@ -10,12 +10,13 @@ namespace fc = mfgunlock::framecount;
 extern "C" __declspec(dllexport) void ReShadeLogMessage(void*, int, const char*) {}
 std::vector<uint32_t> calls;
 std::vector<uint32_t> mode_calls;
+bool reject_all = false;
 bool reject_override = false;
 bool reject_mode_override = false;
 sl::Result Reflex(const sl::ReflexOptions& o) {
   calls.push_back(o.frameLimitUs);
   mode_calls.push_back(static_cast<uint32_t>(o.mode));
-  return (reject_override && o.frameLimitUs != 0) ||
+  return reject_all || (reject_override && o.frameLimitUs != 0) ||
                  (reject_mode_override &&
                   o.mode != sl::ReflexMode::eOff)
              ? sl::Result::eErrorInvalidState
@@ -57,6 +58,24 @@ int main() {
   CHECK(fc::internal::HookedReflexSetOptions(native)==sl::Result::eOk);
   CHECK(calls.size()==2 && calls[0]==2577 && calls[1]==0);
   CHECK(!fc::g_reflex_limit_applied.load() && !fc::g_latency_guard_auto_cap_ready.load());
+
+  CHECK(fc::internal::ReadQueueCapAck()==0); // Native retry acknowledged restoration.
+  reject_override=false;
+  fc::g_latency_guard_auto_cap_ready.store(true);
+  fc::g_latency_guard_active_source_cap_fps.store(97);
+  CHECK(fc::internal::HookedReflexSetOptions(native)==sl::Result::eOk);
+  CHECK(fc::internal::ReadQueueCapAck()==97);
+  AcquireSRWLockExclusive(&fc::internal::g_reflex_submit_lock);
+  CHECK(fc::internal::ReadQueueCapAck()==UINT32_MAX);
+  ReleaseSRWLockExclusive(&fc::internal::g_reflex_submit_lock);
+  fc::g_latency_guard_epoch.fetch_add(1);
+  CHECK(fc::internal::ReadQueueCapAck()==UINT32_MAX);
+  reject_all=true;
+  CHECK(fc::internal::HookedReflexSetOptions(native)!=sl::Result::eOk);
+  CHECK(fc::internal::ReadQueueCapAck()==UINT32_MAX);
+  reject_all=false;
+  fc::g_latency_guard_auto_cap_ready.store(false);
+  fc::g_latency_guard_active_source_cap_fps.store(0);
 
   // The user value is the final/output FPS ceiling understood by Reflex and
   // DLSS-G. It is not multiplied again by the selected MFG multiplier, and a

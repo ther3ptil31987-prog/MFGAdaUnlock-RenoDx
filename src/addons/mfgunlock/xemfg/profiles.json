@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "profiles": [
+    {
+      "id": "conflicting-frame-generation-plugins",
+      "match": {},
+      "conflicting_modules": ["MFGUnlocker.asi", "MFGAdaUnlock.XeMFG.asi"],
+      "evidence": "Two bridges patching the same Intel runtime; backend.cpp startup refusal since X1.3/R1.9"
+    },
+    {
+      "id": "steam-overlay",
+      "match": {"module": "gameoverlayrenderer64.dll"},
+      "observer_modules": ["gameoverlayrenderer64.dll"],
+      "retain_native_output": true,
+      "evidence": "RC3: overlay resolved slDLSSGSetOptions and turned the game's FG off; R1.11: overlay held references to the replaced swapchain"
+    },
+    {
+      "id": "ac-black-flag-no-output-retention",
+      "match": {"executable": "ACBlackFlag.exe"},
+      "retain_native_output": false,
+      "evidence": "2026-10-22: with the Steam overlay, the reused retained output lost the device (DXGI_ERROR_DEVICE_REMOVED, reason 0x887A002B) on its first Present in all 6 reuse sessions; with retention off the game ran and interpolated at 6x"
+    },
+    {
+      "id": "tlou2-conventional-depth",
+      "match": {"executable": "tlou-ii.exe"},
+      "depth_inverted": false,
+      "evidence": "R1.11 Streamline constant receipts: depthInverted false (moved from native_game_defaults.hpp)"
+    },
+    {
+      "id": "tlou2-launcher-conventional-depth",
+      "match": {"executable": "tlou-ii-l.exe"},
+      "depth_inverted": false,
+      "evidence": "R1.11 Streamline constant receipts: depthInverted false (moved from native_game_defaults.hpp)"
+    },
+    {
+      "id": "alan-wake-2-conventional-depth",
+      "match": {"executable": "AlanWake2.exe"},
+      "depth_inverted": false,
+      "evidence": "R1.11 Streamline constant receipts: depthInverted false (moved from native_game_defaults.hpp)"
+    },
+    {
+      "id": "death-stranding-2-jittered-motion",
+      "match": {"executable": "DS2.exe"},
+      "motion_jittered": true,
+      "evidence": "RC3 session PID 24404: valid Constants V2, inverted depth, motionVectorsJittered true (moved from native_game_defaults.hpp)"
+    },
+    {
+      "id": "reframework-xefg-monitor",
+      "match": {},
+      "known_bad_reframework_sha256": ["70a2a3c24030d8bc3695554e7f929fd1b0b4b757fb5ba2c9d34f42d7155005ac"],
+      "evidence": "R1.12: this REFramework build repeatedly reinstalled its XeFG hooks (Requiem/Onimusha stalls)"
+    }
+  ]
+}

@@ -40,6 +40,7 @@
  */
 
 #pragma once
+#include "pointer_redirect.hpp"
 
 #include <windows.h>
 
@@ -360,6 +361,7 @@ struct Patch {
 // tell which one the runtime will pick, so all of them are redirected.
 inline bool Apply(HMODULE module, std::vector<Patch>& patches, void*& allocation,
                   std::string& detail) {
+  if (!patches.empty() || allocation) { detail = "previous restore is pending"; return false; }
   auto* base = reinterpret_cast<uint8_t*>(module);
   const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
   if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
@@ -449,22 +451,17 @@ inline bool Apply(HMODULE module, std::vector<Patch>& patches, void*& allocation
   }
   std::memcpy(mem, rebuilt.data(), rebuilt.size());
 
-  for (uint64_t* slot : slots) {
-    DWORD old_protect = 0;
-    if (VirtualProtect(slot, sizeof(uint64_t), PAGE_READWRITE, &old_protect) == 0) continue;
-    patches.push_back({slot, *slot});
-    *slot = reinterpret_cast<uint64_t>(mem);
-    DWORD ignored = 0;
-    VirtualProtect(slot, sizeof(uint64_t), old_protect, &ignored);
+  std::vector<patching::Write> writes;
+  const bool committed = pointerredirect::Apply(slots, reinterpret_cast<uint64_t>(fat), mem, writes);
+  for (const auto& write : writes) if (write.applied) {
+    uint64_t original = 0; std::memcpy(&original, write.original.data(), sizeof(original));
+    patches.push_back({reinterpret_cast<uint64_t*>(write.address), original});
   }
-
-  if (patches.empty()) {
-    VirtualFree(mem, 0, MEM_RELEASE);
-    detail = "no descriptor slot was writable";
-    return false;
+  if (!committed && patches.empty()) {
+    VirtualFree(mem, 0, MEM_RELEASE); detail = "descriptor transaction failed or count outside 1..32"; return false;
   }
-
   allocation = mem;
+  if (!committed) { detail = "descriptor rollback pending; allocation retained"; return false; }
   std::stringstream s;
   s << "redirected " << patches.size() << " " << selected_profile->descriptor_name
     << " descriptor(s) from a " << fat_size << "-byte fatbin to a " << rebuilt.size()
@@ -474,25 +471,24 @@ inline bool Apply(HMODULE module, std::vector<Patch>& patches, void*& allocation
 }
 
 inline void Restore(std::vector<Patch>& patches, void*& allocation) {
-  bool restored_all = true;
+  const uint64_t replacement = reinterpret_cast<uint64_t>(allocation);
+  std::vector<patching::Write> writes;
   for (const auto& patch : patches) {
-    DWORD old_protect = 0;
-    if (VirtualProtect(patch.slot, sizeof(uint64_t), PAGE_READWRITE,
-                       &old_protect) == 0) {
-      restored_all = false;
-      continue;
-    }
-    *patch.slot = patch.original;
-    DWORD ignored = 0;
-    VirtualProtect(patch.slot, sizeof(uint64_t), old_protect, &ignored);
+    patching::Write write;
+    write.address = reinterpret_cast<uint8_t*>(patch.slot);
+    write.original.resize(sizeof(patch.original));
+    const auto* bytes = reinterpret_cast<const uint8_t*>(&replacement);
+    write.replacement.assign(bytes, bytes + sizeof(replacement));
+    std::memcpy(write.original.data(), &patch.original, sizeof(patch.original));
+    write.applied = true; writes.push_back(std::move(write));
   }
-  patches.clear();
-  // Never free a replacement while a live descriptor may still reference it.
-  // A small leak during an abnormal unload is safer than a dangling pointer.
-  if (restored_all && allocation != nullptr) {
-    VirtualFree(allocation, 0, MEM_RELEASE);
-    allocation = nullptr;
-  }
+  patching::Restore(writes);
+  std::erase_if(patches, [&](const Patch& patch) {
+    return std::any_of(writes.begin(), writes.end(), [&](const auto& w) {
+      return w.address == reinterpret_cast<uint8_t*>(patch.slot) && !w.applied;
+    });
+  });
+  if (patches.empty() && allocation) { VirtualFree(allocation, 0, MEM_RELEASE); allocation = nullptr; }
 }
 
 }  // namespace mfgunlock::midpoint

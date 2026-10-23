@@ -3,15 +3,30 @@ project(mfgunlock_tests LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+# ModelPort exposes explicitly asserted release-layout STL views to the Intel
+# binary. Debug retains _DEBUG, assertions and /Od; iterator wrappers would
+# change those wire layouts. Do not silence the layout assertions with NDEBUG.
+add_compile_definitions($<$<CONFIG:Debug>:_ITERATOR_DEBUG_LEVEL=0>)
 set(RENODX_SOURCE_DIR "" CACHE PATH "Existing RenoDX checkout with dependencies")
 if(NOT EXISTS "${RENODX_SOURCE_DIR}/external/Streamline/include/sl.h")
   message(FATAL_ERROR "Set RENODX_SOURCE_DIR to the existing RenoDX build tree")
 endif()
 enable_testing()
+add_executable(config_store_tests config_store_tests.cpp)
+target_compile_definitions(config_store_tests PRIVATE NOMINMAX)
+add_test(NAME config_atomic_save COMMAND config_store_tests "${CMAKE_CURRENT_BINARY_DIR}/config-checks")
+add_executable(latency_marker_policy_tests latency_marker_policy_tests.cpp)
+add_test(NAME latency_marker_admission COMMAND latency_marker_policy_tests)
+add_executable(xemfg_compatibility_tests xemfg_compatibility_tests.cpp)
+add_test(NAME xemfg_compatibility_policy COMMAND xemfg_compatibility_tests)
+add_test(NAME dependency_repair COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+  -File "${CMAKE_CURRENT_SOURCE_DIR}/dependency_repair_tests.ps1" -TestRoot "${CMAKE_CURRENT_BINARY_DIR}/dependency-checks")
+option(MFGUNLOCK_BUILD_XEMFG "Build the OptiScaler XeMFG companion and dual backend addon" OFF)
+set(ENGINEERING_OFFLINE_PROVIDERS "" CACHE STRING "Explicit local provider/plugin inputs for mutation and profile tests")
 add_library(mfgunlock_addon_compile OBJECT
   ../src/addons/mfgunlock/addon.cpp)
 target_compile_definitions(mfgunlock_addon_compile PRIVATE
-  WIN32 _WINDOWS NDEBUG NOMINMAX mfgunlock_EXPORTS)
+  WIN32 _WINDOWS $<$<NOT:$<CONFIG:Debug>>:NDEBUG> NOMINMAX mfgunlock_EXPORTS)
 target_compile_options(mfgunlock_addon_compile PRIVATE /bigobj)
 target_include_directories(mfgunlock_addon_compile SYSTEM PRIVATE
   "${RENODX_SOURCE_DIR}/external/Detours/include"
@@ -48,6 +63,68 @@ target_link_libraries(mfgunlock_local_low_overhead PRIVATE
   ${MFGUNLOCK_NATIVE_LIBRARIES})
 set_target_properties(mfgunlock_local_low_overhead PROPERTIES
   PREFIX "" SUFFIX ".addon64" OUTPUT_NAME "renodx-mfgunlock")
+add_library(mfgunlock_engineering_experimental SHARED EXCLUDE_FROM_ALL
+  ../src/addons/mfgunlock/addon.cpp)
+target_compile_definitions(mfgunlock_engineering_experimental PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_local_low_overhead,COMPILE_DEFINITIONS>
+  MFGUNLOCK_ENGINEERING_EXPERIMENTAL)
+target_compile_options(mfgunlock_engineering_experimental PRIVATE /bigobj)
+target_include_directories(mfgunlock_engineering_experimental SYSTEM PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+target_link_libraries(mfgunlock_engineering_experimental PRIVATE ${MFGUNLOCK_NATIVE_LIBRARIES})
+set_target_properties(mfgunlock_engineering_experimental PROPERTIES
+  PREFIX "" SUFFIX ".addon64" OUTPUT_NAME "renodx-mfgunlock-engineering-exp")
+
+# Publish the engineering build under its own release identity; retain the
+# experimental lifecycle policy and the historical control targets.
+add_library(mfgunlock_release_1_4_5 SHARED EXCLUDE_FROM_ALL
+  ../src/addons/mfgunlock/addon.cpp)
+target_compile_definitions(mfgunlock_release_1_4_5 PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_engineering_experimental,COMPILE_DEFINITIONS>
+  MFGUNLOCK_RELEASE_1_4_5)
+target_compile_options(mfgunlock_release_1_4_5 PRIVATE /bigobj)
+target_include_directories(mfgunlock_release_1_4_5 SYSTEM PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+target_link_libraries(mfgunlock_release_1_4_5 PRIVATE ${MFGUNLOCK_NATIVE_LIBRARIES})
+set_target_properties(mfgunlock_release_1_4_5 PROPERTIES
+  PREFIX "" SUFFIX ".addon64" OUTPUT_NAME "renodx-mfgunlock-1.4.5")
+
+if(MFGUNLOCK_BUILD_XEMFG)
+  add_subdirectory(../src/addons/mfgunlock/xemfg xemfg)
+endif()
+
+add_executable(release_1_4_5_policy_tests quality_build_policy_tests.cpp)
+target_compile_definitions(release_1_4_5_policy_tests PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_release_1_4_5,COMPILE_DEFINITIONS>)
+target_include_directories(release_1_4_5_policy_tests SYSTEM PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+add_test(NAME release_1_4_5_policy COMMAND release_1_4_5_policy_tests)
+
+foreach(engineering_test IN ITEMS patch_transaction queue_ack provider_identity hook_failure loader_notify quality_numerical)
+  add_executable(${engineering_test}_tests ${engineering_test}_tests.cpp)
+  target_compile_definitions(${engineering_test}_tests PRIVATE NOMINMAX
+    MFGUNLOCK_LOCAL_LOW_OVERHEAD MFGUNLOCK_LOCAL_STABILITY MFGUNLOCK_CONTINUOUS_BORDER_AXES
+    MFGUNLOCK_RELEASE_1_4_3 MFGUNLOCK_RELEASE_1_4_4)
+  target_include_directories(${engineering_test}_tests SYSTEM PRIVATE
+    $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+  target_link_libraries(${engineering_test}_tests PRIVATE ${MFGUNLOCK_NATIVE_LIBRARIES})
+  if(engineering_test STREQUAL "provider_identity")
+    add_test(NAME ${engineering_test} COMMAND ${engineering_test}_tests ${ENGINEERING_OFFLINE_PROVIDERS})
+    set_tests_properties(${engineering_test} PROPERTIES SKIP_RETURN_CODE 77)
+  else()
+    add_test(NAME ${engineering_test} COMMAND ${engineering_test}_tests)
+  endif()
+endforeach()
+add_executable(engineering_kernel_emitter engineering_kernel_emitter.cpp)
+target_compile_definitions(engineering_kernel_emitter PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_engineering_experimental,COMPILE_DEFINITIONS>)
+add_executable(engineering_provider_probe provider_probe.cpp)
+target_compile_definitions(engineering_provider_probe PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_engineering_experimental,COMPILE_DEFINITIONS>)
+target_include_directories(engineering_provider_probe SYSTEM PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+add_test(NAME presentmon_semantics COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+  -File "${CMAKE_CURRENT_SOURCE_DIR}/presentmon_semantics_tests.ps1")
 add_library(mfgunlock_border_axis_candidate SHARED EXCLUDE_FROM_ALL
   ../src/addons/mfgunlock/addon.cpp)
 target_compile_definitions(mfgunlock_border_axis_candidate PRIVATE
@@ -196,6 +273,7 @@ endif()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 if(Python3_Interpreter_FOUND)
   add_test(NAME research_workflow COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/research_workflow_tests.py")
+  add_test(NAME xemfg_replay_corpus COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/xemfg_replay_tests.py")
   add_test(NAME quality_refinement
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/quality_refinement_tests.py")
   add_test(NAME silhouette_guard
@@ -221,3 +299,17 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 set_property(TARGET mfgunlock_1_4_2_control mfgunlock_local_low_overhead mfgunlock_border_axis_candidate APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../tools/write_build_manifest.py")
+
+if(Python3_Interpreter_FOUND)
+  add_test(NAME engineering_manifest COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/engineering_manifest_tests.py"
+    "$<TARGET_FILE:mfgunlock_engineering_experimental>"
+    "${CMAKE_CURRENT_BINARY_DIR}/mfgunlock_engineering_experimental.vcxproj")
+  set_tests_properties(engineering_manifest PROPERTIES SKIP_RETURN_CODE 77)
+  add_test(NAME release_1_4_5_manifest COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/engineering_manifest_tests.py"
+    "$<TARGET_FILE:mfgunlock_release_1_4_5>"
+    "${CMAKE_CURRENT_BINARY_DIR}/mfgunlock_release_1_4_5.vcxproj"
+    "release-1.4.5")
+  set_tests_properties(release_1_4_5_manifest PROPERTIES SKIP_RETURN_CODE 77)
+endif()

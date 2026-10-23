@@ -1,0 +1,26 @@
+# Upstream MIT equivalence/recorder tests, adapted to our production CUDA route.
+set(VENDOR "${CMAKE_CURRENT_SOURCE_DIR}/../../src/addons/mfgunlock/xemfg/vendor")
+add_library(XefgPsoWrapper SHARED pso_wrapper.cpp)
+add_library(XefgPsoRecorder SHARED pso_recorder.cpp)
+add_executable(xemfg_cuda_route cuda_route_tests.cpp "${VENDOR}/cuda/cuda_route.cpp")
+foreach(target XefgPsoWrapper XefgPsoRecorder xemfg_cuda_route)
+  target_compile_features(${target} PRIVATE cxx_std_20)
+  target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+  target_compile_options(${target} PRIVATE /utf-8)
+  set_target_properties(${target} PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded")
+endforeach()
+target_include_directories(xemfg_cuda_route PRIVATE "${VENDOR}")
+target_link_libraries(xemfg_cuda_route PRIVATE d3d12 dxgi bcrypt)
+add_dependencies(xemfg_cuda_route XefgPsoWrapper XefgPsoRecorder)
+set(args --shipped-programs --fatbin "${XEMFG_INPUTS}/xefg_cuda_layers.fatbin"
+  --programs "${XEMFG_INPUTS}/programs" --programs "${XEMFG_INPUTS}")
+add_test(NAME xemfg_cuda_architecture COMMAND xemfg_cuda_route --architecture-gate)
+add_test(NAME xemfg_cuda_shipped_equivalence COMMAND xemfg_cuda_route ${args} --list create)
+add_test(NAME xemfg_cuda_shipped_equivalence_list1 COMMAND xemfg_cuda_route ${args} --list create1)
+add_test(NAME xemfg_cuda_recorder COMMAND xemfg_cuda_route ${args} --list create --recorder)
+add_test(NAME xemfg_cuda_recorder_stream COMMAND xemfg_cuda_route ${args} --list create1 --recorder --stream)
+add_test(NAME xemfg_cuda_recorder_strict COMMAND xemfg_cuda_route ${args} --list create --recorder --strict)
+add_test(NAME xemfg_cuda_stream_subobject COMMAND xemfg_cuda_route ${args} --list create --wrapper-stream-subobject)
+set_tests_properties(xemfg_cuda_shipped_equivalence xemfg_cuda_shipped_equivalence_list1 xemfg_cuda_recorder
+  xemfg_cuda_recorder_stream xemfg_cuda_recorder_strict xemfg_cuda_stream_subobject
+  PROPERTIES TIMEOUT 150 RUN_SERIAL TRUE)
