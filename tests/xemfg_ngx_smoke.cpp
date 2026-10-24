@@ -91,6 +91,13 @@ int main(int argc,char** argv) {
       // Off by default: NGX stays untouched and the swapchain stays native.
       Sleep(1500);
       Require(entry[0]!=0xE9,"NGX was hooked without [Adapters] DlssSr=1");
+      // 1.5.1: no Streamline, NGX mapped, no output: the panel suggests the input.
+      const auto hint=Import<uint32_t(*)()>(addon,"MFGAXeDlssSrHint");
+      Require(hint()==2u,"DLSS-SR input was not suggested for a DLSS-SR-only game");
+      Require(Import<bool(*)(bool)>(addon,"MFGAXeDlssSrSave")(true),"DLSS-SR opt-in was not saved");
+      Require(hint()==(2u|4u),"saving the opt-in changed the running adapter");
+      Sleep(500);
+      Require(entry[0]!=0xE9,"saving the opt-in hooked NGX before a restart");
       D3D12_COMMAND_QUEUE_DESC qd{}; ComPtr<ID3D12CommandQueue> queue; Check(device->CreateCommandQueue(&qd,IID_PPV_ARGS(&queue)),"queue");
       WNDCLASSW wc{}; wc.lpfnWndProc=WindowProc; wc.lpszClassName=L"XeMFGNgxOff"; wc.hInstance=GetModuleHandleW(nullptr); RegisterClassW(&wc);
       HWND hwnd=CreateWindowW(wc.lpszClassName,L"XeMFG DLSS-SR off",WS_OVERLAPPEDWINDOW,0,0,640,360,nullptr,nullptr,wc.hInstance,nullptr);
@@ -106,6 +113,7 @@ int main(int argc,char** argv) {
     }
     for(const auto deadline=GetTickCount64()+5000;entry[0]!=0xE9 && GetTickCount64()<deadline;) Sleep(10);
     Require(entry[0]==0xE9,"NGX evaluation was not hooked");
+    Require(Import<uint32_t(*)()>(addon,"MFGAXeDlssSrHint")()==1u,"an opted-in game was still offered the DLSS-SR input");
     D3D12_COMMAND_QUEUE_DESC qd{}; ComPtr<ID3D12CommandQueue> queue; Check(device->CreateCommandQueue(&qd,IID_PPV_ARGS(&queue)),"queue");
     WNDCLASSW wc{}; wc.lpfnWndProc=WindowProc; wc.lpszClassName=L"XeMFGNgxSmoke"; wc.hInstance=GetModuleHandleW(nullptr); RegisterClassW(&wc);
     HWND hwnd=CreateWindowW(wc.lpszClassName,L"XeMFG DLSS-SR adapter smoke",WS_OVERLAPPEDWINDOW,0,0,640,360,nullptr,nullptr,wc.hInstance,nullptr);

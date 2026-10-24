@@ -55,7 +55,12 @@ sl::Result SleepSourceFrame(const std::shared_ptr<Output>& o,uint32_t id,
         return sl::Result::eErrorReflexAPI;
       }
       o->sleepConfigured=true; o->sleepInterval=interval; o->sleepLowLatency=lowLatency; ++s.latencyModeUpdates;
-      xess_mod::WriteLog("native_sleep_mode","\"interval_us\":"+std::to_string(interval)+",\"low_latency\":"+(lowLatency?"true":"false"));
+      // Games can alternate their limit in menus (STALKER 2: 0 / 16666 us about
+      // once per second); every change is applied, the log keeps a budget.
+      static PatternBudget budget(16);
+      if(const auto count=budget.Admit(std::to_string(interval)+(lowLatency?"/1":"/0")))
+        xess_mod::WriteLog("native_sleep_mode","\"interval_us\":"+std::to_string(interval)+",\"low_latency\":"+(lowLatency?"true":"false")
+            +",\"occurrence\":"+std::to_string(count));
     }
     epoch=o->epoch; frame->sleepInFlight=true; o->sleepActive=true; o->lastXellSleep=id;
   }

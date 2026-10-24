@@ -26,6 +26,10 @@ const Output* ownedOutput{};
 thread_local bool creating{};
 uint32_t generationFlags{};
 FfxApiResource hudless{};
+// The game's own FSR frame-generation switch; applied only while the
+// synthesized frames are active, so an unused FSR context cannot override the
+// Streamline route's request (1.5.1).
+bool ffxRequested{};
 // The game's frameID only signals history resets; frame ids are synthesized.
 uint64_t lastFfxFrame{UINT64_MAX};
 uint32_t prepareLogBudget{};
@@ -91,7 +95,7 @@ ffxReturnCode_t CreateSwapchain(ffxContext* context,ffxCreateContextDescHeader* 
   }
   {
     std::lock_guard guard(lock);
-    ownedOutput=o.get(); lastFfxFrame=UINT64_MAX; hudless={};
+    ownedOutput=o.get(); lastFfxFrame=UINT64_MAX; hudless={}; ffxRequested=false;
   }
   synthetic::Begin(o,synthetic::kFidelityFx);
   *out=chain4.Detach(); *context=&swapchainContext;
@@ -108,9 +112,9 @@ ffxReturnCode_t CreateHook(ffxContext* context,ffxCreateContextDescHeader* desc,
     {
       std::lock_guard guard(lock); generationFlags=d->flags;
     }
-    // The game's generator is replaced, not disabled behind its back: the
-    // Intel output is the only frame generation and XeLL the only wait.
-    auto& s=State(); s.nativeOff=true; s.reflexOptionsReady=true; s.reflexOff=true;
+    // The route state (native generator off, XeLL as the only wait) changes
+    // only when FSR frames are actually submitted (synthetic::SubmitFrame).
+    auto& s=State();
     *context=&generationContext;
     Log("native_ffx_generation","\"flags\":"+std::to_string(d->flags)+",\"display_width\":"+std::to_string(d->displaySize.width)
         +",\"display_height\":"+std::to_string(d->displaySize.height)+",\"latency_output\":\""
@@ -124,7 +128,7 @@ ffxReturnCode_t CreateHook(ffxContext* context,ffxCreateContextDescHeader* desc,
 ffxReturnCode_t DestroyHook(ffxContext* context,const ffxAllocationCallbacks* memory) {
   if(!StandInContext(context)) return destroyContext(context,memory);
   std::lock_guard guard(lock);
-  if(*context==&generationContext) State().requested=false;
+  if(*context==&generationContext) { ffxRequested=false; if(synthetic::Driving(synthetic::kFidelityFx)) State().requested=false; }
   else { synthetic::End(ownedOutput); ownedOutput=nullptr; } // the swapchain follows the game's COM references
   Log("native_ffx_destroy","\"context\":\""+std::string(static_cast<StandIn*>(*context)->kind)+"\"");
   *context=nullptr;
@@ -135,8 +139,9 @@ ffxReturnCode_t ConfigureHook(ffxContext* context,const ffxConfigureDescHeader* 
   if(*context==&generationContext) {
     if(const auto* c=reinterpret_cast<const ffxConfigureDescFrameGeneration*>(Find(desc,FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION))) {
       std::lock_guard guard(lock);
-      const bool previous=State().requested.load();
-      State().requested=c->frameGenerationEnabled;
+      const bool previous=ffxRequested;
+      ffxRequested=c->frameGenerationEnabled;
+      if(synthetic::Driving(synthetic::kFidelityFx)) State().requested=ffxRequested;
       hudless=c->HUDLessColor;
       if(previous!=c->frameGenerationEnabled)
         Log("native_ffx_configure","\"enabled\":"+std::string(c->frameGenerationEnabled?"true":"false")
@@ -219,11 +224,13 @@ uint32_t Constants(const ffxDispatchDescFrameGenerationPrepare& p,uint32_t flags
 ffxReturnCode_t Prepare(const ffxDispatchDescFrameGenerationPrepare& p) {
   const auto o=Active();
   std::lock_guard guard(lock);
-  const auto id=o?synthetic::SubmitFrame(o,synthetic::kFidelityFx):0;
+  // Only frames of an enabled FSR generator are taken over.
+  const auto id=o && ffxRequested?synthetic::SubmitFrame(o,synthetic::kFidelityFx):0;
   if(!id) {
     if(prepareLogBudget<4) { ++prepareLogBudget; Log("native_ffx_prepare_skipped","\"active\":"+std::string(o?"true":"false")); }
     return FFX_API_RETURN_OK;
   }
+  State().requested=true; // the synthesized frames are active and FSR frame generation is on
   const bool continuous=lastFfxFrame!=UINT64_MAX && p.frameID==lastFfxFrame+1;
   lastFfxFrame=p.frameID;
   packet::Conventions learn;

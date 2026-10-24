@@ -7536,7 +7536,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
 
   }
 
-  mfgunlock::ui::Footer("MFG Unlock | 1.5.0");
+  mfgunlock::ui::Footer("MFG Unlock | 1.5.5");
   ImGui::TextDisabled(
       "Changes marked for restart keep the current session unchanged.");
 }
@@ -7962,7 +7962,7 @@ void LoadConfig() {
 extern "C" __declspec(dllexport) constexpr const char* NAME = "MFG Unlock";
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
-    "MFG Unlock 1.5.0 - DLSS-G and XeMFG backends";
+    "MFG Unlock 1.5.5 - DLSS-G and XeMFG backends";
 #elif defined(MFGUNLOCK_DUAL_BACKEND)
     "Dual Backend Preview X1 - official 1.4.5 base; DLSS-G and XeMFG via OptiScaler; gameplay validation pending";
 #elif defined(MFGUNLOCK_RELEASE_1_4_5)
@@ -7988,7 +7988,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     case DLL_PROCESS_ATTACH: {
       g_self_module = h_module;
       if (!reshade::register_addon(h_module)) return FALSE;
-      mfgunlock::backend::active = mfgunlock::backend::Read();
+      const auto saved_backend = mfgunlock::backend::Read();
+      mfgunlock::backend::active = mfgunlock::backend::Effective(saved_backend);
       if (mfgunlock::backend::active != mfgunlock::backend::Kind::DlssG) {
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
         if(mfgunlock::backend::active==mfgunlock::backend::Kind::XeMfg)
@@ -7999,6 +8000,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             "mfgunlock: XeMFG/disabled startup; DLSS-G writers, discovery and Reflex controls bypassed.");
         break;
       }
+      // 1.5.2: the load context for reports (the DLSS-G route maps only the
+      // 1.4.5 static imports; XeMFG's DLLs are delay-loaded).
+      reshade::log::message(reshade::log::level::info,
+          saved_backend == mfgunlock::backend::Kind::Invalid
+              ? (HasEarlyLoadEntry() ? "mfgunlock: DLSS-G backend (saved backend preference invalid; DLSS-G used); loaded from ReShade DllMain"
+                                     : "mfgunlock: DLSS-G backend (saved backend preference invalid; DLSS-G used); normal addon loading")
+              : (HasEarlyLoadEntry() ? "mfgunlock: DLSS-G backend; loaded from ReShade DllMain"
+                                     : "mfgunlock: DLSS-G backend; normal addon loading"));
       LoadConfig();
       g_is_star_wars_outlaws = CurrentProcessNameIs(L"Outlaws.exe");
       g_is_monster_hunter_wilds =

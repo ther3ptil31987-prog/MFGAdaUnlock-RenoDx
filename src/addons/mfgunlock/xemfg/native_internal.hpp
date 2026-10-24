@@ -20,6 +20,7 @@
 #include <sl_reflex.h>
 #include <sl_pcl.h>
 #include <atomic>
+#include <unordered_map>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -91,6 +92,13 @@ struct Output {
   DXGI_FORMAT format{DXGI_FORMAT_UNKNOWN};
   uint32_t hudLogBudget{},hudKindsSeen{};
   uint32_t rejectedTagLogBudget{};
+  // Tags the game removes when it pauses FG are routine; their own budget
+  // keeps rejectedTagLogBudget for real refusals.
+  uint32_t removedTagLogBudget{};
+  // 1.5.5: periodic native_summary (also a heartbeat while this output
+  // presents). Each field holds the totals at the previous summary.
+  uint64_t summaryTick{}, summaryFrames{}, summaryRejectedFrames{}, summarySleeps{};
+  uint64_t summaryTagsRejected{}, summaryTagsRemoved{}, summaryReservedStates{}, summaryHudFiltered{};
   uint32_t sleepAssociationLogBudget{};
   uint32_t unsleptSimulationStarts{};
   uint32_t sleepRejectLogBudget{},boundarySkipLogBudget{};
@@ -124,6 +132,9 @@ struct Output {
   uint32_t backbufferLogBudget{};
   bool viewportReset{}; // the selected viewport changed; the next admitted frame resets history
   uint32_t duplicateTagLogBudget{};
+  // Last valid state accepted per tagged resource, for tags with reserved bits.
+  std::unordered_map<ID3D12Resource*,uint32_t> taggedStates;
+  uint32_t reservedStateLogBudget{};
   DejitterRegion backbufferRegion{}; // last region the game declared; HUD inputs match it
   // Plan 4.4: the game's FP16 scRGB view over the Intel HDR10 proxy. The game
   // renders into scrgbBuffers; Present encodes them into Intel's buffers.
@@ -160,8 +171,19 @@ struct Bridge {
   std::atomic<uint32_t> multiplier{4}, limitUs{0};
   std::atomic<uint64_t> outputPresents{0};
   std::atomic<uint64_t> latencySleeps{0}, latencyMarkers{0}, inputTick{0}, outputTick{0};
+  // Last Streamline latency marker (GetTickCount64) and whether the game's
+  // selected viewport requests DLSS-G. Both together mean the Streamline route
+  // owns the frames, so synthesized frames stay passive (1.5.1). Markers alone
+  // are only Reflex: FSR frame generation stays available.
+  std::atomic<uint64_t> streamlineMarkerTick{0};
+  std::atomic<bool> streamlineGeneration{false};
   std::atomic<uint64_t> latencyModeUpdates{0}, lastSleepUs{0};
   std::atomic<uint32_t> gameReflexMode{0};
+  // Sync interval of the game's last Present, before ForceVSyncOff; UINT32_MAX until one is seen.
+  std::atomic<uint32_t> gameSyncInterval{UINT32_MAX};
+  // Totals for native_summary; the per-event logs keep only their first entries.
+  std::atomic<uint64_t> tagsRejected{0},tagsRemoved{0},reservedStates{0};
+  std::atomic<uint32_t> summaryIntervalMs{10000};
   std::atomic<uint32_t> lastHudIssues{0},lastHudInputs{0};
   std::atomic<uint64_t> hudRejected{0};
   bool lowLatency{true}, invert{true}, jitter{false};
@@ -192,6 +214,9 @@ std::string CompatibilityReport(const char* exportReason=nullptr);
 // runs synchronously; other reasons use a coalesced worker thread.
 void ExportCompatibilityReport(const char* reason) noexcept;
 void RecordDeviceFailure(Output&,HRESULT);
+// [Diagnostics] ForceDRED / D3D12DebugLayer: opt-in local diagnostics that
+// change device creation; the failure log then names DRED lists and ops.
+bool D3D12DiagnosticsForced();
 std::shared_ptr<Output> Active();
 void BeforePresent(const std::shared_ptr<Output>& o);
 void AfterPresent(const std::shared_ptr<Output>& o,CpuProbe* probe=nullptr,HRESULT result=S_OK);

@@ -36,6 +36,11 @@ inline void Observe(reshade::api::swapchain* swapchain) {
       || (swapchain->get_device()->get_api()!=reshade::api::device_api::d3d12
           && swapchain->get_device()->get_api()!=reshade::api::device_api::d3d11)) return;
   const bool requested=Preference();
+  // 1.5.2: no window hook while Force Borderless is off and nothing is
+  // managed; the presentation path then matches 1.4.5. A controller bound while
+  // it was on stays until it has restored the game's window.
+  bool bound{}; { std::lock_guard guard(mutex); bound=controller!=nullptr; }
+  if(!requested && !bound) { refresh=false; return; }
   if(!requested && !refresh.load()) return;
   const auto now=GetTickCount64();
   const bool explicitRequest=refresh.exchange(false);
@@ -71,7 +76,7 @@ inline void Draw() {
   });
   std::shared_ptr<WindowControl> value; { std::lock_guard guard(mutex); value=controller; }
   const auto state=value?value->Snapshot():WindowStatus{};
-  const char* text=state.pending?"Change pending":state.mode==DisplayMode::NativeBorderless?"Borderless (game controlled)":
+  const char* text=!value && !requested?"Game controlled":state.pending?"Change pending":state.mode==DisplayMode::NativeBorderless?"Borderless (game controlled)":
       state.mode==DisplayMode::ManagedBorderless?"Borderless (addon controlled)":state.mode==DisplayMode::Exclusive?"Exclusive - use the game's display menu":
       state.mode==DisplayMode::Windowed?"Windowed":"Unknown - no presentation change";
   ui::Readout("##dlssg_display_state","Display mode",text);

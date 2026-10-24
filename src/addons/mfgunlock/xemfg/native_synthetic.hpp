@@ -19,8 +19,13 @@ void Begin(const std::shared_ptr<Output>& o,const char* adapter);
 void End(const Output* o);
 // The adapter that owns the active output, or nullptr. Lock-free.
 const char* Owner() noexcept;
-// The frame id that receives this adapter's inputs; 0 when it does not own o.
+// The frame id that receives this adapter's inputs; 0 when it does not own o
+// or Streamline is delivering frames. The first accepted submission makes the
+// synthesized frames active (1.5.1): until then an owner is only armed and
+// never touches frame ids, markers or waits.
 uint32_t SubmitFrame(const std::shared_ptr<Output>& o,const char* adapter);
+// The adapter owns the output and its synthesized frames are active.
+bool Driving(const char* adapter) noexcept;
 void BeforeSourcePresent(const std::shared_ptr<Output>& o);
 void AfterSourcePresent(const std::shared_ptr<Output>& o);
 }

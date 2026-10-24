@@ -402,8 +402,46 @@ bool Install() {
   xess_mod::WriteLog("native_factory_hooks","\"legacy\":true,\"hwnd\":true");
   std::lock_guard lock(State().lock); State().status.factoryHook=true; return true;
 }
+static bool forceDred{},debugLayer{};
+bool D3D12DiagnosticsForced() { return forceDred || debugLayer; }
+static bool CreateDeviceEvent(reshade::api::device_api api,uint32_t&) {
+  if(api!=reshade::api::device_api::d3d12 || !D3D12DiagnosticsForced()) return false;
+  // Must run before D3D12CreateDevice; both settings apply to later devices only.
+  HRESULT dred=E_ABORT,layer=E_ABORT;
+  if(forceDred) {
+    ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> settings;
+    dred=D3D12GetDebugInterface(IID_PPV_ARGS(&settings));
+    if(SUCCEEDED(dred)) {
+      settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+      settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+      settings->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+    }
+  }
+  if(debugLayer) {
+    ComPtr<ID3D12Debug> debug;
+    layer=D3D12GetDebugInterface(IID_PPV_ARGS(&debug));
+    if(SUCCEEDED(layer)) debug->EnableDebugLayer();
+  }
+  xess_mod::WriteLog("native_d3d12_diagnostics","\"dred\":"+std::to_string(uint32_t(dred))+",\"debug_layer\":"+std::to_string(uint32_t(layer)));
+  return false;
+}
+static void CALLBACK D3D12Message(D3D12_MESSAGE_CATEGORY category,D3D12_MESSAGE_SEVERITY severity,D3D12_MESSAGE_ID id,LPCSTR text,void*) {
+  // Games emit steady performance warnings; keep the budget for errors.
+  if(severity>D3D12_MESSAGE_SEVERITY_ERROR) return;
+  static std::atomic<uint32_t> budget{};
+  if(budget++>=64) return;
+  xess_mod::WriteLog("native_d3d12_message","\"severity\":"+std::to_string(int(severity))+",\"category\":"+std::to_string(int(category))
+      +",\"id\":"+std::to_string(int(id))+",\"text\":\""+escape(text?text:"")+"\"");
+}
 static void DeviceEvent(reshade::api::device* device) {
-  if(device->get_api()==reshade::api::device_api::d3d12) Install();
+  if(device->get_api()!=reshade::api::device_api::d3d12) return;
+  Install();
+  if(!debugLayer) return;
+  ComPtr<ID3D12InfoQueue1> queue; DWORD cookie{};
+  const auto* native=reinterpret_cast<ID3D12Device*>(device->get_native());
+  const auto result=native?const_cast<ID3D12Device*>(native)->QueryInterface(IID_PPV_ARGS(&queue)):E_POINTER;
+  const auto registered=SUCCEEDED(result)?queue->RegisterMessageCallback(&D3D12Message,D3D12_MESSAGE_CALLBACK_FLAG_NONE,nullptr,&cookie):result;
+  xess_mod::WriteLog("native_d3d12_info_queue","\"result\":"+std::to_string(uint32_t(registered)));
 }
 static void OutputPresent(reshade::api::command_queue*,reshade::api::swapchain*,const reshade::api::rect*,
     const reshade::api::rect*,uint32_t,const reshade::api::rect*) {
@@ -484,7 +522,10 @@ void Attach(HMODULE module) {
   SetTimingEnabled(GetPrivateProfileIntW(L"Diagnostics",L"CpuTiming",0,ini.c_str())!=0);
   ConfigureTrace(GetPrivateProfileIntW(L"Diagnostics",L"StallTrace",0,ini.c_str())!=0,
       GetPrivateProfileIntW(L"Diagnostics",L"GpuTiming",0,ini.c_str())!=0);
-  AttachModel(module);
+  s.summaryIntervalMs=std::clamp(GetPrivateProfileIntW(L"Diagnostics",L"SummaryIntervalMs",10000,ini.c_str()),100u,600000u);
+  forceDred=GetPrivateProfileIntW(L"Diagnostics",L"ForceDRED",0,ini.c_str())!=0;
+  debugLayer=GetPrivateProfileIntW(L"Diagnostics",L"D3D12DebugLayer",0,ini.c_str())!=0;  AttachModel(module);
+  reshade::register_event<reshade::addon_event::create_device>(&CreateDeviceEvent);
   reshade::register_event<reshade::addon_event::init_device>(&DeviceEvent);
   reshade::register_event<reshade::addon_event::present>(&OutputPresent);
   // Bounded discovery only; the resolver catches feature queries after this

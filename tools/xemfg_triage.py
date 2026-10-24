@@ -54,6 +54,23 @@ def analyze(lines, pid=None):
     messages = [e.get('message') for e in events if e.get('event') == 'native_xell_log' and e.get('level', 0) >= 3]
     if messages:
         result['xell_errors'] = sorted(set(messages))[:4]
+    # 1.5.5 diagnostics: which Intel file was refused, the game's VSync, and
+    # whether the session ended or the log was taken while it still ran.
+    files = [e for e in events if e.get('event') == 'runtime_files']
+    if files:
+        result['runtime_files'] = {name: files[-1].get(name, {}).get('state') for name in ('libxess_fg.dll', 'libxell.dll')}
+    vsync = [e.get('sync_interval') for e in events if e.get('event') == 'native_game_vsync']
+    summaries = [e for e in events if e.get('event') == 'native_summary']
+    if vsync:
+        result['game_vsync'] = vsync[-1]
+    elif summaries and summaries[-1].get('game_sync_interval', -1) >= 0:
+        result['game_vsync'] = summaries[-1]['game_sync_interval']
+    result['device_lost'] = any(e.get('event') == 'native_device_failure' for e in events)
+    shutdown = any(e.get('event') == 'native_streamline_shutdown' and e.get('phase') == 'complete' for e in events) or any(
+        e.get('event') == 'native_output_retired' for e in events)
+    result['ended'] = 'clean' if shutdown else 'device_lost' if result['device_lost'] else 'open'
+    if summaries:
+        result['last_summary_gap_ms'] = events[-1].get('tick', 0) - summaries[-1].get('tick', 0)
     startup = [e for e in events if e.get('event') == 'startup_rejected']
     jitter = any('jittered-motion' in d for d in details) or any(
         e.get('event') == 'shader_decode_failure' and e.get('key') == JITTER_KEY for e in events) or any(

@@ -15,6 +15,7 @@
 namespace xess_mod { void WriteLog(const char*,const std::string&) noexcept {} }
 namespace mfgunlock::xemfg {
 bool ModelStartupFailed() noexcept { return false; }
+bool RuntimeFilesRejected(RuntimeFileReport (&)[2]) noexcept { return false; }
 void SetGameMultiplier(uint32_t) noexcept {}
 LogStatus LogSnapshot() noexcept { return {}; }
 bool TryModelStatus(Status& out) { out.model=out.initialized=out.enabled=1; return true; }
@@ -23,8 +24,12 @@ OverlayStatus OverlaySnapshot() noexcept { return {1,0,5500,0}; }
 OverlayInputStatus OverlayInputSnapshot() noexcept { return {4,2,0}; }
 Bridge& State() {static Bridge state; return state;}
 Status Snapshot(){ return State().status; }
+// DLSS-SR opt-in (1.5.1): the preview shows a Streamline game, where it is never offered.
+namespace ngx { bool Configured() noexcept { return false; } bool Suggested() noexcept { return false; }
+bool Save(bool) { return true; } int Saved() noexcept { return -1; } }
 bool OwnsPresentationHooks() noexcept {return true;}
 bool StreamlineStopping() noexcept {return false;}
+bool D3D12DiagnosticsForced() {return false;}
 Output::~Output()=default;
 std::shared_ptr<Output> Active() {
   static auto output=std::make_shared<Output>();

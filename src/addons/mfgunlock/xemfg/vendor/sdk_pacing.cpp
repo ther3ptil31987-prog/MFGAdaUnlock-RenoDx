@@ -105,14 +105,12 @@ std::atomic<bool> sdkDeadlinesRequested{},sdkDeadlinesActive{};
 std::atomic<bool> queueAheadRequested{true};
 std::atomic<int64_t> flipLeadNs{2500000};
 std::atomic<unsigned> flipToggleLogs{};
-// A batch is configured once the estimate holds this many batch deltas (DLSS-G averages six).
-constexpr uint32_t kFlipMinimumSamples = 3;
 // The driver refusing this many configurations in a row turns the owner's flip metering off.
 constexpr uint32_t kFlipFailureLimit = 8;
-// hitch.1: the batch time the driver gets grows at most 1/kFlipGrowthDivisor per batch over the one in
-// effect (same output count): every flip of the batch is held to it, so one high estimate must not
-// slow a whole batch down at once. Shorter times apply at once.
-constexpr int64_t kFlipGrowthDivisor = 8;
+// hitch.1: the batch time the driver gets grows at most 1/FlipPolicy::kGrowthDivisor per batch over the
+// one in effect (same output count): every flip of the batch is held to it, so one high estimate must
+// not slow a whole batch down at once. Shorter times apply at once. flip.2 (cadence::FlipPolicy): the
+// driver gets slightly less than the estimate, and only from a settled window.
 // hitch.1 log: a batch-start delta of at least kHitchRatio x the window median is a hitch.
 constexpr int64_t kHitchRatio = 2;
 constexpr unsigned kHitchLogLimit = 64, kResetLogLimit = 64;
@@ -468,14 +466,15 @@ void FlipBeforePresent(Route& current, const Invocation& call)
             std::lock_guard clock(owner.clockMutex);
             batchNs = owner.batchInterval.BatchTime(generated+1);
             samples = owner.batchInterval.Samples();
-            if (samples < kFlipMinimumSamples || batchNs <= 0) skip = "interval_unknown";
+            if (!samples || batchNs <= 0) skip = "interval_unknown";
+            else if (!cadence::FlipReady(owner.batchInterval)) skip = "settling";
         }
-        // hitch.1: growth over the configuration in effect for the same count is limited.
-        if (!skip && flip.configured && flip.outputs == generated+1 && flip.batchNs > 0
-            && batchNs > flip.batchNs+flip.batchNs/kFlipGrowthDivisor)
+        if (!skip)
         {
-            batchNs = flip.batchNs+flip.batchNs/kFlipGrowthDivisor;
-            ++flip.limited;
+            bool limited{};
+            batchNs = cadence::FlipBatchTime(batchNs, flip.configured ? flip.batchNs : 0,
+                flip.configured && flip.outputs == generated+1, limited);
+            if (limited) ++flip.limited;
         }
         if (skip)
         {

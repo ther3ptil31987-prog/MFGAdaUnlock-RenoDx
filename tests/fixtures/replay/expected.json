@@ -85,6 +85,16 @@
       "blocker": "ready",
       "cause": "interpolating",
       "explicit_sleep_rejections": 0
+    },
+    "witcher-3-1.5.2-device-lost.jsonl": {
+      "game": "The Witcher 3: Wild Hunt (next-gen), 1.5.2, path tracing toggled with FG on",
+      "route": "streamline",
+      "fg_requested": true,
+      "interpolated": true,
+      "blocker": "ready",
+      "cause": "interpolating",
+      "device_lost": true,
+      "ended": "device_lost"
     }
   }
 }

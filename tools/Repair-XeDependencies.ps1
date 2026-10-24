@@ -5,6 +5,50 @@
 param([string]$GameDirectory,[int]$GameProcessId,[long]$GameCreationTicks,
       [string]$GameExecutable,[string]$CatalogPath,[string]$RollbackJournal)
 $ErrorActionPreference='Stop'
+# The log goes beside the dependency backups in the game folder. Lines written
+# before the installation root is known are buffered; a folder that needs
+# administrator rights falls back to the temporary folder.
+$script:XeLog=$null; $script:XeLogBuffer=New-Object Collections.Generic.List[string]
+function Write-XeLog([string]$Message) {
+  $line=(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')+'  '+$Message
+  if(!$script:XeLog) { $script:XeLogBuffer.Add($line); return }
+  try { [IO.File]::AppendAllText($script:XeLog,$line+"`r`n") } catch {}
+}
+function Open-XeLog([string]$Directory) {
+  $name='helper-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+$PID+'.log'
+  $path=$null
+  if($Directory) {
+    try {
+      $folder=Join-Path $Directory '.mfg-dependency-backups'
+      if(!(Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder | Out-Null }
+      $path=Join-Path $folder $name; [IO.File]::AppendAllText($path,'')
+    } catch { $path=$null }
+  }
+  if(!$path) { $path=Join-Path ([IO.Path]::GetTempPath()) ('MFG-XeHelper-'+$name); [IO.File]::AppendAllText($path,'') }
+  $script:XeLog=$path
+  foreach($line in $script:XeLogBuffer) { [IO.File]::AppendAllText($path,$line+"`r`n") }
+  $script:XeLogBuffer.Clear()
+  return $path
+}
+function Test-XeStagingFolder([string]$Path,[string]$TempRoot=[IO.Path]::GetTempPath()) {
+  # Only this helper's own temporary folders may be removed.
+  if(!$Path -or !(Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+  $temp=[IO.Path]::GetFullPath($TempRoot).TrimEnd('\')
+  $full=[IO.Path]::GetFullPath($Path).TrimEnd('\')
+  if([IO.Path]::GetDirectoryName($full) -ne $temp) { return $false }
+  if((Split-Path -Leaf $full) -notmatch '^MFG-Xe(Helper|Repair)-') { return $false }
+  return !((Get-Item -LiteralPath $full -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)
+}
+function Remove-XeStaging([string]$Path,[string]$TempRoot=[IO.Path]::GetTempPath()) {
+  if(Test-XeStagingFolder $Path $TempRoot) { try { Remove-Item -LiteralPath $Path -Recurse -Force } catch { Write-XeLog ('Could not remove temporary folder '+$Path+': '+$_.Exception.Message) } }
+}
+function Clear-XeStaleStaging([string]$Keep,[string]$TempRoot=[IO.Path]::GetTempPath(),[TimeSpan]$Age=[TimeSpan]::FromDays(1)) {
+  # Folders left by earlier helpers (before 1.5.5 nothing removed them).
+  foreach($dir in @(Get-ChildItem -LiteralPath $TempRoot -Directory -Filter 'MFG-Xe*' -ErrorAction SilentlyContinue)) {
+    if($Keep -and $dir.FullName.TrimEnd('\') -eq [IO.Path]::GetFullPath($Keep).TrimEnd('\')) { continue }
+    if((Get-Date)-$dir.LastWriteTime -gt $Age) { Remove-XeStaging $dir.FullName $TempRoot }
+  }
+}
 function Get-XeDigest([string]$Path) {
   if(!(Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -99,6 +143,15 @@ function Test-XeWritable([string]$Directory) {
   $probe=Join-Path $Directory ('.mfg-write-'+[guid]::NewGuid().ToString('N'))
   try { [IO.File]::WriteAllText($probe,''); Remove-Item -LiteralPath $probe -Force; return $true }
   catch [UnauthorizedAccessException] { return $false }
+}
+function Test-XeNeedsInstall([string]$Hash,$Entry) {
+  # A missing file is always installed. Without accepted_older,
+  # @($Entry.accepted_older) is @($null), which a missing file's $null hash
+  # would match and silently drop from the plan.
+  if(!$Hash) { return $true }
+  if($Hash -eq $Entry.sha256) { return $false }
+  if(!$Entry.required) { return $true }
+  return $Hash -notin @($Entry.accepted_older | Where-Object { $_ })
 }
 function Get-XeRuntimeTargets([string]$GameRoot,[string]$InstallRoot,[string]$Name,[string[]]$Mapped,[string[]]$Copies) {
   # XeMFG loads beside the executable (or a mod loader's _storage_), so that
@@ -221,10 +274,14 @@ function Invoke-XeTransaction([string]$Root,$Plan,[scriptblock]$AssertClosed) {
 }
 function Start-XeRepair {
   Add-Type -AssemblyName System.Windows.Forms
+  Write-XeLog ('Helper started. Game: '+$GameExecutable+' (process '+$GameProcessId+'). Administrator: '+([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
   if(!$GameExecutable -or !$GameDirectory) { throw 'Game identity is required.' }
   $root=Resolve-XeFinalPath $GameDirectory
   if((Resolve-XeFinalPath ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($GameExecutable)))) -ne $root) { throw 'Game path does not match installation root.' }
   $installRoot=Find-XeInstallRoot $root
+  [void](Open-XeLog $installRoot)
+  Write-XeLog ('Intel files folder: '+$root+'. Installation root: '+$installRoot)
+  Clear-XeStaleStaging (Split-Path -Parent $PSCommandPath)
   $assertClosed={
     foreach($p in Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($GameExecutable)) -ErrorAction SilentlyContinue) {
       try { $path=$p.Path } catch { throw 'Cannot verify running game identity. Close it and retry.' }
@@ -234,7 +291,8 @@ function Start-XeRepair {
   if($RollbackJournal) {
     if([Windows.Forms.MessageBox]::Show('Restore the verified dependency backup? Game must be closed.','MFG Unlock rollback','YesNo') -eq 'Yes') {
       Restore-XeTransaction $RollbackJournal $assertClosed
-    }
+      Write-XeLog ('Rolled back: '+$RollbackJournal)
+    } else { Write-XeLog 'Rollback declined.' }
     return
   }
   $process=Get-Process -Id $GameProcessId -ErrorAction Stop
@@ -249,11 +307,14 @@ function Start-XeRepair {
       $file=Resolve-XeFinalPath $m.FileName
       try { [void](Assert-XePath $installRoot $file) } catch { throw ('An Intel DLL is loaded from outside this game installation; repair manually: '+$file) }
       $mapped[$m.ModuleName.ToLowerInvariant()]=$file
+      Write-XeLog ('Loaded by the game: '+$file)
     }
   }
   $scan=Find-XeRuntimeCopies $installRoot @('libxess_fg.dll','libxell.dll')
+  Write-XeLog ('Intel copies found in the installation: '+@($scan.files).Count+$(if(!$scan.complete){' (search stopped at its size limit)'}else{''}))
   $cache=Join-Path ([IO.Path]::GetTempPath()) ('MFG-XeRepair-'+[guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $cache | Out-Null
+  try {
   $plan=@(); $roles=@{}
   foreach($entry in $catalog.files) {
     $download=Join-Path $cache $entry.name
@@ -262,44 +323,67 @@ function Start-XeRepair {
     else { $located=@([pscustomobject]@{path=(Join-Path $root $entry.name);role='game folder'}) }
     foreach($l in $located) { $roles[$l.path]=$l.role }
     $targets=@($located | ForEach-Object { $_.path })
-    $needed=@($targets | Where-Object { $hash=Get-XeDigest $_; $hash -ne $entry.sha256 -and (!$entry.required -or $hash -notin @($entry.accepted_older)) })
+    $needed=@()
+    foreach($target in $targets) {
+      $hash=Get-XeDigest $target; $install=Test-XeNeedsInstall $hash $entry
+      if($install) { $needed+=$target }
+      Write-XeLog ($entry.name+' at '+$target+' ('+$roles[$target]+'): '+$(if(!$hash){'missing'}elseif($hash -eq $entry.sha256){'pinned version'}elseif(!$install){'accepted older version'}else{'different file '+$hash})+' -> '+$(if($install){'install'}else{'keep'}))
+    }
     if(!$needed.Count) { continue }
     Write-Host ('Downloading original Intel file: '+$entry.name)
+    Write-XeLog ('Downloading '+$base+$entry.source)
     [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -UseBasicParsing -Uri ($base+$entry.source) -OutFile $download
     if((Get-XeDigest $download) -ne $entry.sha256) { throw 'Official download did not match the pinned hash.' }
     if($entry.required -and [Diagnostics.FileVersionInfo]::GetVersionInfo($download).FileVersion -ne $entry.version) { throw 'Downloaded runtime version differs from the admitted profile.' }
+    Write-XeLog ('Download verified: '+$entry.name+' '+$entry.sha256)
     foreach($target in $needed) {
       [void](Assert-XePath $installRoot $target)
       $plan+=[ordered]@{target=$target;before=(Get-XeDigest $target);after=$entry.sha256;stage=$download}
     }
   }
-  if(!$plan.Count) { [void][Windows.Forms.MessageBox]::Show('The installed Intel files are already admitted. No replacement is needed.','MFG Unlock'); return }
+  if(!$plan.Count) {
+    Write-XeLog 'Nothing to install: the Intel files are already admitted.'
+    [void][Windows.Forms.MessageBox]::Show("The installed Intel files are already admitted. No replacement is needed.`r`nLog: "+$script:XeLog,'MFG Unlock'); return
+  }
   $blocked=@($plan | ForEach-Object { [IO.Path]::GetDirectoryName($_.target) } | Sort-Object -Unique | Where-Object { !(Test-XeWritable $_) })
   if($blocked.Count) {
     $admin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if($admin) { throw ('Cannot write to: '+($blocked -join ', ')) }
+    Write-XeLog ('Administrator permission needed for: '+($blocked -join ', '))
     $ask="Windows requires administrator permission to write to:`r`n"+($blocked -join "`r`n")+"`r`n`r`nRestart this helper as administrator? You will review the same file list again."
-    if([Windows.Forms.MessageBox]::Show($ask,'MFG Unlock','YesNo','Question') -ne 'Yes') { return }
+    if([Windows.Forms.MessageBox]::Show($ask,'MFG Unlock','YesNo','Question') -ne 'Yes') { Write-XeLog 'Administrator restart declined.'; return }
     $arguments='-NoProfile -ExecutionPolicy Bypass -File "'+$PSCommandPath+'" -GameDirectory "'+$GameDirectory+'" -GameProcessId '+$GameProcessId+' -GameCreationTicks '+$GameCreationTicks+' -GameExecutable "'+$GameExecutable+'" -CatalogPath "'+$CatalogPath+'"'
     Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -ArgumentList $arguments | Out-Null
+    Write-XeLog 'Continuing in the administrator helper.'
     return 'elevated'
   }
   $review=($plan | ForEach-Object { $_.target+"`r`n  Location: "+$roles[$_.target]+"`r`n  Existing: "+$(if($_.before){$_.before}else{'MISSING'})+"`r`n  Install: "+$_.after }) -join "`r`n`r`n"
   $scope="Game installation: "+$installRoot+$(if(!$scan.complete){"`r`nSearch stopped at its size limit; copies deeper in this folder were not listed."}else{''})
   $message="Install only these verified original Intel files? Unknown existing files will be backed up. Settings, overlays and libxess.dll are preserved.`r`n`r`n"+$scope+"`r`n`r`n"+$review+"`r`n`r`nRead LICENSE and notices in: "+$cache+"`r`nAfter confirmation this helper waits for the game to exit. It will never close the game for you."
-  if([Windows.Forms.MessageBox]::Show($message,'Review Intel dependency repair','YesNo','Question') -ne 'Yes') { return }
+  if([Windows.Forms.MessageBox]::Show($message,'Review Intel dependency repair','YesNo','Question') -ne 'Yes') { Write-XeLog 'Review declined; nothing changed.'; return }
+  Write-XeLog ('Approved '+$plan.Count+' file(s). Waiting for the game to exit.')
   Write-Host 'Approved. Close the game normally to continue; do not relaunch until this helper finishes.'
   $process.WaitForExit()
   $journal=Invoke-XeTransaction $installRoot $plan $assertClosed
-  [void][Windows.Forms.MessageBox]::Show("Repair complete. Restart the game.`r`nRollback journal: "+$journal,'MFG Unlock')
+  Write-XeLog ('Repair complete. Journal: '+$journal)
+  [void][Windows.Forms.MessageBox]::Show("Repair complete. Restart the game.`r`nRollback journal: "+$journal+"`r`nLog: "+$script:XeLog,'MFG Unlock')
+  } finally { Remove-XeStaging $cache }
 }
 if($MyInvocation.InvocationName -ne '.') {
   # Exit 3 tells the addon that an administrator copy continues the review.
-  try { if((Start-XeRepair) -eq 'elevated') { exit 3 } } catch {
+  # That copy runs this script from the same temporary folder, so the folder
+  # is removed by whichever copy finishes the review.
+  $outcome=$null
+  try { $outcome=Start-XeRepair } catch {
+    Write-XeLog ('Repair stopped: '+$_.Exception.Message)
+    if(!$script:XeLog) { [void](Open-XeLog $null) }
     Write-Error $_ -ErrorAction Continue
-    try { Add-Type -AssemblyName System.Windows.Forms; [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'MFG Unlock repair stopped') } catch {}
+    try { Add-Type -AssemblyName System.Windows.Forms; [void][Windows.Forms.MessageBox]::Show($_.Exception.Message+"`r`nLog: "+$script:XeLog,'MFG Unlock repair stopped') } catch {}
+    Remove-XeStaging (Split-Path -Parent $PSCommandPath)
     exit 1
   }
+  if($outcome -eq 'elevated') { exit 3 }
+  Remove-XeStaging (Split-Path -Parent $PSCommandPath)
 }
 

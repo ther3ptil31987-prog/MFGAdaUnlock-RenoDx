@@ -210,6 +210,13 @@ void Draw() {
         +"\nFile presence does not prove selection. Loaded identifies a mapped module, not a live feature.";
     ui::Readout(("##dep_"+std::to_string(i)).c_str(),label.c_str(),health,detail.c_str(),usable?ui::Accent:ui::Warning);
   }
+  if(const auto folder=backend::Directory(); !folder.empty()) {
+    ImGui::Separator();
+    const auto text=Utf8(FinalPath(folder).wstring());
+    ui::Readout("##dep_target","Intel files folder",text.c_str(),
+        "XeMFG loads libxess_fg.dll and libxell.dll from the running executable's folder (or a mod loader's _storage_ folder), "
+        "not from the installation root. Unreal Engine games keep it in <Game>\\Binaries\\Win64. Install / update files writes here.");
+  }
   if(!value.installRoot.empty()) {
     ImGui::Separator();
     ui::Readout("##dep_root","Game installation",value.installRoot.c_str(),

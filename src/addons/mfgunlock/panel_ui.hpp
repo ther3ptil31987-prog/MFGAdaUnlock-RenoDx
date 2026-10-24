@@ -190,8 +190,8 @@ inline void BackendSelector() {
       saveFailed=!backend::Select(choice?backend::Kind::XeMfg:backend::Kind::DlssG);
   });
   if(saveFailed) Notice("Backend change was not saved. Check write access to the game folder.");
-  if(selected==backend::Kind::Invalid) Notice("Invalid backend preference. Select a supported method and restart.");
-  if(backend::Read()!=backend::active) Notice("Saved. Restart the game to switch frame generation.");
+  if(selected==backend::Kind::Invalid) Notice("The saved backend preference is not valid; NVIDIA DLSS-G is used. Select a method to save a valid one.");
+  if(backend::Effective(backend::Read())!=backend::active) Notice("Saved. Restart the game to switch frame generation.");
 #endif
 }
 inline void RepositoryButton() {

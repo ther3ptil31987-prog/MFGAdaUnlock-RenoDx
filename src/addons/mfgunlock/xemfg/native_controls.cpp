@@ -16,6 +16,7 @@ std::mutex settingsLock;
 ControlSettings settings;
 std::atomic<bool> settingsSaved{true};
 std::atomic<bool> invalidConfiguration{};
+std::atomic<bool> forceVSyncOff{};
 auto Ini() { return backend::Directory()/L"MFGAdaUnlock.ini"; }
 bool ReadChoice(const wchar_t* section,const wchar_t* key,const wchar_t* choice) {
   wchar_t value[64]{};
@@ -46,6 +47,8 @@ void LoadControls() {
   settings.uiComposition=ReadBool(L"XeFG",L"UIComposition",false);
   settings.sdkDeadlines=ReadBool(L"XeFG",L"SdkDeadlines",false);
   sdk_pacing::RequestSdkDeadlines(settings.sdkDeadlines);
+  settings.forceVSyncOff=ReadBool(L"XeFG",L"ForceVSyncOff",false);
+  forceVSyncOff=settings.forceVSyncOff;
   wchar_t flip[32]{}; GetPrivateProfileStringW(L"XeFG",L"XeFGFlipMetering",L"auto",flip,32,Ini().c_str());
   settings.flipMetering=_wcsicmp(flip,L"off") && _wcsicmp(flip,L"false") && wcscmp(flip,L"0");
   if(_wcsicmp(flip,L"auto") && _wcsicmp(flip,L"on") && _wcsicmp(flip,L"true") && wcscmp(flip,L"1")
@@ -67,20 +70,24 @@ bool ConfigureControls(const ControlSettings& incoming) {
     {L"XeFG",L"XeFGFlipMetering",value.flipMetering?L"on":L"off"},
     {L"XeFG",L"ForceBorderless",value.forceBorderless?L"1":L"0"},
     {L"XeFG",L"UIComposition",value.uiComposition?L"1":L"0"},
-    {L"XeFG",L"SdkDeadlines",value.sdkDeadlines?L"1":L"0"}});
+    {L"XeFG",L"SdkDeadlines",value.sdkDeadlines?L"1":L"0"},
+    {L"XeFG",L"ForceVSyncOff",value.forceVSyncOff?L"1":L"0"}});
   settingsSaved=saved;
   if(!saved) return false;
   settings=value; invalidConfiguration=false; settingsGuard.unlock();
+  forceVSyncOff=value.forceVSyncOff;
   sdk_pacing::RequestQueueAhead(value.queueAhead);
   if(old.flipMetering!=value.flipMetering) sdk_pacing::RequestFlipMetering(value.flipMetering);
   if(old.sdkDeadlines!=value.sdkDeadlines) sdk_pacing::RequestSdkDeadlines(value.sdkDeadlines);
   xess_mod::WriteLog("native_controls","\"input\":"+std::to_string(uint32_t(value.input))
       +",\"output\":"+std::to_string(uint32_t(value.output))+",\"flip_requested\":"+(value.flipMetering?"true":"false")
       +",\"borderless_requested\":"+(value.forceBorderless?"true":"false")
-      +",\"ui_composition_requested\":"+(value.uiComposition?"true":"false")+",\"saved\":"+(saved?"true":"false"));
+      +",\"ui_composition_requested\":"+(value.uiComposition?"true":"false")
+      +",\"force_vsync_off\":"+(value.forceVSyncOff?"true":"false")+",\"saved\":"+(saved?"true":"false"));
   return saved;
 }
 ControlSettings ControlsSettings() { std::lock_guard guard(settingsLock); return settings; }
+bool ForceVSyncOff() noexcept { return forceVSyncOff.load(std::memory_order_relaxed); }
 ControlStatus ControlsSnapshot() {
   ControlStatus result;
   result.settings=ControlsSettings();
@@ -101,6 +108,7 @@ ControlStatus ControlsSnapshot() {
   result.reflexSleeps=s.reflexSleeps; result.xellSleeps=s.xellSleeps;
   result.xellObserved=result.activeLatencyOutput==LatencyOutput::XeLL && s.outputTick && now-s.outputTick.load()<2000;
   result.nativeReflexDisabled=s.reflexOff; result.gameReflexMode=s.gameReflexMode;
+  result.gameSyncInterval=s.gameSyncInterval;
   result.hudIssues=s.lastHudIssues; result.hudInputs=s.lastHudInputs; result.hudRejected=s.hudRejected;
   xefg_cuda::Status cuda;
   result.cudaUpdating=!xefg_cuda::TrySnapshot(cuda);
@@ -162,6 +170,17 @@ void DrawControls(PanelPage page) {
     });
     ui::Readout("##xe_flip_state","Pacing status",flip,flipHelp,metering?ui::Accent:ui::Muted);
     if(!value.sdkDeadlines && status.flipRequested!=status.flipEnabled) ui::Description("Change pending - applies with the next group of generated frames.");
+    constexpr const char* vsyncHelp="Presents the game's frames with sync interval 0, as with VSync off in the game. Use it for games whose VSync cannot be turned off in their settings, such as Elden Ring: game VSync keeps driver flip metering and generated-frame pacing from applying. Tearing is not enabled. Applies at the next frame.";
+    ui::Setting("##xe_vsync_row","Force game VSync off",vsyncHelp,[&] {
+      if(ImGui::Checkbox("##xe_force_vsync_off",&value.forceVSyncOff)) ConfigureControls(value);
+    });
+    const auto sync=status.gameSyncInterval;
+    const std::string gameVSync=sync==UINT32_MAX?"Not observed yet":sync==0?"Off":value.forceVSyncOff?"On (forced off)":"On";
+    ui::Readout("##xe_vsync_state","Game VSync",gameVSync.c_str(),vsyncHelp,sync && sync!=UINT32_MAX && !value.forceVSyncOff?ui::Warning:ui::Muted);
+    // 1.5.5: warn instead of changing it; the user decides (no profile does).
+    if(sync && sync!=UINT32_MAX && !value.forceVSyncOff && State().requested.load())
+      ui::Notice("The game presents with VSync, so frame pacing does not apply to generated frames. "
+          "Turn off VSync in the game's settings. If the game has no VSync setting, turn on Force game VSync off.");
     if(ui::Expander("Advanced pacing comparison")) {
       ui::Setting("##xe_queue_row","Queue metered frames early","Lets the driver space a verified group of frames while the SDK prepares its next work. GPU fences and resource waits remain owned by Intel. Applies only when the driver accepts flip metering and Present uses sync interval 0. Turn off to compare with the previous CPU timing.",[&] {
         ImGui::BeginDisabled(value.sdkDeadlines || !value.flipMetering);
@@ -250,7 +269,7 @@ void DrawControls(PanelPage page) {
     if(reports("Copy detailed counters","Copies technical status, error codes and accumulated counters for support. These counters are not displayed FPS or physical input latency.")) {
       mfgunlock::xemfg::Status model;
       const bool modelAvailable=TryModelStatus(model);
-      std::ostringstream report; report<<"MFG Unlock 1.5.0\nstartup_failed="<<ModelStartupFailed()
+      std::ostringstream report; report<<"MFG Unlock 1.5.5\nstartup_failed="<<ModelStartupFailed()
           <<" model_status_available="<<modelAvailable<<" model_detail="<<(modelAvailable?model.detail:"busy")
           <<"\nmodel="<<status.modelPort<<" initialized="<<status.modelInitialized
           <<"\nCUDA="<<status.cudaState<<" compute="<<status.cudaMajor<<'.'<<status.cudaMinor<<" layers="<<status.cudaLayers

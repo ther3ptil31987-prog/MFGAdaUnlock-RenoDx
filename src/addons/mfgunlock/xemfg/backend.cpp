@@ -444,6 +444,51 @@ __declspec(noinline) Result Destroy(Handle h) {
   }
   return r;
 }
+#ifdef MFGUNLOCK_NATIVE_XEMFG
+// 1.5.5: a refused pair names each file's path, hash, version and state, so a
+// report shows which file is missing or different (both were one reason code).
+constexpr const char* kPinnedProvider="ec5e0c65e075570c6ede72618bb666d0be0c2e10b2ea9762c0fe8cb8e375ab27";
+constexpr const char* kPinnedLatency="d2030dcd694fda8f2ec7e044b13e6db8f0b56d4ba9113a5efad334e3f3ded8c7";
+constexpr const char* kOlderLatency="61aeeab7fdcfb6d1742f86c14c68c663d759607d01a6132645c857291eaebb86";
+std::mutex runtimeFilesLock;
+mfgunlock::xemfg::RuntimeFileReport runtimeFiles[2]{};
+bool runtimeFilesRejected{};
+std::string FileVersion(const std::filesystem::path& path) {
+  DWORD unused{}; const auto size=GetFileVersionInfoSizeW(path.c_str(),&unused); if(!size) return {};
+  std::vector<char> data(size); VS_FIXEDFILEINFO* info{}; UINT length{};
+  if(!GetFileVersionInfoW(path.c_str(),0,size,data.data()) || !VerQueryValueW(data.data(),L"\\",reinterpret_cast<void**>(&info),&length) || length<sizeof(*info)) return {};
+  return std::to_string(HIWORD(info->dwFileVersionMS))+'.'+std::to_string(LOWORD(info->dwFileVersionMS))+'.'+std::to_string(HIWORD(info->dwFileVersionLS))+'.'+std::to_string(LOWORD(info->dwFileVersionLS));
+}
+struct RuntimeFile { mfgunlock::xemfg::RuntimeFileState state{}; std::string sha256,version; };
+RuntimeFile InspectRuntimeFile(const std::filesystem::path& path,bool latency) {
+  using State=mfgunlock::xemfg::RuntimeFileState;
+  RuntimeFile file;
+  if(path.empty()) { file.state=State::Missing; return file; }
+  try { file.sha256=HashFile(path); } catch(...) { file.state=State::Unreadable; return file; }
+  file.version=FileVersion(path);
+  file.state=file.sha256==(latency?kPinnedLatency:kPinnedProvider)?State::Pinned:
+      latency && file.sha256==kOlderLatency?State::AcceptedOlder:State::Different;
+  return file;
+}
+const char* RuntimeStateName(mfgunlock::xemfg::RuntimeFileState state) {
+  using State=mfgunlock::xemfg::RuntimeFileState;
+  return state==State::Missing?"missing":state==State::Pinned?"pinned":state==State::AcceptedOlder?"accepted_older":
+      state==State::Different?"different":state==State::Unreadable?"unreadable":"unknown";
+}
+void RecordRuntimeFiles(const std::filesystem::path& folder,const std::filesystem::path& fgPath,const RuntimeFile& fg,
+    const std::filesystem::path& llPath,const RuntimeFile& ll) {
+  const auto field=[](const char* name,const std::filesystem::path& path,const RuntimeFile& file) {
+    return std::string("\"")+name+"\":{\"path\":\""+escape(path.string())+"\",\"state\":\""+RuntimeStateName(file.state)
+        +"\",\"version\":\""+escape(file.version)+"\",\"sha256\":\""+file.sha256+"\"}";
+  };
+  xess_mod::WriteLog("runtime_files","\"folder\":\""+escape(folder.string())+"\","+field("libxess_fg.dll",fgPath,fg)+","+field("libxell.dll",llPath,ll)
+      +",\"supported_provider\":\"1.3.1.78\",\"supported_latency\":\"1.3.2.10\"");
+  std::lock_guard guard(runtimeFilesLock);
+  const RuntimeFile* files[2]={&fg,&ll};
+  for(int i=0;i<2;++i) { runtimeFiles[i]={}; runtimeFiles[i].state=files[i]->state; strncpy_s(runtimeFiles[i].version,files[i]->version.c_str(),_TRUNCATE); }
+  runtimeFilesRejected=true;
+}
+#endif
 void Start() {
   std::lock_guard lock(mutex);
   if (mfgunlock::backend::Read()!=mfgunlock::backend::Kind::XeMfg) { Detail("DLSS-G selected; XeMFG companion inactive"); return; }
@@ -480,20 +525,34 @@ void Start() {
       const auto candidate=parent/name;
       if(std::filesystem::is_regular_file(candidate)) return candidate;
     }
-    throw std::runtime_error(std::string("missing_Intel_runtime:")+std::filesystem::path(name).string());
+    return std::filesystem::path{};
   };
   const auto mappedFg=bootstrapCreate?bootstrapFg:GetModuleHandleW(L"libxess_fg.dll");
   const auto mappedLl=GetModuleHandleW(L"libxell.dll");
   const auto fgPath=runtimePath(L"libxess_fg.dll",mappedFg), llPath=runtimePath(L"libxell.dll",mappedLl);
+  // Both files are inspected before refusing, so the log and the panel name
+  // every problem. The reason codes are unchanged for reports and the panel.
+  const auto fgFile=InspectRuntimeFile(fgPath,false), llFile=InspectRuntimeFile(llPath,true);
+  using FileState=mfgunlock::xemfg::RuntimeFileState;
+  const bool fgUsable=fgFile.state==FileState::Pinned;
+  const bool llUsable=llFile.state==FileState::Pinned || llFile.state==FileState::AcceptedOlder;
+  if(!fgUsable || !llUsable) {
+    RecordRuntimeFiles(dir,fgPath.empty()?dir/L"libxess_fg.dll":fgPath,fgFile,llPath.empty()?dir/L"libxell.dll":llPath,llFile);
+    if(fgFile.state==FileState::Missing) throw std::runtime_error("missing_Intel_runtime:libxess_fg.dll");
+    if(llFile.state==FileState::Missing) throw std::runtime_error("missing_Intel_runtime:libxell.dll");
+    if(fgFile.state==FileState::Unreadable || llFile.state==FileState::Unreadable) throw std::runtime_error("hash_file_open");
+    throw std::runtime_error("unreviewed_Intel_runtime_pair");
+  }
+  const auto fh=fgFile.sha256, lh=llFile.sha256;
 #else
   const auto dir=ModulePath(host).parent_path();
   const auto fgPath=std::filesystem::exists(dir/L"OptiScaler/libxess_fg.dll")?dir/L"OptiScaler/libxess_fg.dll":dir/L"libxess_fg.dll";
   const auto llPath=std::filesystem::exists(dir/L"OptiScaler/libxell.dll")?dir/L"OptiScaler/libxell.dll":dir/L"libxell.dll";
-#endif
   const auto fh=HashFile(fgPath), lh=HashFile(llPath);
   if (fh!="ec5e0c65e075570c6ede72618bb666d0be0c2e10b2ea9762c0fe8cb8e375ab27"
       || (lh!="61aeeab7fdcfb6d1742f86c14c68c663d759607d01a6132645c857291eaebb86"
           && lh!="d2030dcd694fda8f2ec7e044b13e6db8f0b56d4ba9113a5efad334e3f3ded8c7")) throw std::runtime_error("unreviewed_Intel_runtime_pair");
+#endif
 #ifdef MFGUNLOCK_NATIVE_XEMFG
   fg=mappedFg?mappedFg:LoadLibraryExW(fgPath.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
   ll=mappedLl?mappedLl:LoadLibraryExW(llPath.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
@@ -649,6 +708,11 @@ bool NativeRuntimeModules(NativeRuntimePair& out) {
   out={fg,ll}; return fg && ll;
 }
 bool ModelStartupFailed() noexcept { return startupFailed.load(); }
+bool RuntimeFilesRejected(RuntimeFileReport (&out)[2]) noexcept {
+  std::lock_guard guard(runtimeFilesLock);
+  if(!runtimeFilesRejected) return false;
+  out[0]=runtimeFiles[0]; out[1]=runtimeFiles[1]; return true;
+}
 void SetGameMultiplier(uint32_t multiplier) noexcept { userGenerated=multiplier>=2 && multiplier<=6?multiplier-1:0; }
 bool GameContextInitializing() noexcept { return gameInitializing || gameInits.load()>0; }
 bool GameOwnsFrameGeneration() noexcept { return GameContextInitializing() || gameContexts.load()>0; }

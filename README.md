@@ -283,7 +283,7 @@ artifact on a HUD/UI element, switch back to **Native**.
 | Control Resonant | Working |
 | Assassin's Creed IV: Black Flag Resynced | Working — a built-in profile turns off native-output retention for this game |
 | Cyberpunk 2077 | Working — after a game update, run **Install / update files** again (see [below](#the-panel-says-intel-files-are-missing-or-a-different-version)) |
-| The Witcher 3: Wild Hunt (next-gen) | Working |
+| The Witcher 3: Wild Hunt (next-gen) | Working — turn off the game's **VSync** for correct frame pacing. Fixed in 1.5.3: changing path tracing or other graphics settings with frame generation on no longer loses the graphics device |
 | Alan Wake 2 | Working |
 | The Last of Us Part II Remastered | Working |
 | Mafia: The Old Country | Working |
@@ -291,9 +291,11 @@ artifact on a HUD/UI element, switch back to **Native**.
 | Death Stranding 2: On the Beach | Working — its jittered motion vectors are corrected automatically |
 | Ghostrunner 2 | Working |
 | S.T.A.L.K.E.R. 2: Heart of Chornobyl | Working — set the display mode to **Borderless / Windowed Fullscreen** |
-| Warhammer 40,000: Darktide | Working — add `[Adapters] FidelityFX=0` to `MFGAdaUnlock.ini` (see [Frame generation stays off](#frame-generation-stays-off)) |
+| Warhammer 40,000: Darktide | Working — fixed in 1.5.1; on 1.5.0, add `[Adapters] FidelityFX=0` to `MFGAdaUnlock.ini` |
 | Black Myth: Wukong | Working |
-| Kingdom Come: Deliverance II | Working with the DLSS-SR input: add `[Adapters] DlssSr=1` (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) |
+| Kingdom Come: Deliverance II | Working with the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) |
+| Red Dead Redemption 2 | Working with the DLSS-SR input (user report; the game has no native frame generation): turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) |
+| Elden Ring | Working with the DLSS-SR input and the EldenRingDLSS addon, offline with Easy Anti-Cheat off; turn on **Force game VSync off** in the panel for correct frame pacing (see [Elden Ring](#elden-ring)) |
 
 These games were tested with the XeMFG backend of this fork. This is not a
 claim of universal compatibility. The XeMFG backend needs a game that
@@ -413,7 +415,12 @@ turn frame generation on or off.
   XeMFG; the game's display mode is kept unchanged and frame generation stays
   off in that mode.
 - Intel's `libxess_fg.dll` and `libxell.dll` beside the game executable. The
-  panel installs the supported versions for you (step 4 below).
+  panel installs the supported versions for you (step 4 below). That is the
+  folder of the running `.exe`, not the installation root: in Unreal Engine
+  games it is `<Game>\Binaries\Win64` (S.T.A.L.K.E.R. 2:
+  `Stalker2\Binaries\Win64`; Black Myth: Wukong: `b1\Binaries\Win64`), in
+  Kingdom Come: Deliverance II it is `Bin\Win64MasterMasterSteamPGO`. The panel
+  shows it as **Diagnostics → Intel runtime files → Intel files folder**.
 - A game that provides frame-generation inputs; see
   [Supported inputs](#supported-xemfg-inputs).
 - **Capcom / RE Engine games with REFramework:** a REFramework build with the
@@ -466,6 +473,7 @@ users never need to edit it.
 | `[XeFG] Multiplier` | `4` | Output multiplier, `2`–`6` |
 | `[XeFG] UIComposition` | `0` | `1` composes the HUD from the game's HUD-less image, which avoids HUD interpolation artifacts (the HUD then updates at the real frame rate). Needs the game to provide a HUD-less image |
 | `[XeFG] XeFGFlipMetering` | `auto` | NVIDIA driver flip metering for generated frames; can also be toggled live in the panel |
+| `[XeFG] ForceVSyncOff` | `0` | `1` presents the game's frames with sync interval 0, as with VSync off in the game, for games that offer no VSync option (Elden Ring). Game VSync keeps flip metering and generated-frame pacing from applying; the panel warns when that happens. Also in the panel as **Force game VSync off** |
 | `[Latency] Input` / `Output` | `Auto` | Latency route. XeMFG always uses XeLL for output; Reflex input from the game is translated to XeLL |
 | `[XeFG] InvertedDepth` / `JitteredMotion` | not set | Manual convention overrides for unusual games. Normally learned automatically (see below) |
 | `[Adapters] FidelityFX` | `1` | `0` stops XeMFG from taking over FSR 3.1 frame generation |
@@ -497,34 +505,67 @@ available yet.
 
 Some games offer DLSS Super Resolution but no DLSS frame generation, such as
 Kingdom Come: Deliverance II. For those, XeMFG can take its depth and motion
-vectors from DLSS-SR. The input is off by default and is turned on by hand:
+vectors from DLSS-SR. The input is experimental and off by default; the panel
+offers it only in such games.
 
 1. Install XeMFG as described in [Installing XeMFG](#installing-xemfg), select
-   the XeMFG backend, and start the game once. This creates
-   `MFGAdaUnlock.ini` in the folder of the game's executable, next to
-   `renodx-mfgunlock.addon64` (for Kingdom Come: Deliverance II, that is
-   `Bin\Win64MasterMasterSteamPGO`).
-2. Close the game and open `MFGAdaUnlock.ini` in a text editor.
-3. Add these two lines at the end:
-
-   ```ini
-   [Adapters]
-   DlssSr=1
-   ```
-
-   If the file already has an `[Adapters]` section (for example with
-   `FidelityFX=0`), add only `DlssSr=1` under it instead of a second section.
-4. Save the file and start the game. The setting is read at startup, so a
-   change needs a game restart.
-5. In the game's graphics settings, select **DLSS** as the upscaler (any
+   the XeMFG backend, and restart the game.
+2. In the game's graphics settings, select **DLSS** as the upscaler (any
    quality mode, DLAA included) and turn off any frame generation the game
-   offers itself. XeMFG generates the frames from DLSS-SR's inputs.
+   offers itself.
+3. Open the **MFG Unlock** panel. When the game has no frame generation XeMFG
+   can use but runs DLSS, **General** says so and shows **Enable DLSS-SR input
+   (experimental)**. Select it, or tick **DLSS-SR input (experimental)** under
+   **Frame generation**.
+4. Restart the game. The setting is read at startup; the panel shows
+   *"Restart the game to apply"* until then.
+
+The panel does not offer the input in games with Streamline (DLSS frame
+generation), FSR 3.1 frame generation or their own XeSS-FG; those routes give
+better results. The same row turns the input off again (restart required).
+
+<details>
+<summary>Setting it by hand in <code>MFGAdaUnlock.ini</code></summary>
+
+The panel writes the same setting. `MFGAdaUnlock.ini` is in the folder of the
+game's executable (for Kingdom Come: Deliverance II,
+`Bin\Win64MasterMasterSteamPGO`). With the game closed, add:
+
+```ini
+[Adapters]
+DlssSr=1
+```
+
+If the file already has an `[Adapters]` section (for example with
+`FidelityFX=0`), add only `DlssSr=1` under it. `DlssSr=0` turns it off.
+
+</details>
 
 Limitations: DLSS-SR passes no camera data, so a default projection is
 assumed, and the HUD is interpolated with the image (no HUD-less image is
-available). Leave `DlssSr` at `0` in games that have DLSS frame generation;
-the Streamline route is used there and gives better results. To turn the input
-off again, set `DlssSr=0` or delete the line.
+available).
+
+#### Elden Ring
+
+Elden Ring has no DLSS of its own, so XeMFG takes its inputs from the
+EldenRingDLSS ReShade addon by masonpetrosky (tested with
+[0.4.0](https://github.com/masonpetrosky/EldenRingDLSS/releases/tag/v0.4.0)).
+Only its `.addon64` is needed; the rest of its install guide (me3, the renamed
+ReShade DLL, the Streamline and DLSS files) does not apply.
+
+1. Download the EldenRingDLSS zip from Nexus Mods and copy the `.addon64` from
+   its `EldenRingDLSS` folder into the game's `Game` folder, next to
+   `eldenring.exe` and the MFG Unlock addon.
+2. Play offline with Easy Anti-Cheat off; ReShade addons do not load under it.
+3. Keep EldenRingDLSS running DLSS, with its own experimental frame
+   generation off; XeMFG generates the frames.
+4. Continue from step 3 of [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input):
+   enable the DLSS-SR input in the panel and restart the game.
+5. **Force VSync off.** Elden Ring always presents with VSync and has no
+   option to turn it off; with it, frame pacing does not apply and generated
+   frames are unevenly spaced. In the panel, under **General → Smoothness and
+   display**, turn on **Force game VSync off** (`[XeFG] ForceVSyncOff=1`).
+   It applies immediately, and **Game VSync** then reads *On (forced off)*.
 
 ### Game profiles
 
@@ -547,11 +588,32 @@ the addon keeps the built-in rules.
 
 #### The panel says Intel files are missing or a different version
 
-Use **Diagnostics → Intel runtime files → Install / update files**. Game
-updates and Steam's **Verify integrity of game files** can restore the game's
-original Intel DLLs. When the installed pair is not a supported one, XeMFG
-does not start and the game runs normally without it. Run the installer again
-after every game update.
+The panel names each file's problem (for example *libxess_fg.dll: missing* or
+*libxell.dll: 1.3.0.5, not the supported 1.3.2.10*) and offers **Install /
+update files** right there; the same button is under **Diagnostics → Intel
+runtime files**. Game updates and Steam's **Verify integrity of game files**
+can restore the game's original Intel DLLs. When the installed pair is not a
+supported one, XeMFG does not start and the game runs normally without it. Run
+the installer again after every game update.
+
+The files must be in the folder shown as **Intel files folder** (the running
+executable's folder, see [XeMFG requirements](#xemfg-requirements)), not in the
+installation root. If the installer does not finish:
+
+- close the game completely; the helper waits for the game to exit before it
+  changes anything;
+- accept the administrator prompt for games under `Program Files`;
+- if it still cannot write, copy `libxess_fg.dll` and `libxell.dll` (version
+  1.3.1.78 and 1.3.2.10) into the **Intel files folder** yourself, then use
+  **Check again**. Other copies the game ships elsewhere are listed there too
+  and must be the same versions.
+
+The helper writes a log of every step in the installation's
+`.mfg-dependency-backups` folder (`helper-<date>-<id>.log`), or in the temporary
+folder when that folder needs administrator rights; its messages name the
+file. If it still fails, send that log together with the `runtime_files` and
+`startup_rejected` lines of `MFGAdaUnlock-XeMFG.log` (see
+[Reporting an XeMFG problem](#reporting-an-xemfg-problem)).
 
 #### Frame generation stays off
 
@@ -566,8 +628,8 @@ after every game update.
   game to enable frame generation, missing inputs, or unsupported format.
 - If the game offers both DLSS and FSR frame generation and the panel never
   leaves *"The game has paused frame generation"* with DLSS Frame Generation
-  on, add `[Adapters] FidelityFX=0` to `MFGAdaUnlock.ini` and restart the
-  game (Warhammer 40,000: Darktide is one such game).
+  on, update to 1.5.1 or later. On 1.5.0, add `[Adapters] FidelityFX=0` to
+  `MFGAdaUnlock.ini`.
 - If you changed the backend, restart the game completely.
 
 #### The game shows a DirectX error or crashes at start

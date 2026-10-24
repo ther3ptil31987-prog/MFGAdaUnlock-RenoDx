@@ -34,6 +34,8 @@ ap.add_argument('--secondary-viewport',action='store_true')
 ap.add_argument('--normal-depth',action='store_true')
 ap.add_argument('--hud-conflict',action='store_true')
 ap.add_argument('--tail-sleep',action='store_true')
+ap.add_argument('--game-vsync',action='store_true')
+ap.add_argument('--force-vsync-off',action='store_true')
 ap.add_argument('--steam-observer',type=Path)
 ap.add_argument('--stale-input',action='store_true')
 ap.add_argument('--active-support',action='store_true')
@@ -56,6 +58,9 @@ ap.add_argument('--ngx-fixture',type=Path)
 ap.add_argument('--dlss-sr-default-off',action='store_true')
 ap.add_argument('--duplicate-tags',action='store_true')
 ap.add_argument('--game-xefg-probe',action='store_true')
+ap.add_argument('--ffx-with-streamline',action='store_true')
+ap.add_argument('--ffx-with-reflex',action='store_true')
+ap.add_argument('--ffx-with-dlssg',action='store_true')
 ap.add_argument('--menu-viewport-first',action='store_true')
 ap.add_argument('--late-interposer',action='store_true')
 ap.add_argument('--sl1-interposer',action='store_true')
@@ -84,8 +89,8 @@ if args.dlss_sr_adapter or args.dlss_sr_default_off:
     shutil.copy2(args.ngx_fixture,d/'_nvngx.dll')
     manifest['_nvngx.dll']=hashlib.sha256(args.ngx_fixture.read_bytes()).hexdigest()
     # Streamline is never loaded by this executable; the staged copy stays inert.
-if args.ffx_adapter:
-    if args.ffx_fixture is None: ap.error('--ffx-adapter requires --ffx-fixture')
+if args.ffx_adapter or args.ffx_with_streamline or args.ffx_with_reflex or args.ffx_with_dlssg:
+    if args.ffx_fixture is None: ap.error('the FidelityFX cases require --ffx-fixture')
     shutil.copy2(args.ffx_fixture,d/'amd_fidelityfx_loader_dx12.dll')
     manifest['amd_fidelityfx_loader_dx12.dll']=hashlib.sha256(args.ffx_fixture.read_bytes()).hexdigest()
 if args.steam_observer:
@@ -110,9 +115,12 @@ if args.runtime_layout!='adjacent':
         content=bytearray(path.read_bytes()); content[0x40]^=1; path.write_bytes(content)
         manifest['_storage_/libxess_fg.dll']=hashlib.sha256(content).hexdigest()
 (d/'MFGAdaUnlock.ini').write_text(f'[Backend]\nSelected=XeMFG\n[XeFG]\nMultiplier={args.multiplier}\n'
-    +('InvertedDepth=0\n' if args.normal_depth else '')+f'[Latency]\nOutput={args.latency_output}\n',encoding='ascii')
-if args.d3d_debug:
-    with (d/'MFGAdaUnlock.ini').open('a') as f: f.write('[Diagnostics]\nStallTrace=1\n')
+    +('InvertedDepth=0\n' if args.normal_depth else '')+('ForceVSyncOff=1\n' if args.force_vsync_off else '')
+    +f'[Latency]\nOutput={args.latency_output}\n',encoding='ascii')
+# One [Diagnostics] section: a second one would be ignored by GetPrivateProfile*.
+diagnostics=(['StallTrace=1'] if args.d3d_debug else [])+(['SummaryIntervalMs=200'] if args.game_vsync else [])
+if diagnostics:
+    with (d/'MFGAdaUnlock.ini').open('a') as f: f.write('[Diagnostics]\n'+''.join(line+'\n' for line in diagnostics))
 if args.dlss_sr_adapter:
     with (d/'MFGAdaUnlock.ini').open('a') as f: f.write('[Adapters]\nDlssSr=1\n')
 if args.retained_output:
@@ -129,7 +137,7 @@ if args.reframework: flags+=['--ref-'+args.reframework]
 if args.steam_observer: flags+=['--steam-observer']
 if args.stale_input: flags+=['--stale-input']
 if args.active_support: flags+=['--active-support']
-for name in ('legacy_markers','mixed_markers','alias_markers','stall_trace','queue_proxy','parallel_factory','foreign_refs','retained_output','secondary_viewport','normal_depth','hud_conflict','tail_sleep','zero_resource','jittered_motion','simulation_sleep','midsim_sleep','struct_probe','reflex_v2','reflex_next','constants_v3','tag_next','backbuffer_subrect','menu_viewport_first','late_interposer','sl1_interposer','sleep_gap','constant_sleep_token','late_interposer_hooked','unsupported_dlssg','scrgb_output','native_game_xefg','ffx_adapter','dlss_sr_adapter','dlss_sr_default_off','duplicate_tags','game_xefg_probe'):
+for name in ('game_vsync','legacy_markers','mixed_markers','alias_markers','stall_trace','queue_proxy','parallel_factory','foreign_refs','retained_output','secondary_viewport','normal_depth','hud_conflict','tail_sleep','zero_resource','jittered_motion','simulation_sleep','midsim_sleep','struct_probe','reflex_v2','reflex_next','constants_v3','tag_next','backbuffer_subrect','menu_viewport_first','late_interposer','sl1_interposer','sleep_gap','constant_sleep_token','late_interposer_hooked','unsupported_dlssg','scrgb_output','native_game_xefg','ffx_adapter','dlss_sr_adapter','dlss_sr_default_off','duplicate_tags','game_xefg_probe','ffx_with_streamline','ffx_with_reflex','ffx_with_dlssg'):
     if getattr(args,name): flags+=['--'+name.replace('_','-')]
 if args.runtime_layout in ('preloaded-storage','mutated-storage'): flags+=['--preload-runtimes']
 if args.runtime_layout in ('mutated-storage','missing'): flags+=['--expect-startup-rejection']
@@ -147,8 +155,12 @@ result=subprocess.run([str(d/executable_name),str(args.multiplier),*flags],cwd=d
 prefs=configparser.ConfigParser(); prefs.read(d/'MFGAdaUnlock.ini',encoding='ascii')
 events=[json.loads(line) for line in (d/'MFGAdaUnlock-XeMFG.log').read_text(encoding='utf-8').splitlines()] if (d/'MFGAdaUnlock-XeMFG.log').exists() else []
 if args.dlss_sr_default_off:
+    saved=configparser.ConfigParser(); saved.read(d/'MFGAdaUnlock.ini',encoding='ascii')
     verified=('PASS: DLSS-SR adapter is off by default' in result.stdout
-        and not any(e.get('event') in ('native_ngx_hooks','native_synthetic_frames') for e in events))
+        and not any(e.get('event') in ('native_ngx_hooks','native_synthetic_frames') for e in events)
+        # 1.5.1: the panel's opt-in persists for the next launch only.
+        and saved.get('Adapters','DlssSr',fallback='')=='1'
+        and any(e.get('event')=='native_dlss_sr_saved' and e.get('enabled') is True for e in events))
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,
         dlss_sr_default_off_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
@@ -164,14 +176,23 @@ if args.dlss_sr_adapter:
         dlss_sr_adapter_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
     raise SystemExit(0 if result.returncode==0 and verified else 1)
-if args.ffx_adapter:
+if args.ffx_adapter or args.ffx_with_reflex or args.ffx_with_dlssg:
     # Plan 5.3: FSR 3.1 contexts replaced by the Intel output; markers synthesized.
     hooks=[e for e in events if e.get('event')=='native_ffx_hooks']
-    verified=('PASS: FidelityFX frame generation adapter reached ready' in result.stdout
-        and any(e.get('hooked') is True for e in hooks)
+    active=any(e.get('event')=='native_synthetic_active' for e in events)
+    deferred=any(e.get('event')=='native_synthetic_deferred' and e.get('reason')=='streamline_active' for e in events)
+    verified=(any(e.get('hooked') is True for e in hooks)
         and any(e.get('event')=='native_ffx_swapchain' and e.get('adapter') is True for e in events)
         and any(e.get('event')=='native_ffx_generation' for e in events)
         and not any(e.get('event')=='native_synthetic_sleep' for e in events))
+    if args.ffx_with_dlssg:
+        # 1.5.1: a DLSS-G request with Streamline markers keeps the FSR frames passive.
+        verified=verified and 'PASS: FidelityFX stayed passive while Streamline DLSS-G was requested' in result.stdout and deferred and not active
+    elif args.ffx_with_reflex:
+        # 1.5.1: Reflex markers alone (no DLSS-G request) leave FSR frame generation available.
+        verified=verified and 'reached ready with Reflex markers' in result.stdout and active and not deferred
+    else:
+        verified=verified and 'PASS: FidelityFX frame generation adapter reached ready' in result.stdout and active
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,
         ffx_adapter_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
@@ -235,14 +256,40 @@ if args.retire_sleep:
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,retirement_during_sleep_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
     raise SystemExit(0 if result.returncode==0 and verified and 'same HWND rebound before sleep returned' in result.stdout else 1)
+if args.game_vsync:
+    # The game presents with sync interval 1. It is reported once; the
+    # override happens only with ForceVSyncOff, and native_summary carries
+    # the interval while the output presents (SummaryIntervalMs=200).
+    reported=[e for e in events if e.get('event')=='native_game_vsync']
+    forced=[e for e in events if e.get('event')=='native_vsync_forced_off']
+    summaries=[e for e in events if e.get('event')=='native_summary']
+    verified=len(reported)==1 and reported[0].get('sync_interval')==1 and reported[0].get('force_vsync_off')==int(args.force_vsync_off)
+    verified=verified and (len(forced)==1 and forced[0].get('game_sync_interval')==1 if args.force_vsync_off else not forced)
+    verified=verified and any(e.get('frames',0)>0 and e.get('game_sync_interval')==1 and e.get('force_vsync_off')==int(args.force_vsync_off)
+                              and e.get('interval_ms',0)>=200 and e.get('tags_rejected')==0 and 'hud_filtered' in e for e in summaries)
+    (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,
+        game_vsync_verified=verified,reported=reported,forced=forced,summaries=summaries[:3]),indent=2))
+    print(result.stdout,end=''); print(result.stderr,end=''); print('Evidence:',d)
+    if not verified: print('game VSync not reported as expected:',reported,forced,summaries[:2])
+    raise SystemExit(0 if result.returncode==0 and 'PASS:' in result.stdout and verified else 1)
 if args.runtime_layout in ('mutated-storage','missing'):
     expected='unreviewed_Intel_runtime_pair' if args.runtime_layout=='mutated-storage' else 'missing_Intel_runtime:libxess_fg.dll'
     refused=any(e.get('event')=='startup_rejected' and e.get('reason')==expected for e in events)
     unpublished=not any(e.get('event') in ('ready','runtime_selection','native_context_created') for e in events)
+    # 1.5.5: the refusal names each file's state before the reason code.
+    files=[e for e in events if e.get('event')=='runtime_files']
+    fg=files[-1].get('libxess_fg.dll',{}) if files else {}; ll=files[-1].get('libxell.dll',{}) if files else {}
+    if args.runtime_layout=='mutated-storage':
+        described=fg.get('state')=='different' and bool(fg.get('version')) and len(fg.get('sha256',''))==64 \
+            and '_storage_' in fg.get('path','') and ll.get('state') in ('pinned','accepted_older')
+    else:
+        described=fg.get('state')=='missing' and ll.get('state')=='missing' and not fg.get('sha256')
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,runtime_layout=args.runtime_layout,exit=result.returncode,
-        stdout=result.stdout,stderr=result.stderr,startup_rejection_verified=refused,model_unpublished=unpublished),indent=2))
+        stdout=result.stdout,stderr=result.stderr,startup_rejection_verified=refused,model_unpublished=unpublished,
+        runtime_files_described=described),indent=2))
     print(result.stdout,end=''); print(result.stderr,end=''); print('Evidence:',d)
-    raise SystemExit(0 if result.returncode==0 and 'PASS:' in result.stdout and refused and unpublished else 1)
+    if not described: print('runtime_files did not describe the refused files:',files[-1] if files else None)
+    raise SystemExit(0 if result.returncode==0 and 'PASS:' in result.stdout and refused and unpublished and described else 1)
 selections=[e for e in events if e.get('event')=='runtime_selection']
 runtime_selection=bool(selections) and all('_storage_' in e['provider_path'] and '_storage_' in e['xell_path'] for e in selections) if args.runtime_layout!='adjacent' else bool(selections)
 sdk_deadlines=[e for e in events if e.get('event')=='dlssg_interval_deadline' and e.get('sdk_deadlines')]
@@ -360,6 +407,11 @@ except json.JSONDecodeError:
 diagnostics_verified['report_export']=(exported_report.get('schema')=='mfgunlock.compatibility'
     and exported_report.get('export_reason') in ('steady','retired','shutdown')
     and not re.search(r'[A-Za-z]:[\\/]',json.dumps(exported_report)))
+if args.ffx_with_streamline:
+    # 1.5.1 (Darktide): the FSR swapchain is ours, but the frames are Streamline's.
+    diagnostics_verified['ffx_with_streamline']=('FidelityFX swapchain with Streamline DLSS-G' in result.stdout
+        and any(e.get('event')=='native_ffx_swapchain' and e.get('adapter') is True for e in events)
+        and not any(e.get('event')=='native_synthetic_active' for e in events))
 if args.game_xefg_probe:
     diagnostics_verified['game_xefg_probe']='Game XeFG probe: uninitialized context did not block the Intel output' in result.stdout
 if args.duplicate_tags:

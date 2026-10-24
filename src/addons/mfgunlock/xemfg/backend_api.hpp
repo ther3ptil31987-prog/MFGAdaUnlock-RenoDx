@@ -18,6 +18,11 @@ bool TryModelStatus(Status& out);
 struct NativeRuntimePair { void* frameGeneration{}; void* latency{}; };
 bool NativeRuntimeModules(NativeRuntimePair& out);
 bool ModelStartupFailed() noexcept;
+// 1.5.5: what startup found when it refused the Intel files, for the panel.
+enum class RuntimeFileState : uint32_t { Unknown, Missing, Pinned, AcceptedOlder, Different, Unreadable };
+struct RuntimeFileReport { RuntimeFileState state{}; char version[32]{}; };
+// [0] libxess_fg.dll, [1] libxell.dll. False unless startup refused them.
+bool RuntimeFilesRejected(RuntimeFileReport (&out)[2]) noexcept;
 // Plan 5.2: game-owned XeFG contexts generate multiplier-1 frames (2x-6x).
 void SetGameMultiplier(uint32_t multiplier) noexcept;
 // True while a game-owned context initializes on this thread: the swapchain

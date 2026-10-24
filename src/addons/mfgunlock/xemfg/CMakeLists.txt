@@ -83,10 +83,21 @@ target_include_directories(mfgunlock_native_xemfg PRIVATE vendor
   "${RENODX_SOURCE_DIR}/external/reshade/include")
 target_include_directories(mfgunlock_native_xemfg SYSTEM PRIVATE
   $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
-target_link_libraries(mfgunlock_native_xemfg PRIVATE ${MFGUNLOCK_NATIVE_LIBRARIES} d3d12 dxgi bcrypt psapi)
-target_link_options(mfgunlock_native_xemfg PRIVATE /DEBUG:FULL $<$<NOT:$<CONFIG:Debug>>:/OPT:REF> $<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>)
+target_link_libraries(mfgunlock_native_xemfg PRIVATE ${MFGUNLOCK_NATIVE_LIBRARIES} d3d12 dxgi bcrypt psapi delayimp)
+# 1.5.2: the DLLs only XeMFG calls load on first use. The DLSS-G backend then
+# maps the same imports as 1.4.5 (KERNEL32, USER32, VERSION), also when ReShade
+# loads the addon from its own DllMain (ADDON.LoadFromDllMain).
+set(XEMFG_DELAY_LOADED d3d12.dll dxgi.dll bcrypt.dll SHELL32.dll)
+list(TRANSFORM XEMFG_DELAY_LOADED PREPEND "/DELAYLOAD:" OUTPUT_VARIABLE XEMFG_DELAY_OPTIONS)
+target_link_options(mfgunlock_native_xemfg PRIVATE /DEBUG:FULL $<$<NOT:$<CONFIG:Debug>>:/OPT:REF> $<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>
+  ${XEMFG_DELAY_OPTIONS})
 set_target_properties(mfgunlock_native_xemfg PROPERTIES PREFIX "" SUFFIX ".addon64"
   OUTPUT_NAME "renodx-mfgunlock-native" MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME xemfg_addon_imports COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/xemfg_import_tests.py"
+    $<TARGET_FILE:mfgunlock_native_xemfg>)
+endif()
 
 # Explicit offline probe only. Never built by ALL, packaged, or installed in a
 # game: it records initialization parameter/weight identities for shader audits.
@@ -247,7 +258,8 @@ if(XEMFG_OFFLINE_RESHADE AND XEMFG_OFFLINE_FG AND XEMFG_OFFLINE_LL)
   # removes it from XEMFG_BACKLOG.
   set(XEMFG_CONFORMANCE reflex-v2 reflex-next constants-v3 tag-next backbuffer-subrect
     menu-viewport-first late-interposer sl1-interposer sleep-gap constant-sleep-token late-interposer-hooked
-    unsupported-dlssg learned-depth scrgb-output native-game-xefg ffx-adapter dlss-sr-adapter dlss-sr-default-off duplicate-tags game-xefg-probe)
+    unsupported-dlssg learned-depth scrgb-output native-game-xefg ffx-adapter dlss-sr-adapter dlss-sr-default-off duplicate-tags game-xefg-probe ffx-with-streamline
+    ffx-with-reflex ffx-with-dlssg)
   set(XEMFG_BACKLOG)
   foreach(case IN LISTS XEMFG_CONFORMANCE)
     set(fixture $<TARGET_FILE:xemfg_streamline_fixture>)
@@ -256,7 +268,7 @@ if(XEMFG_OFFLINE_RESHADE AND XEMFG_OFFLINE_FG AND XEMFG_OFFLINE_LL)
     endif()
     set(extra)
     set(executable $<TARGET_FILE:xemfg_native_smoke>)
-    if(case STREQUAL "ffx-adapter")
+    if(case MATCHES "^ffx-")
       set(extra --ffx-fixture $<TARGET_FILE:xemfg_ffx_fixture>)
     endif()
     if(case STREQUAL "dlss-sr-adapter" OR case STREQUAL "dlss-sr-default-off")
@@ -401,6 +413,20 @@ if(XEMFG_OFFLINE_RESHADE AND XEMFG_OFFLINE_FG AND XEMFG_OFFLINE_LL)
       --fixture $<TARGET_FILE:xemfg_streamline_fixture> --reshade "${XEMFG_OFFLINE_RESHADE}"
       --sdk-fg "${XEMFG_OFFLINE_FG}" --sdk-ll "${XEMFG_OFFLINE_LL}" --runtime-layout ${layout})
     set_tests_properties(xemfg_native_runtime_${layout} PROPERTIES RUN_SERIAL TRUE TIMEOUT 150)
+  endforeach()
+  # 1.5.5: a game presenting with VSync is reported (and overridden only when
+  # the user turns on ForceVSyncOff); native_summary is written meanwhile.
+  foreach(vsync IN ITEMS reported forced-off)
+    set(vsync_flags --game-vsync)
+    if(vsync STREQUAL "forced-off")
+      list(APPEND vsync_flags --force-vsync-off)
+    endif()
+    add_test(NAME xemfg_native_game_vsync_${vsync} COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_SOURCE_DIR}/xemfg_native_tests.py" --directory "${CMAKE_BINARY_DIR}/native-checks"
+      --addon $<TARGET_FILE:mfgunlock_native_xemfg> --exe $<TARGET_FILE:xemfg_native_smoke>
+      --fixture $<TARGET_FILE:xemfg_streamline_fixture> --reshade "${XEMFG_OFFLINE_RESHADE}"
+      --sdk-fg "${XEMFG_OFFLINE_FG}" --sdk-ll "${XEMFG_OFFLINE_LL}" ${vsync_flags} --active-support)
+    set_tests_properties(xemfg_native_game_vsync_${vsync} PROPERTIES RUN_SERIAL TRUE TIMEOUT 150)
   endforeach()
   foreach(multiplier IN ITEMS 2 3 4 6)
   add_test(NAME xemfg_native_reshade_${multiplier}x COMMAND "${Python3_EXECUTABLE}"

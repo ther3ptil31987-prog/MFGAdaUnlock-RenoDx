@@ -36,7 +36,7 @@ Json Module(HMODULE module) {
 }
 std::string CompatibilityReport(const char* exportReason) {
   auto& s=State();const auto status=Snapshot();
-  Json report={{"schema","mfgunlock.compatibility"},{"version",1},{"build","1.5.0"},
+  Json report={{"schema","mfgunlock.compatibility"},{"version",1},{"build","1.5.5"},
       {"export_reason",exportReason?exportReason:"user"},
       {"adapter",status.output?"streamline_d3d12":"none"},{"fallback","xemfg_selected_passthrough"},
       {"status",status.detail},
@@ -153,6 +153,38 @@ void RecordDeviceFailure(Output& o,HRESULT present) {
     }
   }
   o.dredResult=dredResult;o.dredNodes=nodes;o.dredUnfinished=unfinished;
+  // Opt-in local diagnostics only: name the unfinished lists, their ops and
+  // the page-fault allocations. Default builds keep the metadata-only record.
+  if(D3D12DiagnosticsForced() && dred) {
+    const auto narrow=[](const wchar_t* w,const char* a) {
+      if(a) return std::string(a);
+      if(!w) return std::string();
+      char out[256]{}; WideCharToMultiByte(CP_UTF8,0,w,-1,out,int(sizeof(out)-1),nullptr,nullptr); return std::string(out);
+    };
+    uint32_t index{};
+    if(SUCCEEDED(dredResult))for(auto* node=output.pHeadAutoBreadcrumbNode;node && index<16;node=node->pNext,++index) {
+      const uint32_t last=node->pLastBreadcrumbValue?*node->pLastBreadcrumbValue:0;
+      if(last>=node->BreadcrumbCount) continue;
+      const int done=last?int(node->pCommandHistory[last-1]):-1, next=int(node->pCommandHistory[last]);
+      xess_mod::WriteLog("native_dred_list","\"index\":"+std::to_string(index)
+          +",\"list\":\""+escape(narrow(node->pCommandListDebugNameW,node->pCommandListDebugNameA))
+          +"\",\"queue\":\""+escape(narrow(node->pCommandQueueDebugNameW,node->pCommandQueueDebugNameA))
+          +"\",\"completed\":"+std::to_string(last)+",\"count\":"+std::to_string(node->BreadcrumbCount)
+          +",\"last_op\":"+std::to_string(done)+",\"next_op\":"+std::to_string(next));
+    }
+    D3D12_DRED_PAGE_FAULT_OUTPUT1 fault{};
+    const auto faultResult=dred->GetPageFaultAllocationOutput1(&fault);
+    std::string existing,freed; uint32_t count{};
+    if(SUCCEEDED(faultResult)) {
+      for(auto* a=fault.pHeadExistingAllocationNode;a && count<8;a=a->pNext,++count)
+        existing+=(existing.empty()?"\"":",\"")+escape(narrow(a->ObjectNameW,a->ObjectNameA))+"\"";
+      count=0;
+      for(auto* a=fault.pHeadRecentFreedAllocationNode;a && count<8;a=a->pNext,++count)
+        freed+=(freed.empty()?"\"":",\"")+escape(narrow(a->ObjectNameW,a->ObjectNameA))+"\"";
+    }
+    xess_mod::WriteLog("native_dred_page_fault","\"result\":"+std::to_string(uint32_t(faultResult))
+        +",\"va\":"+std::to_string(fault.PageFaultVA)+",\"existing\":["+existing+"],\"recent_freed\":["+freed+"]");
+  }
   xess_mod::WriteLog("native_device_failure","\"output\":"+std::to_string(o.diagnosticOutput)
       +",\"epoch\":"+std::to_string(o.epoch)+",\"present_hresult\":"+std::to_string(uint32_t(present))
       +",\"device_removed_reason\":"+std::to_string(uint32_t(o.removedReason))

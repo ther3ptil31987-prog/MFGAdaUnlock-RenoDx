@@ -11,6 +11,7 @@ struct ControlSettings {
   LatencyOutput output{LatencyOutput::Auto};
   bool queueAhead{true};
   bool flipMetering{true}, forceBorderless{}, uiComposition{},sdkDeadlines{};
+  bool forceVSyncOff{};
 };
 struct ControlStatus {
   uint32_t version{5};
@@ -40,9 +41,12 @@ struct ControlStatus {
   LatencyOutput activeLatencyOutput{LatencyOutput::XeLL};
   bool latencyRestartPending{},reflexOutputObserved{},reflexOptionsReady{};
   uint64_t reflexSleeps{},xellSleeps{};
+  uint32_t gameSyncInterval{UINT32_MAX};
 };
 void LoadControls();
 ControlSettings ControlsSettings();
+// Lock-free read of ControlSettings::forceVSyncOff for the Present path.
+bool ForceVSyncOff() noexcept;
 bool ConfigureControls(const ControlSettings& settings);
 ControlStatus ControlsSnapshot();
 enum class PanelPage { General, Quality, Latency, Diagnostics };

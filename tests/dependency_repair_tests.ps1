@@ -73,8 +73,45 @@ Check (@($targets).Count -eq 2 -and $targets[0].role -eq 'game folder' -and $tar
 Reject { Get-XeRuntimeTargets $exe $steam 'libxess_fg.dll' @((Join-Path $outside 'libxess_fg.dll')) @() } 'loaded copy outside the installation planned'
 Check (Test-XeWritable $exe) 'writable folder reported read-only'
 $catalog=Join-Path $PSScriptRoot '../src/addons/mfgunlock/xemfg/dependency_catalog.json'
-[void](Read-XeCatalog $catalog)
+$entries=@{}; foreach($e in (Read-XeCatalog $catalog).files) { $entries[$e.name]=$e }
+# A missing provider has no accepted_older; it must still be planned (STALKER 2,
+# RDR2 and Elden Ring got only libxell.dll and kept missing libxess_fg.dll).
+$fg=$entries['libxess_fg.dll']; $ll=$entries['libxell.dll']; $notice=$entries['Intel-XeSS-LICENSE.txt']
+Check (Test-XeNeedsInstall $null $fg) 'missing libxess_fg.dll not planned'
+Check (Test-XeNeedsInstall $null $ll) 'missing libxell.dll not planned'
+Check (Test-XeNeedsInstall $null $notice) 'missing notice not planned'
+Check (!(Test-XeNeedsInstall $fg.sha256 $fg)) 'pinned libxess_fg.dll replaced'
+Check (!(Test-XeNeedsInstall $ll.accepted_older[0] $ll)) 'accepted older libxell.dll replaced'
+Check (Test-XeNeedsInstall ('0'*64) $fg) 'unknown libxess_fg.dll kept'
+Check (Test-XeNeedsInstall $ll.accepted_older[0] $fg) 'another file hash accepted for libxess_fg.dll'
+# The helper log goes beside the backups in the game folder and keeps lines
+# written before the installation root was known.
+$logGame=Join-Path $root 'loggame'; New-Item -ItemType Directory -Path $logGame | Out-Null
+$script:XeLog=$null; $script:XeLogBuffer.Clear()
+Write-XeLog 'before the root is known'
+$logPath=Open-XeLog $logGame
+Write-XeLog 'after the root is known'
+Check ([IO.Path]::GetDirectoryName($logPath) -eq (Join-Path $logGame '.mfg-dependency-backups') -and (Split-Path -Leaf $logPath) -like 'helper-*.log') 'helper log not written in the game folder'
+$logText=[IO.File]::ReadAllText($logPath)
+Check ($logText.Contains('before the root is known') -and $logText.Contains('after the root is known')) 'buffered helper log lines lost'
+$script:XeLog=$null
+# Only this helper's temporary folders are removed, including stale ones. A
+# private folder stands in for %TEMP% so the machine's real folder is untouched.
+$tempRoot=Join-Path $root 'temp'; $outsideStage=Join-Path $root 'MFG-XeHelper-outside'
+$ownStage=Join-Path $tempRoot 'MFG-XeHelper-own'; $staleStage=Join-Path $tempRoot 'MFG-XeRepair-stale'
+$freshStage=Join-Path $tempRoot 'MFG-XeRepair-fresh'; $otherStale=Join-Path $tempRoot 'Other-stale'
+New-Item -ItemType Directory -Path $ownStage,$staleStage,$freshStage,$otherStale,$outsideStage | Out-Null
+[IO.File]::WriteAllText((Join-Path $ownStage 'catalog.json'),'{}')
+foreach($p in @($staleStage,$otherStale)) { (Get-Item -LiteralPath $p).LastWriteTime=(Get-Date).AddDays(-2) }
+Check (!(Test-XeStagingFolder $game $tempRoot)) 'game folder accepted as helper staging'
+Check (!(Test-XeStagingFolder $outsideStage $tempRoot)) 'staging outside the temporary folder accepted'
+Clear-XeStaleStaging $ownStage $tempRoot
+Check (!(Test-Path -LiteralPath $staleStage) -and (Test-Path -LiteralPath $freshStage) -and (Test-Path -LiteralPath $ownStage) -and (Test-Path -LiteralPath $otherStale)) 'stale staging cleanup removed the wrong folders'
+Remove-XeStaging $ownStage $tempRoot
+Check (!(Test-Path -LiteralPath $ownStage)) 'helper staging folder not removed'
+Remove-XeStaging $outsideStage $tempRoot
+Check (Test-Path -LiteralPath $outsideStage) 'folder outside the temporary folder removed'
 $bad=Get-Content -LiteralPath $catalog -Raw | ConvertFrom-Json;$bad.files[0].sha256='0000'
 $badPath=Join-Path $cache 'bad.json';$bad | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $badPath -Encoding UTF8
 Reject { Read-XeCatalog $badPath } 'tampered catalog accepted'
-Write-Output 'PASS: install/rollback, new files, closed-game gate, unknown edits, hash failure, locked target, interrupted recovery, junction resolution, install roots, shipped copies, pinned catalog'
+Write-Output 'PASS: install/rollback, new files, closed-game gate, unknown edits, hash failure, locked target, interrupted recovery, junction resolution, install roots, shipped copies, install plan, helper log, temporary cleanup, pinned catalog'

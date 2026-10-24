@@ -97,7 +97,7 @@ sl::Result SetLoadedHook(sl::Feature feature,bool enabled) {
     bool physical=true;
     const auto verified=getLoaded(feature,physical);
     logicalLoaded=enabled; presentationIsolated=verified==sl::Result::eOk && !physical;
-    if(!enabled) State().requested=false;
+    if(!enabled) { State().requested=false; State().streamlineGeneration=false; }
   }
   return result;
 }
@@ -399,6 +399,7 @@ sl::Result OptionsHook(const sl::ViewportHandle& v,const sl::DLSSGOptions& opts)
   if(!SelectedViewport(uint32_t(v))) return r;
   s.nativeOff=r==sl::Result::eOk;
   s.requested=logicalLoaded && opts.mode!=sl::DLSSGMode::eOff;
+  s.streamlineGeneration=s.requested.load();
   static std::atomic<uint64_t> previous{UINT64_MAX};
   const uint64_t signature=uint64_t(uint32_t(opts.mode))|(uint64_t(uint32_t(r))<<32);
   if(previous.exchange(signature)!=signature)
@@ -508,6 +509,7 @@ sl::Result SleepHook(const sl::FrameToken& f) {
 void CaptureMarker(sl::PCLMarker marker,const sl::FrameToken& f) {
   TraceInput("latency_marker",FrameId(uint32_t(f)),UINT32_MAX,int(marker));
   const auto id=FrameId(uint32_t(f)); auto& s=State(); const auto value=uint32_t(marker);
+  s.streamlineMarkerTick=GetTickCount64();
   if(marker==sl::PCLMarker::eRenderSubmitStart) s.recording=id;
   if(marker==sl::PCLMarker::ePresentStart) s.presenting=id;
   if(auto o=Active()) {
@@ -800,6 +802,7 @@ void ReselectViewport(Output& o,uint32_t id) {
   if(!never && !quiet) return;
   s.viewport=candidate->viewport;
   s.requested=logicalLoaded && candidate->mode!=uint32_t(sl::DLSSGMode::eOff);
+  s.streamlineGeneration=s.requested.load();
   o.viewportReset=true;
   xess_mod::WriteLog("native_viewport_switch","\"from\":"+std::to_string(selected)+",\"to\":"+std::to_string(candidate->viewport)
       +",\"id\":"+std::to_string(id)+",\"reason\":\""+(never?"selected_without_inputs":"selected_quiet")+"\"");
@@ -900,6 +903,36 @@ void BeforePresent(const std::shared_ptr<Output>& o) {
   else Report(compatibility::Description(o->blocker));
   o->last=id;
 }
+// 1.5.5: one native_summary per [Diagnostics] SummaryIntervalMs (10 s) while
+// this output presents. Per-event logs keep only their first entries; the
+// summary carries the counts, and when it stops, presentation stopped.
+static void WriteSummary(Output& o,const xefg_swapchain_present_status_t& status,int queryResult) {
+  auto& s=State(); const auto tick=GetTickCount64();
+  uint32_t frames{},withoutFg{};
+  { std::lock_guard guard(s.lock); frames=s.status.frames; withoutFg=s.status.rejected; }
+  const uint64_t tagsRejected=s.tagsRejected,tagsRemoved=s.tagsRemoved,reservedStates=s.reservedStates,hudFiltered=s.hudRejected;
+  const auto baseline=[&] {
+    o.summaryTick=tick; o.summaryFrames=frames; o.summaryRejectedFrames=withoutFg; o.summarySleeps=o.rejectedExplicitSleeps;
+    o.summaryTagsRejected=tagsRejected; o.summaryTagsRemoved=tagsRemoved; o.summaryReservedStates=reservedStates;
+    o.summaryHudFiltered=hudFiltered;
+  };
+  if(!o.summaryTick) { baseline(); return; }
+  if(tick-o.summaryTick<s.summaryIntervalMs.load()) return;
+  const auto sync=s.gameSyncInterval.load();
+  xess_mod::WriteLog("native_summary","\"output\":"+std::to_string(o.diagnosticOutput)+",\"interval_ms\":"+std::to_string(tick-o.summaryTick)
+      +",\"frames\":"+std::to_string(uint32_t(frames-uint32_t(o.summaryFrames)))
+      +",\"frames_without_fg\":"+std::to_string(uint32_t(withoutFg-uint32_t(o.summaryRejectedFrames)))
+      +",\"fg_enabled\":"+std::to_string(o.enabled)+",\"requested\":"+std::to_string(s.requested.load())
+      +",\"blocker\":\""+compatibility::Name(o.blocker)+"\""
+      +",\"frames_per_present\":"+std::to_string(queryResult==0?status.framesPresented:0)+",\"sdk_result\":"+std::to_string(status.frameGenResult)
+      +",\"tags_rejected\":"+std::to_string(tagsRejected-o.summaryTagsRejected)+",\"tags_removed\":"+std::to_string(tagsRemoved-o.summaryTagsRemoved)
+      +",\"hud_filtered\":"+std::to_string(hudFiltered-o.summaryHudFiltered)
+      +",\"reserved_states\":"+std::to_string(reservedStates-o.summaryReservedStates)
+      +",\"sleeps_rejected\":"+std::to_string(o.rejectedExplicitSleeps-o.summarySleeps)
+      +",\"game_sync_interval\":"+(sync==UINT32_MAX?std::string("-1"):std::to_string(sync))
+      +",\"force_vsync_off\":"+std::to_string(ForceVSyncOff()));
+  baseline();
+}
 void AfterPresent(const std::shared_ptr<Output>& o,CpuProbe* probe,HRESULT result) {
   std::lock_guard lock(o->io); xefg_swapchain_present_status_t status{};
   if(o->retired || !o->fg) return;
@@ -927,6 +960,7 @@ void AfterPresent(const std::shared_ptr<Output>& o,CpuProbe* probe,HRESULT resul
   }
   // Keep late PresentEnd markers for the preceding frame, but bound memory.
   o->frames.Prune(o->last);
+  WriteSummary(*o,status,queryResult);
   if(probe && probe->active) {
     auto& sample=probe->sample; sample.frame=o->last; sample.epoch=o->epoch; sample.output=o->diagnosticOutput;
     sample.presentResult=result; sample.admitted=o->enabled; sample.requestedOutputs=State().multiplier;

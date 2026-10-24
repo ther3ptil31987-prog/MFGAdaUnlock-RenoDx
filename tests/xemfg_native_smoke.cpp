@@ -535,9 +535,13 @@ int main(int argc,char** argv) {
     if(flag("--scrgb-output")) desc.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
     if(flag("--capcom-flags")) desc.Flags=0x842; // waitable, mode switch, tearing: captured RE Engine description
     if(legacyFactory) desc.Flags=0x802; // Control Resonant: legacy API, tearing + mode switch
-    if(flag("--ffx-adapter")) {
+    const bool ffxReflex=flag("--ffx-with-reflex"),ffxDlssg=flag("--ffx-with-dlssg");
+    if(flag("--ffx-adapter") || ffxReflex || ffxDlssg) {
       // Plan 5.3: an FSR 3.1 game with no Streamline calls. Its swapchain and
       // generator contexts become the Intel output and prepare feeds it.
+      // Conformance (1.5.1): --ffx-with-reflex adds Reflex markers through
+      // Streamline without a DLSS-G request (FSR must still take over);
+      // --ffx-with-dlssg also requests DLSS-G (Streamline owns the frames).
       HMODULE provider=LoadLibraryW(L"amd_fidelityfx_loader_dx12.dll"); Require(provider,"FidelityFX loader fixture");
       const auto get=[&](const char* name) { auto p=GetProcAddress(provider,name); Require(p,name); return p; };
       const auto create=reinterpret_cast<PfnFfxCreateContext>(get("ffxCreateContext"));
@@ -558,6 +562,7 @@ int main(int argc,char** argv) {
       ComPtr<IDXGISwapChain4> chain; chain.Attach(replaced);
       mfgunlock::xemfg::native::Status ready{}; bridgeStatus(&ready,sizeof(ready));
       Require(ready.output,"FidelityFX swapchain is not the Intel output");
+      Require(!(Import<uint32_t(*)()>(addon,"MFGAXeDlssSrHint")()&2u),"DLSS-SR input suggested in a frame-generation game");
       ffxCreateBackendDX12Desc backend{}; backend.header.type=FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12; backend.device=device.Get();
       ffxCreateContextDescFrameGeneration generationDesc{};
       generationDesc.header.type=FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION; generationDesc.header.pNext=&backend.header;
@@ -569,8 +574,23 @@ int main(int argc,char** argv) {
       ffxConfigureDescFrameGeneration config{};
       config.header.type=FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION; config.swapChain=replaced; config.frameGenerationEnabled=true;
       RealInputs inputs(device.Get(),queue.Get(),desc.Width,desc.Height);
+      PFun_slPCLSetMarker* slMarker{};
+      if(ffxReflex || ffxDlssg) {
+        auto resolve=Import<PFun_slGetFeatureFunction*>(fixture,"slGetFeatureFunction");
+        void* fn{}; Require(resolve(sl::kFeaturePCL,"slPCLSetMarker",fn)==sl::Result::eOk && fn,"Streamline markers");
+        slMarker=reinterpret_cast<PFun_slPCLSetMarker*>(fn);
+      }
+      if(ffxDlssg) {
+        auto resolve=Import<PFun_slGetFeatureFunction*>(fixture,"slGetFeatureFunction");
+        void* fn{}; Require(resolve(sl::kFeatureDLSS_G,"slDLSSGSetOptions",fn)==sl::Result::eOk && fn,"DLSS-G options");
+        sl::DLSSGOptions on; on.structVersion=3; on.mode=sl::DLSSGMode::eOn; on.numFramesToGenerate=1;
+        Require(reinterpret_cast<PFun_slDLSSGSetOptions*>(fn)(sl::ViewportHandle{0},on)==sl::Result::eOk,"DLSS-G request");
+      }
       unsigned readyFrames{};
       for(uint64_t frame=0;frame<24;++frame) {
+        Token token; token.id=uint32_t(frame+1);
+        const auto mark=[&](sl::PCLMarker m) { if(slMarker) Require(slMarker(m,token)==sl::Result::eOk,"Streamline marker"); };
+        mark(sl::PCLMarker::eSimulationStart); mark(sl::PCLMarker::eSimulationEnd); mark(sl::PCLMarker::eRenderSubmitStart);
         config.frameID=frame;
         Require(configure(&generation,&config.header)==FFX_API_RETURN_OK,"FidelityFX configure");
         ComPtr<ID3D12Resource> back; Check(chain->GetBuffer(chain->GetCurrentBackBufferIndex(),IID_PPV_ARGS(&back)),"FidelityFX back buffer");
@@ -585,23 +605,32 @@ int main(int argc,char** argv) {
         prepare.motionVectors.resource=inputs.motion.Get(); prepare.motionVectors.state=FFX_API_RESOURCE_STATE_COMPUTE_READ;
         Require(dispatch(&generation,&prepare.header)==FFX_API_RETURN_OK,"FidelityFX prepare");
         inputs.list->Close(); ID3D12CommandList* raw=inputs.list.Get(); queue->ExecuteCommandLists(1,&raw); inputs.Wait();
+        mark(sl::PCLMarker::eRenderSubmitEnd); mark(sl::PCLMarker::ePresentStart);
         Check(chain->Present(0,0),"FidelityFX Present");
+        mark(sl::PCLMarker::ePresentEnd);
         bridgeStatus(&ready,sizeof(ready)); if(ready.enabled) ++readyFrames;
         MSG msg{}; while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) DispatchMessageW(&msg);
       }
       std::cout<<"FidelityFX ready frames="<<readyFrames<<" provider calls="<<originals()<<" detail="<<ready.detail<<std::endl;
       mfgunlock::xemfg::Status ms; modelStatus(&ms,sizeof(ms));
       std::cout<<"FidelityFX presented="<<ms.presented<<" generated="<<ms.generated<<" result="<<ms.result<<std::endl;
+      if(ffxDlssg) {
+        // Streamline DLSS-G owns the frames: FSR's prepare data is not taken over.
+        Require(!ms.generated,"FSR frames were taken over while DLSS-G was requested");
+      } else {
       Require(readyFrames>=16,"FidelityFX frames did not reach ready");
       // framesPresented counts the last source Present: itself plus the generated frames.
       Require(ms.generated==multiplier-1 && ms.presented==multiplier && ms.result==0,"FidelityFX output presented no generated frames");
+      }
       Require(originals()==0,"a replaced FidelityFX call reached the provider");
       Require(destroy(&generation,nullptr)==FFX_API_RETURN_OK,"FidelityFX generation destroy");
       chain.Reset();
       Require(destroy(&swapchainContext,nullptr)==FFX_API_RETURN_OK,"FidelityFX swapchain destroy");
       DestroyWindow(hwnd);
       Require(Import<bool(*)(uint32_t)>(addon,"MFGAXeLogFlush")(2000),"FidelityFX flush");
-      std::cout<<"PASS: FidelityFX frame generation adapter reached ready"<<std::endl;
+      std::cout<<(ffxDlssg?"PASS: FidelityFX stayed passive while Streamline DLSS-G was requested":
+          ffxReflex?"PASS: FidelityFX frame generation adapter reached ready with Reflex markers":
+          "PASS: FidelityFX frame generation adapter reached ready")<<std::endl;
       return 0;
     }
     if(flag("--native-game-xefg")) {
@@ -700,6 +729,33 @@ int main(int argc,char** argv) {
       destroyProbe=reinterpret_cast<decltype(&xefgSwapChainDestroy)>(GetProcAddress(runtime,"xefgSwapChainDestroy"));
       Require(create && destroyProbe && create(device.Get(),&probe)==XEFG_SWAPCHAIN_RESULT_SUCCESS && probe,"game probe context");
     }
+    if(flag("--ffx-with-streamline")) {
+      // Conformance (Darktide field session, 1.5.1): the game always creates
+      // its swapchain through FidelityFX and an FSR frame-generation context it
+      // never enables, while frame generation runs through Streamline DLSS-G.
+      // The Streamline route must own the frames; FSR stays passive.
+      HMODULE provider=LoadLibraryW(L"amd_fidelityfx_loader_dx12.dll"); Require(provider,"FidelityFX loader fixture");
+      const auto create=reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(provider,"ffxCreateContext"));
+      Require(create,"ffxCreateContext");
+      const auto* entry=reinterpret_cast<const uint8_t*>(create);
+      for(const auto deadline=GetTickCount64()+5000;entry[0]!=0xE9 && GetTickCount64()<deadline;) Sleep(10);
+      Require(entry[0]==0xE9,"FidelityFX provider was not hooked");
+      IDXGISwapChain4* replaced{}; ffxContext swapchainContext{};
+      ffxCreateContextDescFrameGenerationSwapChainForHwndDX12 swapDesc{};
+      swapDesc.header.type=FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12;
+      swapDesc.swapchain=&replaced; swapDesc.hwnd=hwnd; swapDesc.desc=&desc; swapDesc.fullscreenDesc=&exclusive;
+      swapDesc.dxgiFactory=factory.Get(); swapDesc.gameQueue=proxyQueue?proxyQueue.Get():queue.Get();
+      Require(create(&swapchainContext,&swapDesc.header,nullptr)==FFX_API_RETURN_OK && replaced,"FidelityFX swapchain context");
+      base.Attach(replaced);
+      ffxCreateBackendDX12Desc backendDesc{}; backendDesc.header.type=FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12; backendDesc.device=device.Get();
+      ffxCreateContextDescFrameGeneration generationDesc{};
+      generationDesc.header.type=FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION; generationDesc.header.pNext=&backendDesc.header;
+      generationDesc.displaySize={desc.Width,desc.Height}; generationDesc.maxRenderSize={desc.Width,desc.Height};
+      generationDesc.backBufferFormat=FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM;
+      ffxContext unusedGeneration{};
+      Require(create(&unusedGeneration,&generationDesc.header,nullptr)==FFX_API_RETURN_OK,"unused FSR generation context");
+      std::cout<<"FidelityFX swapchain with Streamline DLSS-G: FSR frame generation never enabled"<<std::endl;
+    } else
     Check(CreateTestSwapchain(legacyFactory,factory.Get(),proxyQueue?proxyQueue.Get():queue.Get(),hwnd,desc,&exclusive,&base),"swapchain");
     if(probe) {
       mfgunlock::xemfg::native::Status probed{}; bridgeStatus(&probed,sizeof(probed));
@@ -1041,7 +1097,8 @@ int main(int argc,char** argv) {
       const bool lateSubmitEnd=frame>=17;
       if(!lateSubmitEnd) mark(sl::PCLMarker::eRenderSubmitEnd,token);
       mark(sl::PCLMarker::ePresentStart,token);
-      Check(chain->Present(0,0),"Present"); mark(sl::PCLMarker::ePresentEnd,token); wait();
+      // --game-vsync: present like a game whose VSync cannot be turned off (1.5.5).
+      Check(chain->Present(flag("--game-vsync")?1:0,0),"Present"); mark(sl::PCLMarker::ePresentEnd,token); wait();
       if(boundaryScenario && (frame==7 || frame==8)) {
         bridgeStatus(&bs,sizeof(bs));Require(bs.enabled==(frame==8),"simulation-boundary sleep warmup/admission");
       }

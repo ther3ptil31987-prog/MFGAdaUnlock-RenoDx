@@ -63,7 +63,7 @@ public:
         Event event = continuous ? Event::kSample : bridged ? Event::kBridge
             : !started_ ? Event::kStart : gap != 1 ? Event::kResetGap : Event::kResetRange;
         lastDelta_ = 0;
-        if (!continuous && !bridged) { deltas_ = {}; count_ = 0; cursor_ = 0; }
+        if (!continuous && !bridged) { deltas_ = {}; count_ = 0; cursor_ = 0; settled_ = 0; }
         else
         {
             if (outputs < outputs_)
@@ -79,6 +79,7 @@ public:
                 deltas_[cursor_] = delta;
                 cursor_ = (cursor_ + 1) % kSamples;
                 lastDelta_ = delta;
+                if (settled_ < UINT32_MAX) ++settled_;
             }
         }
         started_ = true; frame_ = frame; outputs_ = outputs; start_ = batchStart;
@@ -103,6 +104,8 @@ public:
         return true;
     }
     uint32_t Samples() const noexcept { return count_; }
+    // flip.2: batch deltas sampled since the window last started over (not capped at kSamples).
+    uint32_t Settled() const noexcept { return settled_; }
     // flipmeter.1: the time a batch of `outputs` presents takes at this estimate, for the driver's
     // flip metering before that batch's first Present (before its own start is observed): the
     // estimate (hitch.1: without hitches), scaled to the same time per output for fewer outputs
@@ -147,9 +150,41 @@ private:
     // While fewer than kSamples are held they fill [0, count_).
     std::array<int64_t, kSamples> deltas_{};
     int64_t start_{}, median_{}, mean_{}, typical_{}, lastDelta_{}, rawDelta_{};
-    uint32_t count_{}, cursor_{}, frame_{}, outputs_{}, excluded_{}, gap_{};
+    uint32_t count_{}, cursor_{}, frame_{}, outputs_{}, excluded_{}, gap_{}, settled_{};
     bool started_{};
 };
+
+// flip.2 (V1.5.1, Darktide): the batch time the driver holds a batch's flips to is the estimate
+// above, which is measured from batch starts that this metering itself paces. Configured at the
+// estimate, a slow seed held the game to it: frame generation re-enabled in a scene transition
+// measured 34 ms batches, every later batch start came no earlier than the 34 ms configured, and
+// the estimate never fell (Mourningstar: 50 fps source with FG off, 33 with it on, GPU at 6.6 ms).
+// The driver now gets 1/kHeadroomDivisor less than the estimate, so a faster source shows within
+// a few batches and the time follows it down (34 -> 20 ms in about 60 batches), and a window is
+// used only after kSettleBatches sampled deltas, so the transition's first batches seed nothing.
+// hitch.1's growth limit applies to the time in effect for the same output count, as before.
+struct FlipPolicy
+{
+    static constexpr uint32_t kSettleBatches = 12;
+    static constexpr int64_t kHeadroomDivisor = 32;
+    static constexpr int64_t kGrowthDivisor = 8;
+};
+inline bool FlipReady(const BatchIntervalEstimator& estimator) noexcept
+{
+    return estimator.Settled() >= FlipPolicy::kSettleBatches;
+}
+inline int64_t FlipBatchTime(int64_t estimate, int64_t inEffect, bool sameCount, bool& limited) noexcept
+{
+    limited = false;
+    if (estimate <= 0) return 0;
+    int64_t batch = estimate - estimate / FlipPolicy::kHeadroomDivisor;
+    if (sameCount && inEffect > 0 && batch > inEffect + inEffect / FlipPolicy::kGrowthDivisor)
+    {
+        batch = inEffect + inEffect / FlipPolicy::kGrowthDivisor;
+        limited = true;
+    }
+    return batch;
+}
 
 // flipmeter.1: a deadline inside a batch the NVIDIA driver meters. The display hardware spaces the
 // batch's flips at timePerBatch / outputs from its first flip but never holds that first one, so

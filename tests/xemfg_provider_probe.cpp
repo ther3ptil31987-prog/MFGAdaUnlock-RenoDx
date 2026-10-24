@@ -27,7 +27,12 @@ int wmain(int argc,wchar_t** argv) {
   try {
     if (mfgunlock::backend::Parse(L"DLSSG")!=mfgunlock::backend::Kind::DlssG
         || mfgunlock::backend::Parse(L"XeMFG")!=mfgunlock::backend::Kind::XeMfg
-        || mfgunlock::backend::Parse(L"garbage")!=mfgunlock::backend::Kind::Invalid)
+        || mfgunlock::backend::Parse(L"garbage")!=mfgunlock::backend::Kind::Invalid
+        // 1.5.2: case and padding are tolerated; an invalid value keeps DLSS-G.
+        || mfgunlock::backend::Parse(L" dlssg ")!=mfgunlock::backend::Kind::DlssG
+        || mfgunlock::backend::Parse(L"XEMFG")!=mfgunlock::backend::Kind::XeMfg
+        || mfgunlock::backend::Effective(mfgunlock::backend::Parse(L"DLSS-G"))!=mfgunlock::backend::Kind::DlssG
+        || mfgunlock::backend::Effective(mfgunlock::backend::Kind::XeMfg)!=mfgunlock::backend::Kind::XeMfg)
       throw std::runtime_error("backend_policy");
     auto fg=LoadLibraryExW(argv[1],nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     auto ll=LoadLibraryExW(argv[2],nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);

@@ -135,6 +135,20 @@ NVSDK_NGX_Result NVSDK_CONV ReleaseHook(NVSDK_NGX_Handle* handle) {
 }
 }
 bool Armed() noexcept { return Enabled() && !GetModuleHandleW(L"sl.interposer.dll"); }
+namespace { std::atomic<int> saved{-1}; }
+bool Configured() noexcept { return Enabled(); }
+bool Suggested() noexcept {
+  return !Enabled() && !GetModuleHandleW(L"sl.interposer.dll") && GetModuleHandleW(L"_nvngx.dll")
+      && !synthetic::Owner() && !Active();
+}
+bool Save(bool enabled) {
+  if(backend::Directory().empty()
+      || !config::Save(backend::Directory()/L"MFGAdaUnlock.ini",{{L"Adapters",L"DlssSr",enabled?L"1":L"0"}})) return false;
+  saved=enabled?1:0;
+  xess_mod::WriteLog("native_dlss_sr_saved","\"enabled\":"+std::string(enabled?"true":"false")+",\"applies\":\"next_launch\"");
+  return true;
+}
+int Saved() noexcept { return saved.load(); }
 void OutputCreated(const std::shared_ptr<Output>& o) {
   if(Armed() && !synthetic::Owner()) synthetic::Begin(o,synthetic::kDlssSr);
 }
@@ -158,3 +172,9 @@ void Discover() {
   }
 }
 }
+// Panel hint for conformance: bit 0 opted in, bit 1 suggested, bit 2 saved this session.
+extern "C" __declspec(dllexport) uint32_t MFGAXeDlssSrHint() {
+  namespace ngx=mfgunlock::xemfg::native::ngx;
+  return uint32_t(ngx::Configured())|uint32_t(ngx::Suggested())<<1|uint32_t(ngx::Saved()>=0)<<2;
+}
+extern "C" __declspec(dllexport) bool MFGAXeDlssSrSave(bool enabled) { return mfgunlock::xemfg::native::ngx::Save(enabled); }
