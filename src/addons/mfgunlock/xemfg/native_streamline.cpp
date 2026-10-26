@@ -463,14 +463,28 @@ sl::Result ReflexOptionsHook(const sl::ReflexOptions& opts) {
   s.limitUs=opts.frameLimitUs;
   return result;
 }
+sl::Result AssociateSourceSleep(const std::shared_ptr<Output>& o,uint32_t source);
 sl::Result SleepHook(const sl::FrameToken& f) {
   const auto source=FrameId(uint32_t(f));
   TraceInput("slReflexSleep",source);
   auto o=Active(); if(!o) return reflexSleep(f);
+  // Native Reflex output (1.5.6): every game wait reaches the original
+  // slReflexSleep with its own token, on its own thread, and the game gets its
+  // result. Only the XeLL frame association below can be refused; a game that
+  // passes a constant token (Plague Tale) is then covered by the simulation
+  // boundary, as on the XeLL route.
+  if(State().latencyOutput.load()==LatencyOutput::Reflex) {
+    const auto native=reflexSleep(f);
+    if(native==sl::Result::eOk) AssociateSourceSleep(o,source);
+    return native;
+  }
+  return AssociateSourceSleep(o,source);
+}
+sl::Result AssociateSourceSleep(const std::shared_ptr<Output>& o,uint32_t source) {
   uint32_t target{};uint64_t epoch{};
   {
     std::lock_guard guard(o->io);
-    // Rejected waits are never dispatched, so they must not disable the
+    // Refused associations never reach XeLL, so they must not disable the
     // per-frame simulation boundary that covers the same frames.
     const auto rejected=[&](const char* reason,uint32_t observed) {
       ++o->rejectedExplicitSleeps;
@@ -502,9 +516,8 @@ sl::Result SleepHook(const sl::FrameToken& f) {
     epoch=o->epoch;
   }
   State().inputTick=GetTickCount64();
-  // Native Reflex, when selected, keeps the ORIGINAL token and calling thread.
   // Only the XeLL frame association follows the simulation after this wait.
-  return SleepSourceFrame(o,target,reflexSleep,&f,epoch);
+  return SleepSourceFrame(o,target,nullptr,nullptr,epoch);
 }
 void CaptureMarker(sl::PCLMarker marker,const sl::FrameToken& f) {
   TraceInput("latency_marker",FrameId(uint32_t(f)),UINT32_MAX,int(marker));
@@ -527,9 +540,12 @@ void CaptureMarker(sl::PCLMarker marker,const sl::FrameToken& f) {
           // Accepted explicit waits mark the frame sleeping and skip this path.
           // Do not replay timestamps, sleep after simulation began, or
           // override native Reflex output.
+          // XeLL route: XeLL paces, so native Reflex must be off. Reflex route:
+          // the game's own waits pace; this only associates the frame (1.5.6).
+          const auto route=s.latencyOutput.load();
           boundarySleep=o->unsleptSimulationStarts>=8 && !(previous&63u)
-              && !o->sleepActive && !frame->sleepInFlight && s.requested && s.nativeOff && s.reflexOff
-              && s.latencyOutput.load()==LatencyOutput::XeLL;
+              && !o->sleepActive && !frame->sleepInFlight && s.requested && s.nativeOff
+              && ((route==LatencyOutput::XeLL && s.reflexOff) || route==LatencyOutput::Reflex);
           if(boundarySleep) {epoch=o->epoch;boundaryLog=o->sleepAssociationLogBudget++<8;}
           else if(s.requested && o->unsleptSimulationStarts>=8 && o->boundarySkipLogBudget++<4)
             xess_mod::WriteLog("native_simulation_boundary_skipped","\"id\":"+std::to_string(id)
@@ -809,12 +825,22 @@ void ReselectViewport(Output& o,uint32_t id) {
 }
 void BeforePresent(const std::shared_ptr<Output>& o) {
   auto& s=State(); auto& a=s.api; std::lock_guard lock(o->io);
+  {
+    // 1.5.7: smoothed interval between source Presents (display-cap notice).
+    LARGE_INTEGER now{},frequency{}; QueryPerformanceCounter(&now); QueryPerformanceFrequency(&frequency);
+    const auto previous=o->lastSourcePresentQpc; o->lastSourcePresentQpc=now.QuadPart;
+    const auto us=previous && frequency.QuadPart?uint64_t(now.QuadPart-previous)*1000000/uint64_t(frequency.QuadPart):0;
+    const auto smoothed=s.sourceIntervalUs.load();
+    if(us && us<250000) s.sourceIntervalUs=smoothed?uint32_t((uint64_t(smoothed)*7+us)/8):uint32_t(us);
+    else if(us) s.sourceIntervalUs=0; // a pause or a loading screen: start again
+  }
   ReselectViewport(*o,s.presenting.load());
   if(o->retired || !o->fg) return;
   if(o->deviceLost) {o->blocker=compatibility::Failure::DeviceLost;Report(compatibility::Description(o->blocker));return;}
   const auto id=s.presenting.load(); auto* frame=o->frames.Find(id);
   s.lastHudIssues=frame?frame->hudIssues:0;
   s.lastHudInputs=frame?frame->resources&((1u<<XEFG_SWAPCHAIN_RES_HUDLESS_COLOR)|(1u<<XEFG_SWAPCHAIN_RES_UI)):0;
+  s.lastHudFiltered=frame?frame->hudFiltered:0; s.lastHudCopied=frame?frame->hudCopied:0;
   const bool hudless=frame && !frame->failed
       && (frame->resources&(1u<<XEFG_SWAPCHAIN_RES_HUDLESS_COLOR));
   const bool compositionReady=ApplyUiComposition(*o,hudless);
@@ -857,6 +883,7 @@ void BeforePresent(const std::shared_ptr<Output>& o) {
       }
       ready=a.xefgSwapChainD3D12TagFrameResource(o->fg,nullptr,id,&region)>=0
           && (!o->dejitter || SubmitDejitteredMotion(*o,f,id))
+          && packet::SubmitPendingHud(*o,f,id)
           && a.xefgSwapChainTagFrameConstants(o->fg,id,&data)>=0;
     }
   }
@@ -960,6 +987,22 @@ void AfterPresent(const std::shared_ptr<Output>& o,CpuProbe* probe,HRESULT resul
   }
   // Keep late PresentEnd markers for the preceding frame, but bound memory.
   o->frames.Prune(o->last);
+  // 1.5.7: refresh of the display showing this output, every 2 s (display cap).
+  if(const auto tick=GetTickCount64(); tick-o->refreshTick>=2000) {
+    o->refreshTick=tick;
+    uint32_t refresh{};
+    if(const auto monitor=MonitorFromWindow(o->hwnd,MONITOR_DEFAULTTONEAREST)) {
+      MONITORINFOEXW info{}; info.cbSize=sizeof(info); DEVMODEW mode{}; mode.dmSize=sizeof(mode);
+      if(GetMonitorInfoW(monitor,&info) && EnumDisplaySettingsW(info.szDevice,ENUM_CURRENT_SETTINGS,&mode)
+          && mode.dmDisplayFrequency>1 && mode.dmDisplayFrequency<=1000) refresh=mode.dmDisplayFrequency*1000;
+    }
+    if(State().displayRefreshMilliHz.exchange(refresh)!=refresh || !o->displayCapLogged) {
+      o->displayCapLogged=true;
+      xess_mod::WriteLog("native_display_cap","\"output\":"+std::to_string(o->diagnosticOutput)+",\"refresh_mhz\":"+std::to_string(refresh)
+          +",\"multiplier\":"+std::to_string(State().multiplier.load())+",\"enabled\":"+std::to_string(State().displayCap.load())
+          +",\"interval_us\":"+std::to_string(DisplayCapIntervalUs(refresh,State().multiplier.load())));
+    }
+  }
   WriteSummary(*o,status,queryResult);
   if(probe && probe->active) {
     auto& sample=probe->sample; sample.frame=o->last; sample.epoch=o->epoch; sample.output=o->diagnosticOutput;

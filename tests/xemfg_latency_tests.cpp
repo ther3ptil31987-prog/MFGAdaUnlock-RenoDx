@@ -67,20 +67,24 @@ int main() {
         && sleeps==beforeStale && !output->frames.Find(10),"boundary wait crossed a resize epoch");
     block=false; state.latencyOutput=LatencyOutput::Reflex; state.gameReflexMode=1; state.limitUs=25000;
     Token token;
-    Require(SleepSourceFrame(output,11)==sl::Result::eErrorInvalidState,"Reflex accepted without native function/token");
-    const auto before=sleeps.load();
-    Require(SleepSourceFrame(output,11,&NativeSleep,&token)==sl::Result::eOk,"Reflex sleep route failed");
+    // 1.5.6: without the game's wait (simulation boundary, synthesized frames,
+    // or a wait the hook already sent to Reflex) the Reflex route only
+    // associates the frame with XeLL; native Reflex is not called.
+    const auto beforeAssociation=sleeps.load();
+    Require(SleepSourceFrame(output,11)==sl::Result::eOk && nativeSleeps==0 && sleeps==beforeAssociation+1,"Reflex association without the game's wait failed or called native");
+    const auto before=sleeps.load(); const auto reflexBefore=state.reflexSleeps.load();
+    Require(SleepSourceFrame(output,12,&NativeSleep,&token)==sl::Result::eOk,"Reflex sleep route failed");
     Require(nativeSleeps==1 && sleeps==before+1,"Reflex must call native once and retain Intel frame bookkeeping");
     Require(!lastMode.bLowLatencyMode && lastMode.minimumIntervalUs==0,"XeLL limiter competes with Reflex");
-    Require(output->frames.Find(11)->latencyOutput==LatencyOutput::Reflex && state.reflexSleeps==1 && state.reflexOutputTick>0,"Reflex route not observed");
-    Require(SleepSourceFrame(output,11,&NativeSleep,&token)==sl::Result::eOk && nativeSleeps==1 && sleeps==before+1,"duplicate Reflex sleep");
-    Require(ForwardSourceMarker(output,11,XELL_SIMULATION_START),"Intel bookkeeping markers missing with Reflex");
+    Require(output->frames.Find(12)->latencyOutput==LatencyOutput::Reflex && state.reflexSleeps==reflexBefore+1 && state.reflexOutputTick>0,"Reflex route not observed");
+    Require(SleepSourceFrame(output,12,&NativeSleep,&token)==sl::Result::eOk && nativeSleeps==1 && sleeps==before+1,"duplicate Reflex sleep");
+    Require(ForwardSourceMarker(output,12,XELL_SIMULATION_START),"Intel bookkeeping markers missing with Reflex");
     nativeResult=sl::Result::eErrorReflexAPI;
-    Require(SleepSourceFrame(output,12,&NativeSleep,&token)==nativeResult && sleeps==before+1,"native failure swallowed or Intel sleep called after failure");
-    Require(output->frames.Find(12)->failed && !output->sleepActive,"failed native wait retained admission/lease");
+    Require(SleepSourceFrame(output,13,&NativeSleep,&token)==nativeResult && sleeps==before+1,"native failure swallowed or Intel sleep called after failure");
+    Require(output->frames.Find(13)->failed && !output->sleepActive,"failed native wait retained admission/lease");
     const auto beforeOld=sleeps.load(); nativeResult=sl::Result::eOk;
     Require(SleepSourceFrame(output,3,&NativeSleep,&token)==sl::Result::eErrorInvalidState && sleeps==beforeOld,"wait older than the last dispatched id reached XeLL");
-    Require(SleepSourceFrame(output,13,&NativeSleep,&token)==sl::Result::eOk && sleeps==beforeOld+1,"newer wait after a refused old one failed");
+    Require(SleepSourceFrame(output,14,&NativeSleep,&token)==sl::Result::eOk && sleeps==beforeOld+1,"newer wait after a refused old one failed");
     std::cout<<"PASS: late marker during sleep, deduplication, mode cache/retry, same-frame ordering, reset epoch and monotonic XeLL ids\n";
     return 0;
   } catch(const std::exception& e) { Release(); std::cerr<<e.what()<<'\n'; return 1; }

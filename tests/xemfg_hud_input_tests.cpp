@@ -15,6 +15,16 @@ int main() {try {
   d.Flags=D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;Check(assess()&HudUnreadable,"non-readable HUD accepted");d.Flags=D3D12_RESOURCE_FLAG_NONE;
   d.SampleDesc.Count=4;Check(assess()&HudMetadata,"multisample UI accepted");d.SampleDesc.Count=1;
   d.DepthOrArraySize=2;Check(assess()&HudMetadata,"UI array accepted");
+  // 1.5.7: same bits under another type are copied into the output format.
+  Check(CopyableHudFormat(DXGI_FORMAT_R8G8B8A8_TYPELESS,DXGI_FORMAT_R8G8B8A8_UNORM),"Cyberpunk TYPELESS HUD-less not copyable");
+  Check(CopyableHudFormat(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,DXGI_FORMAT_R8G8B8A8_UNORM),"Death Stranding 2 sRGB UI not copyable");
+  Check(CopyableHudFormat(DXGI_FORMAT_B8G8R8A8_TYPELESS,DXGI_FORMAT_B8G8R8A8_UNORM),"BGRA TYPELESS not copyable");
+  Check(CopyableHudFormat(DXGI_FORMAT_R10G10B10A2_TYPELESS,DXGI_FORMAT_R10G10B10A2_UNORM),"RGB10A2 TYPELESS not copyable");
+  Check(!CopyableHudFormat(DXGI_FORMAT_R8G8B8A8_UNORM,DXGI_FORMAT_R8G8B8A8_UNORM),"identical format needs no copy");
+  Check(!CopyableHudFormat(DXGI_FORMAT_B8G8R8A8_TYPELESS,DXGI_FORMAT_R10G10B10A2_UNORM),"Mafia BGRA UI over RGB10A2 is a conversion, not a copy");
+  Check(!CopyableHudFormat(DXGI_FORMAT_B8G8R8A8_UNORM,DXGI_FORMAT_R8G8B8A8_UNORM),"channel order differs: not a copy");
+  Check(!CopyableHudFormat(DXGI_FORMAT_R16G16B16A16_FLOAT,DXGI_FORMAT_R10G10B10A2_UNORM),"FP16 is a conversion, not a copy");
+  Check(!CopyableHudFormat(DXGI_FORMAT_R8G8B8A8_UINT,DXGI_FORMAT_R8G8B8A8_UNORM),"integer view is not color");
   const HudTagIdentity a{0x1000,4,1,0,0,2560,1440};
   auto b=a; Check(!ConflictingHudTag({},a) && !ConflictingHudTag(a,b),"first/identical tag rejected");
   b.allocation=0x2000; Check(ConflictingHudTag(a,b),"allocation conflict admitted");

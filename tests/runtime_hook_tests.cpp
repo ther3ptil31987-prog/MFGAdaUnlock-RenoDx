@@ -94,6 +94,30 @@ int main() {
       mfgunlock::forcepolicy::FixedOverrideStatus::kRejected));
   CHECK(options.numFramesToGenerate == 1);
 
+  // 1.5.6: the refusal is remembered. The next frame's call forwards the
+  // game's request once instead of repeating the refused count and its retry.
+  requests.clear();
+  CHECK(fc::internal::HookedSetOptions(viewport, options) == sl::Result::eOk);
+  CHECK((requests == std::vector<unsigned int>{1}));
+  CHECK(fc::g_last_effective_generated.load() == 1);
+  CHECK(fc::g_fixed_override_status.load() == static_cast<unsigned int>(
+      mfgunlock::forcepolicy::FixedOverrideStatus::kRejected));
+  // Each reset boundary allows one new attempt at the forced count.
+  const auto retried_after = [&](auto&& boundary) {
+    boundary();
+    requests.clear();
+    CHECK(fc::internal::HookedSetOptions(viewport, options) == sl::Result::eOk);
+    return requests == std::vector<unsigned int>{3, 3, 1};
+  };
+  CHECK(retried_after([&] {
+    sl::DLSSGOptions off = options;
+    off.mode = sl::DLSSGMode::eOff;
+    CHECK(fc::internal::HookedSetOptions(viewport, off) == sl::Result::eOk);
+  }));
+  CHECK(retried_after([] { fc::NotifyFixedMultiplierChanged(4); }));
+  CHECK(retried_after([] { fc::NotifySwapchainTransition(); }));
+  fc::NotifySwapchainTransition();  // no refusal left for the cases below
+
   accepted_count = 3;
   transient = true;
   requests.clear();

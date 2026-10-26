@@ -49,6 +49,8 @@ void LoadControls() {
   sdk_pacing::RequestSdkDeadlines(settings.sdkDeadlines);
   settings.forceVSyncOff=ReadBool(L"XeFG",L"ForceVSyncOff",false);
   forceVSyncOff=settings.forceVSyncOff;
+  settings.displayCap=ReadBool(L"XeFG",L"DisplayCap",false);
+  State().displayCap=settings.displayCap;
   wchar_t flip[32]{}; GetPrivateProfileStringW(L"XeFG",L"XeFGFlipMetering",L"auto",flip,32,Ini().c_str());
   settings.flipMetering=_wcsicmp(flip,L"off") && _wcsicmp(flip,L"false") && wcscmp(flip,L"0");
   if(_wcsicmp(flip,L"auto") && _wcsicmp(flip,L"on") && _wcsicmp(flip,L"true") && wcscmp(flip,L"1")
@@ -71,11 +73,13 @@ bool ConfigureControls(const ControlSettings& incoming) {
     {L"XeFG",L"ForceBorderless",value.forceBorderless?L"1":L"0"},
     {L"XeFG",L"UIComposition",value.uiComposition?L"1":L"0"},
     {L"XeFG",L"SdkDeadlines",value.sdkDeadlines?L"1":L"0"},
-    {L"XeFG",L"ForceVSyncOff",value.forceVSyncOff?L"1":L"0"}});
+    {L"XeFG",L"ForceVSyncOff",value.forceVSyncOff?L"1":L"0"},
+    {L"XeFG",L"DisplayCap",value.displayCap?L"1":L"0"}});
   settingsSaved=saved;
   if(!saved) return false;
   settings=value; invalidConfiguration=false; settingsGuard.unlock();
   forceVSyncOff=value.forceVSyncOff;
+  State().displayCap=value.displayCap;
   sdk_pacing::RequestQueueAhead(value.queueAhead);
   if(old.flipMetering!=value.flipMetering) sdk_pacing::RequestFlipMetering(value.flipMetering);
   if(old.sdkDeadlines!=value.sdkDeadlines) sdk_pacing::RequestSdkDeadlines(value.sdkDeadlines);
@@ -83,7 +87,7 @@ bool ConfigureControls(const ControlSettings& incoming) {
       +",\"output\":"+std::to_string(uint32_t(value.output))+",\"flip_requested\":"+(value.flipMetering?"true":"false")
       +",\"borderless_requested\":"+(value.forceBorderless?"true":"false")
       +",\"ui_composition_requested\":"+(value.uiComposition?"true":"false")
-      +",\"force_vsync_off\":"+(value.forceVSyncOff?"true":"false")+",\"saved\":"+(saved?"true":"false"));
+      +",\"force_vsync_off\":"+(value.forceVSyncOff?"true":"false")+",\"display_cap\":"+(value.displayCap?"true":"false")+",\"saved\":"+(saved?"true":"false"));
   return saved;
 }
 ControlSettings ControlsSettings() { std::lock_guard guard(settingsLock); return settings; }
@@ -109,7 +113,10 @@ ControlStatus ControlsSnapshot() {
   result.xellObserved=result.activeLatencyOutput==LatencyOutput::XeLL && s.outputTick && now-s.outputTick.load()<2000;
   result.nativeReflexDisabled=s.reflexOff; result.gameReflexMode=s.gameReflexMode;
   result.gameSyncInterval=s.gameSyncInterval;
+  result.displayRefreshMilliHz=s.displayRefreshMilliHz; result.sourceIntervalUs=s.sourceIntervalUs;
+  result.displayCapIntervalUs=DisplayCapIntervalForOutput();
   result.hudIssues=s.lastHudIssues; result.hudInputs=s.lastHudInputs; result.hudRejected=s.hudRejected;
+  result.hudFiltered=s.lastHudFiltered; result.hudCopied=s.lastHudCopied;
   xefg_cuda::Status cuda;
   result.cudaUpdating=!xefg_cuda::TrySnapshot(cuda);
   result.cudaState=uint32_t(cuda.state); result.cudaLayers=cuda.layers;
@@ -119,14 +126,27 @@ ControlStatus ControlsSnapshot() {
   auto output=Active();
   void* pacingHandle{};
   if(output) {
+    // The panel must not wait for a presenting thread, so it only tries the
+    // lock. When it is busy (often at 4x and above), the last values read
+    // from this output are shown instead of defaults; defaults made the HUD
+    // and pacing lines, and the rows below them, flicker (1.5.7).
+    struct LastRead {
+      uint64_t output{}; void* pacing{};
+      bool available{},applied{},known{}; int result{}; uint64_t updates{};
+    };
+    static std::mutex lastLock; static LastRead last;
     std::unique_lock guard(output->io,std::try_to_lock);
-    if(guard.owns_lock()) {
-      pacingHandle=output->fg;
-      result.uiCompositionAvailable=output->uiCompositionAvailable;
-      result.uiCompositionApplied=output->uiCompositionApplied;
-      result.uiCompositionKnown=output->uiCompositionKnown;
-      result.uiCompositionResult=output->uiCompositionResult;
-      result.uiCompositionUpdates=output->uiCompositionUpdates;
+    std::lock_guard lastGuard(lastLock);
+    if(guard.owns_lock())
+      last={output->diagnosticOutput,output->fg,output->uiCompositionAvailable,output->uiCompositionApplied,
+          output->uiCompositionKnown,output->uiCompositionResult,output->uiCompositionUpdates};
+    if(last.output==output->diagnosticOutput) {
+      pacingHandle=last.pacing;
+      result.uiCompositionAvailable=last.available;
+      result.uiCompositionApplied=last.applied;
+      result.uiCompositionKnown=last.known;
+      result.uiCompositionResult=last.result;
+      result.uiCompositionUpdates=last.updates;
     }
   }
   if(output && output->window) result.window=output->window->Snapshot();
@@ -181,6 +201,25 @@ void DrawControls(PanelPage page) {
     if(sync && sync!=UINT32_MAX && !value.forceVSyncOff && State().requested.load())
       ui::Notice("The game presents with VSync, so frame pacing does not apply to generated frames. "
           "Turn off VSync in the game's settings. If the game has no VSync setting, turn on Force game VSync off.");
+    // 1.5.7: optional cap to the display refresh (XeLL output only).
+    constexpr const char* capHelp="Limits the game's frame rate so that, with the multiplier, frames are presented slightly below the display refresh (3% margin, for variable-refresh displays). Without a limit, a high game frame rate presents generated frames faster than the display shows them, and motion becomes uneven. The game's own frame limit still applies when it is lower. Available with the XeLL latency output. Applies at the next frame.";
+    const bool xellOutput=status.activeLatencyOutput==LatencyOutput::XeLL;
+    ui::Setting("##xe_display_cap_row","Limit to display refresh",capHelp,[&] {
+      ImGui::BeginDisabled(!xellOutput);
+      if(ImGui::Checkbox("##xe_display_cap",&value.displayCap)) ConfigureControls(value);
+      ImGui::EndDisabled();
+    });
+    const auto refreshHz=status.displayRefreshMilliHz/1000;
+    const std::string capState=!xellOutput?"Not available with the Reflex output":!value.displayCap?"Off":
+        !status.displayCapIntervalUs?"Waiting for the display refresh":
+        "Up to "+std::to_string(1000000/status.displayCapIntervalUs)+" FPS shown, game up to "
+        +std::to_string(1000000/status.displayCapIntervalUs/(std::max)(State().multiplier.load(),1u))+" FPS ("+std::to_string(refreshHz)+" Hz display)";
+    ui::Readout("##xe_display_cap_state","Frame rate limit",capState.c_str(),capHelp,value.displayCap && status.displayCapIntervalUs?ui::Accent:ui::Muted);
+    // Warn, never enable it automatically (the user decides).
+    if(xellOutput && !value.displayCap && State().requested.load() && (!sync || sync==UINT32_MAX)
+        && ExceedsDisplay(status.sourceIntervalUs,status.displayRefreshMilliHz,State().multiplier.load()))
+      ui::Notice(("The game's frame rate times the multiplier is above the display refresh ("+std::to_string(refreshHz)
+          +" Hz), so some generated frames are not shown and motion can look uneven. Turn on Limit to display refresh, or cap the game's frame rate.").c_str());
     if(ui::Expander("Advanced pacing comparison")) {
       ui::Setting("##xe_queue_row","Queue metered frames early","Lets the driver space a verified group of frames while the SDK prepares its next work. GPU fences and resource waits remain owned by Intel. Applies only when the driver accepts flip metering and Present uses sync interval 0. Turn off to compare with the previous CPU timing.",[&] {
         ImGui::BeginDisabled(value.sdkDeadlines || !value.flipMetering);
@@ -211,8 +250,18 @@ void DrawControls(PanelPage page) {
       ImGui::EndDisabled();
     });
     ui::Readout("##xe_composition_state","HUD handling",composition,compositionHelp);
-    ui::Readout("##xe_hud_safety","HUD input safety",status.hudIssues?"Incompatible input filtered":status.hudInputs?"Game HUD inputs accepted":"No separate HUD texture",
-        "Checks the game's optional HUD textures for matching format, full output size and valid shader input. Compatible textures can help Intel's UI interpolation with composition off. Invalid optional input falls back to backbuffer interpolation. This does not prove matching HDR encoding or remove every model artifact.");
+    // 1.5.7: what the game provides, per kind: received, converted, filtered or absent.
+    const auto hudKind=[&](unsigned type,const char* name) {
+      const uint32_t bit=1u<<type;
+      return std::string(name)+(status.hudInputs&bit?(status.hudCopied&bit?": received (converted)":": received")
+          :status.hudFiltered&bit?": filtered":": not provided");
+    };
+    const std::string hudInputs=hudKind(XEFG_SWAPCHAIN_RES_HUDLESS_COLOR,"HUD-less")+" | "+hudKind(XEFG_SWAPCHAIN_RES_UI,"UI");
+    ui::Readout("##xe_hud_safety","Game HUD inputs",hudInputs.c_str(),
+        "The game's optional HUD textures: HUD-less color (the image without HUD) and UI (the HUD alone). Converted means the texture used another type of the output's format and is copied into the output format. Filtered textures do not match the output (format, size or shader input) and are not used; frame generation then interpolates the HUD with the image. This does not prove matching HDR encoding or remove every model artifact.");
+    // Suggest, never enable it automatically (the user decides).
+    if(status.uiCompositionAvailable && !value.uiComposition)
+      ui::Description("This game provides HUD-less color. If HUD elements show artifacts in generated frames, turn on UI Composition.");
     if(status.uiCompositionResult<0) ui::Notice("UI composition could not be applied. Copy Diagnostics for details.");
     ui::Description("For best results, keep the game's rendered frame rate stable.");
     ui::Tooltip("A higher base frame rate supplies more recent motion information. Generated frames improve smoothness but do not add new input samples.");
@@ -269,7 +318,7 @@ void DrawControls(PanelPage page) {
     if(reports("Copy detailed counters","Copies technical status, error codes and accumulated counters for support. These counters are not displayed FPS or physical input latency.")) {
       mfgunlock::xemfg::Status model;
       const bool modelAvailable=TryModelStatus(model);
-      std::ostringstream report; report<<"MFG Unlock 1.5.5\nstartup_failed="<<ModelStartupFailed()
+      std::ostringstream report; report<<"MFG Unlock 1.5.7\nstartup_failed="<<ModelStartupFailed()
           <<" model_status_available="<<modelAvailable<<" model_detail="<<(modelAvailable?model.detail:"busy")
           <<"\nmodel="<<status.modelPort<<" initialized="<<status.modelInitialized
           <<"\nCUDA="<<status.cudaState<<" compute="<<status.cudaMajor<<'.'<<status.cudaMinor<<" layers="<<status.cudaLayers

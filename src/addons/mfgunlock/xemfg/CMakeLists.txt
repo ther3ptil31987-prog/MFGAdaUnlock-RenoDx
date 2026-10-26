@@ -65,7 +65,7 @@ foreach(stage IN ITEMS vs ps)
       /Fh "${XEMFG_SHADER_HEADERS}/native_scrgb_${stage}.h" "${CMAKE_CURRENT_SOURCE_DIR}/native_scrgb.hlsl"
     DEPENDS native_scrgb.hlsl VERBATIM)
 endforeach()
-set(XEMFG_GPU_PASS_SOURCES native_dejitter.cpp "${XEMFG_SHADER_HEADERS}/native_dejitter_cs.h"
+set(XEMFG_GPU_PASS_SOURCES native_dejitter.cpp native_hud_copy.cpp "${XEMFG_SHADER_HEADERS}/native_dejitter_cs.h"
   native_scrgb.cpp "${XEMFG_SHADER_HEADERS}/native_scrgb_vs.h" "${XEMFG_SHADER_HEADERS}/native_scrgb_ps.h")
 
 add_library(mfgunlock_native_xemfg SHARED ../addon.cpp ${XEMFG_MODEL_SOURCES}
@@ -210,6 +210,10 @@ target_include_directories(xemfg_profiles_tests PRIVATE "${RENODX_SOURCE_DIR}/ex
 add_test(NAME xemfg_profiles COMMAND xemfg_profiles_tests "${CMAKE_CURRENT_SOURCE_DIR}/profiles.json")
 add_executable(xemfg_async_log_tests "${CMAKE_SOURCE_DIR}/xemfg_async_log_tests.cpp")
 add_test(NAME xemfg_async_log COMMAND xemfg_async_log_tests)
+add_executable(xemfg_log_budget_tests "${CMAKE_SOURCE_DIR}/xemfg_log_budget_tests.cpp")
+add_test(NAME xemfg_log_budget COMMAND xemfg_log_budget_tests)
+add_executable(xemfg_display_cap_tests "${CMAKE_SOURCE_DIR}/xemfg_display_cap_tests.cpp")
+add_test(NAME xemfg_display_cap COMMAND xemfg_display_cap_tests)
 add_executable(xemfg_diagnostics_tests "${CMAKE_SOURCE_DIR}/xemfg_diagnostics_tests.cpp" native_diagnostics.cpp)
 add_test(NAME xemfg_cpu_diagnostics COMMAND xemfg_diagnostics_tests)
 add_executable(xemfg_panel_preview "${CMAKE_SOURCE_DIR}/xemfg_panel_preview.cpp" native_panel.cpp native_controls.cpp native_diagnostics.cpp native_session.cpp native_compatibility.cpp native_trace.cpp native_reframework.cpp dependency_manager.cpp
@@ -258,7 +262,7 @@ if(XEMFG_OFFLINE_RESHADE AND XEMFG_OFFLINE_FG AND XEMFG_OFFLINE_LL)
   # removes it from XEMFG_BACKLOG.
   set(XEMFG_CONFORMANCE reflex-v2 reflex-next constants-v3 tag-next backbuffer-subrect
     menu-viewport-first late-interposer sl1-interposer sleep-gap constant-sleep-token late-interposer-hooked
-    unsupported-dlssg learned-depth scrgb-output native-game-xefg ffx-adapter dlss-sr-adapter dlss-sr-default-off duplicate-tags game-xefg-probe ffx-with-streamline
+    unsupported-dlssg learned-depth scrgb-output native-game-xefg ffx-adapter dlss-sr-adapter dlss-sr-default-off duplicate-tags reserved-state hud-srgb hud-typeless display-cap scrgb-hudless game-xefg-probe ffx-with-streamline
     ffx-with-reflex ffx-with-dlssg)
   set(XEMFG_BACKLOG)
   foreach(case IN LISTS XEMFG_CONFORMANCE)
@@ -286,6 +290,13 @@ if(XEMFG_OFFLINE_RESHADE AND XEMFG_OFFLINE_FG AND XEMFG_OFFLINE_LL)
       set_tests_properties(xemfg_conformance_${case} PROPERTIES LABELS backlog)
     endif()
   endforeach()
+  # 1.5.6: the constant-token game (Plague Tale) on the native Reflex route.
+  add_test(NAME xemfg_conformance_reflex-constant-sleep-token COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_SOURCE_DIR}/xemfg_native_tests.py" --directory "${CMAKE_BINARY_DIR}/native-checks"
+    --addon $<TARGET_FILE:mfgunlock_native_xemfg> --exe $<TARGET_FILE:xemfg_native_smoke>
+    --fixture $<TARGET_FILE:xemfg_streamline_fixture> --reshade "${XEMFG_OFFLINE_RESHADE}"
+    --sdk-fg "${XEMFG_OFFLINE_FG}" --sdk-ll "${XEMFG_OFFLINE_LL}" --constant-sleep-token --latency-output Reflex)
+  set_tests_properties(xemfg_conformance_reflex-constant-sleep-token PROPERTIES RUN_SERIAL TRUE TIMEOUT 150)
   # Real Streamline runtimes: NVIDIA's Streamline_Sample built per SDK release
   # by tools/sl_sample.py under ${XEMFG_SL_SAMPLES_ROOT}/sample-<version>.
   set(XEMFG_SL_SAMPLES_ROOT "" CACHE PATH "Folder with sample-v2.x.y Streamline_Sample builds")

@@ -9,6 +9,22 @@ struct HudTagIdentity {
   uint32_t state{},lifecycle{},x{},y{},width{},height{};
   bool operator==(const HudTagIdentity&) const=default;
 };
+// 1.5.7: XeFG requires HUD-less and UI inputs in the output's exact format.
+// A TYPELESS or _SRGB view of the same bits (Cyberpunk 2077 tags HUD-less as
+// R8G8B8A8_TYPELESS, Death Stranding 2 its UI as R8G8B8A8_UNORM_SRGB over an
+// R8G8B8A8_UNORM output) holds the same encoded values: a CopyTextureRegion
+// into a texture in the output format reads them back unchanged.
+inline bool CopyableHudFormat(DXGI_FORMAT input,DXGI_FORMAT output) {
+  const auto family=[](DXGI_FORMAT f) {
+    switch(f) {
+      case DXGI_FORMAT_R8G8B8A8_TYPELESS: case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return 1;
+      case DXGI_FORMAT_B8G8R8A8_TYPELESS: case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return 2;
+      case DXGI_FORMAT_R10G10B10A2_TYPELESS: case DXGI_FORMAT_R10G10B10A2_UNORM: return 3;
+      default: return 0;
+    }
+  };
+  return input!=output && family(input) && family(input)==family(output);
+}
 inline bool ConflictingHudTag(const HudTagIdentity& previous,const HudTagIdentity& next) {
   return previous.allocation && !(previous==next);
 }

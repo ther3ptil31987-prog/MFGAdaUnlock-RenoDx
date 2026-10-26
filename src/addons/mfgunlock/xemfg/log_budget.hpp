@@ -36,4 +36,10 @@ public:
     return 0;
   }
 };
+// XeFG's SDK log callback (1.5.6): the same grouping as the XeLL log, so the
+// load phase cannot exhaust the entries before gameplay messages arrive.
+// Returns the occurrence to log, or 0 when suppressed.
+inline uint64_t AdmitSdkMessage(PatternBudget& budget,const char* message) {
+  return budget.Admit(PatternBudget::Pattern(message?message:""));
+}
 }

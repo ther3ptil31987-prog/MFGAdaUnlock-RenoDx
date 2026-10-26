@@ -26,4 +26,7 @@ void SubmitBackbufferRegion(Output& o,Frame& frame,uint32_t id,const DejitterReg
 struct Conventions { std::optional<bool> depthInverted, motionJittered; };
 Conventions SubmitConstants(Frame& frame,uint32_t issues,const xefg_swapchain_frame_constant_data_t& data,
     const Conventions& stated);
+// 1.5.7: copies and tags this frame's HUD inputs that wait for Present
+// (CopyableHudFormat) on the presentation queue. True when there are none.
+bool SubmitPendingHud(Output& o,Frame& f,uint32_t id);
 }

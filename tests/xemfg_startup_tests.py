@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import evidence
 
 ap=argparse.ArgumentParser()
 ap.add_argument('--mode', choices=['loader','early-lifecycle','redirect-lifecycle','optiscaler-present','optiscaler-game-first','optiscaler-live-native'],required=True)
@@ -54,5 +55,5 @@ r=subprocess.run(command,cwd=d,env=env,
 (d/'result.json').write_text(json.dumps({'exit':r.returncode,'stdout':r.stdout,'stderr':r.stderr},indent=2),encoding='utf-8')
 print(r.stdout,end='')
 print(r.stderr,end='')
-if r.returncode or 'PASS:' not in r.stdout: raise SystemExit(1)
 print('Evidence:',d)
+evidence.finish(d,not r.returncode and 'PASS:' in r.stdout)

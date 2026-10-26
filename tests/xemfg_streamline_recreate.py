@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import evidence
 
 p=argparse.ArgumentParser()
 for name in ('directory','exe','addon','reshade','sdk-fg','sdk-ll','streamline'):
@@ -70,4 +71,4 @@ legacy=('Legacy factory: four same-window recreations, real Streamline inference
     presentation_isolated=isolated,shutdown_completed=shutdown,inference_verified=inference,visible_presents_verified=visible,latency_output=a.latency_output,early_addon=a.early_addon,legacy_factory_verified=legacy,
     legacy_factory_success_records=sum(e.get('event')=='native_legacy_factory_create' and e.get('replaced') for e in events),legacy_marker_route_requested=a.legacy_markers,tail_sleep_requested=a.tail_sleep,overlap_tail_sleep_requested=a.overlap_tail_sleep),indent=2))
 print(stdout,end='');print(stderr,end='');print('Evidence:',d)
-raise SystemExit(0 if not timed_out and process.returncode==0 and 'PASS:' in stdout and (a.stock_streamline or (isolated and shutdown)) and (not a.generate or inference) and visible is not False and legacy is not False else 1)
+evidence.finish(d,not timed_out and process.returncode==0 and 'PASS:' in stdout and (a.stock_streamline or (isolated and shutdown)) and (not a.generate or inference) and visible is not False and legacy is not False)

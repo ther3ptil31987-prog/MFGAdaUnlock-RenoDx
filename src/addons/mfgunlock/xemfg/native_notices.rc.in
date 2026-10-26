@@ -17,9 +17,9 @@ BEGIN
   BLOCK "040904b0"
   BEGIN
    VALUE "ProductName", "MFGAdaUnlock Native ReShade\0"
-   VALUE "FileVersion", "1.5.5.0\0"
-   VALUE "FileDescription", "MFG Unlock 1.5.5 - DLSS-G and XeMFG backends\0"
-   VALUE "ProductVersion", "1.5.5\0"
+   VALUE "FileVersion", "1.5.7.0\0"
+   VALUE "FileDescription", "MFG Unlock 1.5.7 - DLSS-G and XeMFG backends\0"
+   VALUE "ProductVersion", "1.5.7\0"
    VALUE "LegalCopyright", "MIT: MFGAdaUnlock contributors; Michael Robles; MinHook authors. Intel program data retains Intel terms.\0"
   END
  END

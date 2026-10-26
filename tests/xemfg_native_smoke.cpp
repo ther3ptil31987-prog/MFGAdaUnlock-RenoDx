@@ -532,7 +532,7 @@ int main(int argc,char** argv) {
     DXGI_SWAP_CHAIN_DESC1 desc{}; desc.Width=640; desc.Height=360; desc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;
     desc.SampleDesc.Count=1; desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT; desc.BufferCount=3; desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;
     // Plan 4.4: an HDR game presenting scRGB (FP16, linear BT.709).
-    if(flag("--scrgb-output")) desc.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
+    if(flag("--scrgb-output") || flag("--scrgb-hudless")) desc.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
     if(flag("--capcom-flags")) desc.Flags=0x842; // waitable, mode switch, tearing: captured RE Engine description
     if(legacyFactory) desc.Flags=0x802; // Control Resonant: legacy API, tearing + mode switch
     const bool ffxReflex=flag("--ffx-with-reflex"),ffxDlssg=flag("--ffx-with-dlssg");
@@ -620,7 +620,9 @@ int main(int argc,char** argv) {
       } else {
       Require(readyFrames>=16,"FidelityFX frames did not reach ready");
       // framesPresented counts the last source Present: itself plus the generated frames.
-      Require(ms.generated==multiplier-1 && ms.presented==multiplier && ms.result==0,"FidelityFX output presented no generated frames");
+      // As in the Streamline check below, a covered or unfocused window may have
+      // one generated frame dropped by DWM; the SDK still generated all of them.
+      Require(ms.generated==multiplier-1 && ms.presented>=multiplier-1 && ms.result==0,"FidelityFX output presented no generated frames");
       }
       Require(originals()==0,"a replaced FidelityFX call reached the provider");
       Require(destroy(&generation,nullptr)==FFX_API_RETURN_OK,"FidelityFX generation destroy");
@@ -873,6 +875,8 @@ int main(int argc,char** argv) {
     Require(options(viewport,opt)==sl::Result::eOk,"native FG disable");
     queryFeatures();
     sl::ReflexOptions ro; ro.mode=sl::ReflexMode::eLowLatency; ro.frameLimitUs=25000;
+    // 1.5.7: without a game limit the XeLL interval is the display cap alone.
+    if(flag("--display-cap")) ro.frameLimitUs=0;
     // Conformance: a newer ReflexOptions or one with an extension chain.
     sl::ReflexOptions reflexExtension;
     if(flag("--reflex-v2")) ro.structVersion=2;
@@ -903,6 +907,7 @@ int main(int argc,char** argv) {
       const auto deadline=GetTickCount64()+3000;
       while(!entered() && GetTickCount64()<deadline) ::Sleep(1);
       Require(entered(),"source sleep did not enter the gate");
+      controlStatus(&cs,sizeof(cs)); const auto associatedBefore=cs.reflexSleeps;
       chain.Reset();
       mfgunlock::xemfg::Status retired; modelStatus(&retired,sizeof(retired));
       if(retired.contexts) { hold(false); pendingSleep.wait(); throw std::runtime_error("latency lease retained the old FG presentation context"); }
@@ -911,7 +916,10 @@ int main(int argc,char** argv) {
       Check(base.As(&chain),"new output during old source sleep"); base.Reset();
       hold(false);
       const auto result=pendingSleep.get();
-      Require(result==sl::Result::eErrorInvalidState,"retired source sleep published a stale frame");
+      // 1.5.6: the game gets the native Reflex result; only the XeLL frame
+      // association with the retired output is refused.
+      controlStatus(&cs,sizeof(cs));
+      Require(result==sl::Result::eOk && cs.reflexSleeps==associatedBefore,"retired source sleep published a stale frame");
       sl::DLSSGOptions retiredOff; retiredOff.mode=sl::DLSSGMode::eOff;
       Require(options(viewport,retiredOff)==sl::Result::eOk,"replacement native FG off");
       Check(chain->Present(0,0),"new passthrough output"); chain.Reset();
@@ -934,7 +942,11 @@ int main(int argc,char** argv) {
     };
     auto depth=texture(DXGI_FORMAT_R32_FLOAT,D3D12_RESOURCE_FLAG_NONE);
     auto motion=texture(DXGI_FORMAT_R16G16_FLOAT,D3D12_RESOURCE_FLAG_NONE);
-    auto color=texture(flag("--scrgb-output")?DXGI_FORMAT_R16G16B16A16_FLOAT:DXGI_FORMAT_R8G8B8A8_UNORM,D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    // 1.5.7 conformance: HUD-less in another type of the output's bits, as
+    // Death Stranding 2 (UNORM_SRGB) and Cyberpunk 2077 (TYPELESS) tag it.
+    const DXGI_FORMAT colorFormat=flag("--scrgb-output") || flag("--scrgb-hudless")?DXGI_FORMAT_R16G16B16A16_FLOAT:flag("--hud-srgb")?DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+        :flag("--hud-typeless")?DXGI_FORMAT_R8G8B8A8_TYPELESS:DXGI_FORMAT_R8G8B8A8_UNORM;
+    auto color=texture(colorFormat,D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
     auto upload=[&](ID3D12Resource* resource,bool isDepth) {
       auto d=resource->GetDesc(); D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{}; UINT rows{}; UINT64 rowBytes{},bytes{};
       device->GetCopyableFootprints(&d,0,1,0,&fp,&rows,&rowBytes,&bytes);
@@ -953,7 +965,8 @@ int main(int argc,char** argv) {
     D3D12_DESCRIPTOR_HEAP_DESC hd{}; hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors=2;
     ComPtr<ID3D12DescriptorHeap> rtvs; Check(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&rtvs)),"rtvs");
     auto rtv=rtvs->GetCPUDescriptorHandleForHeapStart(); auto second=rtv; second.ptr+=device->GetDescriptorHandleIncrementSize(hd.Type);
-    device->CreateRenderTargetView(color.Get(),nullptr,second);
+    D3D12_RENDER_TARGET_VIEW_DESC colorView{DXGI_FORMAT_R8G8B8A8_UNORM,D3D12_RTV_DIMENSION_TEXTURE2D};
+    device->CreateRenderTargetView(color.Get(),flag("--hud-typeless")?&colorView:nullptr,second);
     sl::Constants c; DirectX::XMFLOAT4X4 projection;
     DirectX::XMStoreFloat4x4(&projection,DirectX::XMMatrixPerspectiveFovLH(1.0f,640.f/360.f,.1f,1000.f)); memcpy(&c.cameraViewToClip,&projection,64);
     c.cameraRight={1,0,0}; c.cameraUp={0,1,0}; c.cameraFwd={0,0,1}; c.cameraPos={0,0,0};
@@ -1006,6 +1019,12 @@ int main(int argc,char** argv) {
       }
       if(keyTest && (frame==4 || frame==8 || frame==12 || frame==16)) PostMessageW(hwnd,WM_KEYUP,VK_HOME,LPARAM(1u<<31));
       if(keyTest) { MSG msg{}; while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) DispatchMessageW(&msg); }
+      if(flag("--display-cap") && frame==30) {
+        // 1.5.7: turning the display cap off removes the XeLL interval at the next wait.
+        controlStatus(&cs,sizeof(cs));
+        Require(cs.settings.displayCap && cs.displayCapIntervalUs>0 && cs.displayRefreshMilliHz>0,"display cap not active");
+        settings.displayCap=false; Require(configure(&settings,sizeof(settings)),"display cap off");
+      }
       if(frame==36 || frame==42) {
         settings.sdkDeadlines=frame==36; Require(configure(&settings,sizeof(settings)),"deadline comparison request");
       }
@@ -1025,6 +1044,32 @@ int main(int argc,char** argv) {
         controlStatus(&cs,sizeof(cs));
         Require(!cs.flipRequested && !cs.flipEnabled,"flip request did not commit at a batch boundary");
         Require(!cs.flipConfigured && !cs.flipMetered,"disabled metering still reported configured");
+      }
+      // Conformance (Witcher 3, 1.5.3): depth tagged with the reserved state
+      // 0x80000000. Frame 10 reuses the state accepted for the same resource;
+      // frame 11 recreates depth at the released address, which must not
+      // inherit that state; frame 12 tags it validly again. (Frame 9 has its
+      // own UI composition check, which a refused frame would break.)
+      if(flag("--reserved-state")) {
+        if(frame==11) {
+          const auto released=reinterpret_cast<uintptr_t>(depth.Get());
+          depth.Reset();
+          // The heap hands out free blocks in randomized order, and XeFG may
+          // still hold the released resource for a few milliseconds after
+          // Present. Keep batches of candidates alive until one takes the slot.
+          for(int round=0;round<20 && !depth;++round) {
+            std::vector<ComPtr<ID3D12Resource>> held;
+            for(int i=0;i<64;++i) {
+              auto candidate=texture(DXGI_FORMAT_R32_FLOAT,D3D12_RESOURCE_FLAG_NONE);
+              if(reinterpret_cast<uintptr_t>(candidate.Get())==released) { depth=std::move(candidate); break; }
+              held.push_back(std::move(candidate));
+            }
+            if(!depth) Sleep(10);
+          }
+          Require(reinterpret_cast<uintptr_t>(depth.Get())==released,"recreated depth did not reuse the released address");
+          upload(depth.Get(),true); rd.native=depth.Get();
+        }
+        rd.state=frame==10 || frame==11?0x80000000u:uint32_t(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
       }
       Token token; token.id=frame;
       const bool boundaryScenario=flag("--simulation-sleep") || flag("--midsim-sleep");
@@ -1124,6 +1169,11 @@ int main(int argc,char** argv) {
         Require(cs.uiCompositionKnown && cs.uiCompositionResult>=0 && cs.uiCompositionApplied==composed,"UI composition effective state mismatch");
         Require(cs.settings.uiComposition==(frame!=25),"missing HUD-less erased UI preference");
       }
+      if((flag("--hud-srgb") || flag("--hud-typeless") || flag("--scrgb-hudless")) && frame==10) {
+        // 1.5.7: the panel reports the HUD-less input as received and converted.
+        controlStatus(&cs,sizeof(cs));
+        Require((cs.hudInputs&(1u<<XEFG_SWAPCHAIN_RES_HUDLESS_COLOR)) && (cs.hudCopied&(1u<<XEFG_SWAPCHAIN_RES_HUDLESS_COLOR)),"panel did not report the converted HUD-less input");
+      }
       if(frame==34 || frame==38 || invalidProducer || ((frame==39 || frame==40) && flag("--hud-conflict"))) {
         bridgeStatus(&bs,sizeof(bs)); Require(!bs.enabled,"invalid input did not bypass FG");
         if(frame==39) { controlStatus(&cs,sizeof(cs)); Require(cs.hudIssues&16u,"conflicting removal not diagnosed"); }
@@ -1131,11 +1181,23 @@ int main(int argc,char** argv) {
       else if(lateSubmitEnd) { bridgeStatus(&bs,sizeof(bs)); Require(bs.enabled,producer?"heap producer command was not accepted":"valid overlapping RenderSubmit/Present was rejected"); }
       if(frame==37) {
         controlStatus(&cs,sizeof(cs)); Require(cs.hudIssues && cs.hudRejected && !cs.uiCompositionApplied,"invalid optional HUD did not fall back to default interpolation");
+        Require(cs.hudFiltered&(1u<<XEFG_SWAPCHAIN_RES_UI),"panel did not report the filtered UI input");
       }
       if(frame==40 || frame==48) {
         controlStatus(&cs,sizeof(cs)); Require(cs.sdkDeadlinesActive==(frame==40),"deadline policy did not commit/restore");
       }
       MSG msg{}; while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) DispatchMessageW(&msg);
+      if(flag("--reserved-state") && (frame==10 || frame==11 || frame==13)) {
+        bridgeStatus(&bs,sizeof(bs));
+        if(frame==10) Require(bs.enabled,"reserved state on a known resource was not substituted");
+        if(frame==11) Require(!bs.enabled,"recreated resource inherited the released resource's state");
+        if(frame==13) {
+          Require(bs.enabled,"valid state on the recreated resource did not resume generation");
+          Require(Import<bool(*)(uint32_t)>(addon,"MFGAXeLogFlush")(2000),"reserved state flush");
+          std::cout<<"PASS: reserved resource state substituted per resource and not inherited"<<std::endl;
+          return 0;
+        }
+      }
       if(flag("--scrgb-output") && frame==8) {
         // The game keeps its FP16 view of the chain; XeFG runs on the HDR10 copy.
         // FP16 HUD-less is filtered (not converted yet), so composition checks do not apply.
@@ -1165,6 +1227,10 @@ int main(int argc,char** argv) {
     std::cout<<"model="<<ms.model<<" initialized="<<ms.initialized<<" frames="<<ms.presented<<" tensor="<<ms.tensor_launches<<" result="<<ms.result<<" rejected="<<bs.rejected<<" outputPresents="<<bs.outputPresents<<std::endl;
     // An occluded window can report only its generated submissions. Do not
     // turn this into a claim about four displayed frames or scanout cadence.
+    const bool constantToken=flag("--constant-sleep-token");
+    if(nativeReflex && constantToken)
+      std::cout<<"Reflex route, constant sleep token: original waits="<<Import<uint32_t(*)()>(fixture,"FixtureReflexSleeps")()
+          <<" last token="<<Import<uint32_t(*)()>(fixture,"FixtureLastReflexSleepToken")()<<" fg_enabled="<<bs.enabled<<std::endl;
     Require(ms.model && ms.initialized && ms.tensor_launches>0 && ms.generated==multiplier-1 && ms.presented>=multiplier-1 && ms.result==0 && bs.enabled,"actual XeMFG interpolation missing");
     Require(bs.lateSubmitEnds>=30,"late RenderSubmitEnd timestamps were not forwarded to XeLL");
     Require(overlayStatus(&os,sizeof(os)) && os.updates>=48 && os.failed==0,"ReShade did not render final outputs");
@@ -1182,17 +1248,26 @@ int main(int argc,char** argv) {
     // dispatched id); boundary waits then cover frames 8-48.
     const auto expectedSleeps=flag("--constant-sleep-token")?42u:
         flag("--simulation-sleep") || flag("--midsim-sleep") || flag("--sleep-gap")?41u:48u;
-    Require(cs.reflexObserved && cs.reflexOptionsReady && (nativeReflex?(cs.reflexOutputObserved && !cs.xellObserved && !cs.nativeReflexDisabled && cs.reflexSleeps==48 && cs.xellSleeps==0):(!cs.reflexOutputObserved && cs.xellObserved && cs.nativeReflexDisabled && cs.reflexSleeps==0 && cs.xellSleeps==expectedSleeps)) && cs.sleeps==expectedSleeps && cs.markers>=(flag("--tail-sleep")?47u:flag("--constant-sleep-token")?41u:expectedSleeps)*6,
+    // Reflex route with a constant token (Plague Tale, 1.5.6): every game wait
+    // reaches the original slReflexSleep with its own token; the per-frame
+    // XeLL association follows the simulation boundary as on the XeLL route.
+    if(nativeReflex && constantToken)
+      Require(cs.reflexObserved && cs.reflexOptionsReady && cs.reflexOutputObserved && !cs.xellObserved && !cs.nativeReflexDisabled,
+          "observed latency route/counters missing");
+    else Require(cs.reflexObserved && cs.reflexOptionsReady && (nativeReflex?(cs.reflexOutputObserved && !cs.xellObserved && !cs.nativeReflexDisabled && cs.reflexSleeps==48 && cs.xellSleeps==0):(!cs.reflexOutputObserved && cs.xellObserved && cs.nativeReflexDisabled && cs.reflexSleeps==0 && cs.xellSleeps==expectedSleeps)) && cs.sleeps==expectedSleeps && cs.markers>=(flag("--tail-sleep")?47u:flag("--constant-sleep-token")?41u:expectedSleeps)*6,
         "observed latency route/counters missing");
-    Require(Import<uint32_t(*)()>(fixture,"FixtureReflexSleeps")()==(nativeReflex?48u:0u),"original Reflex wait dispatch count");
-    if(nativeReflex) Require(Import<uint32_t(*)()>(fixture,"FixtureLastReflexSleepToken")()==48,"native Reflex token was shifted");
+    // Native Reflex route: every game wait reaches the original slReflexSleep,
+    // including the tail scenario's duplicate wait on frame 5 (1.5.6).
+    Require(Import<uint32_t(*)()>(fixture,"FixtureReflexSleeps")()==(nativeReflex?(flag("--tail-sleep")?49u:48u):0u),"original Reflex wait dispatch count");
+    if(nativeReflex) Require(Import<uint32_t(*)()>(fixture,"FixtureLastReflexSleepToken")()==(constantToken?0u:48u),"native Reflex token was shifted");
     std::cout<<"Latency route: Reflex -> "<<(nativeReflex?"Reflex":"XeLL")<<"; native waits="<<cs.reflexSleeps<<"; XeLL waits="<<cs.xellSleeps<<std::endl;
     if(flag("--tail-sleep")) std::cout<<"Tail sleep: first frame bypassed, following frames interpolated, original Reflex token and wait count preserved"<<std::endl;
     if(flag("--simulation-sleep")) std::cout<<"Simulation boundary: missing sleep recovered after warmup; explicit source waits resumed without duplicate sleep"<<std::endl;
     if(flag("--midsim-sleep")) std::cout<<"Simulation boundary: refused mid-simulation waits recovered after warmup; explicit source waits resumed without duplicate sleep"<<std::endl;
     if(flag("--zero-resource")) std::cout<<"Zero resource metadata: real D3D12 textures, volatile producer copies and inference accepted"<<std::endl;
     if(flag("--jittered-motion")) std::cout<<"Jittered motion: dejittered by the bridge pass and interpolated"<<std::endl;
-    Require(cs.modeUpdates<=(flag("--retained-output")?3u:2u),"identical XeLL configuration reapplied every frame");
+    // The display cap case changes the XeLL interval twice (cap on, then off).
+    Require(cs.modeUpdates<=(flag("--retained-output") || flag("--display-cap")?3u:2u),"identical XeLL configuration reapplied every frame");
     // An invalid producer removes this frame's HUD-less input, then the next
     // valid frame restores it: one additional disable/enable transition.
     const uint64_t compositionTransitions=(flag("--producer-shadow")?6:4)+(flag("--stale-input")?1:0);

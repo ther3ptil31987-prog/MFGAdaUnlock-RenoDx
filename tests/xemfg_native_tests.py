@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 import shutil
 import subprocess
+import evidence
 
 ap=argparse.ArgumentParser()
 for name in ('directory','addon','exe','fixture','reshade','sdk-fg','sdk-ll'):
@@ -57,6 +58,11 @@ ap.add_argument('--dlss-sr-adapter',action='store_true')
 ap.add_argument('--ngx-fixture',type=Path)
 ap.add_argument('--dlss-sr-default-off',action='store_true')
 ap.add_argument('--duplicate-tags',action='store_true')
+ap.add_argument('--reserved-state',action='store_true')
+ap.add_argument('--hud-srgb',action='store_true')
+ap.add_argument('--hud-typeless',action='store_true')
+ap.add_argument('--display-cap',action='store_true')
+ap.add_argument('--scrgb-hudless',action='store_true')
 ap.add_argument('--game-xefg-probe',action='store_true')
 ap.add_argument('--ffx-with-streamline',action='store_true')
 ap.add_argument('--ffx-with-reflex',action='store_true')
@@ -115,7 +121,7 @@ if args.runtime_layout!='adjacent':
         content=bytearray(path.read_bytes()); content[0x40]^=1; path.write_bytes(content)
         manifest['_storage_/libxess_fg.dll']=hashlib.sha256(content).hexdigest()
 (d/'MFGAdaUnlock.ini').write_text(f'[Backend]\nSelected=XeMFG\n[XeFG]\nMultiplier={args.multiplier}\n'
-    +('InvertedDepth=0\n' if args.normal_depth else '')+('ForceVSyncOff=1\n' if args.force_vsync_off else '')
+    +('InvertedDepth=0\n' if args.normal_depth else '')+('ForceVSyncOff=1\n' if args.force_vsync_off else '')+('DisplayCap=1\n' if args.display_cap else '')
     +f'[Latency]\nOutput={args.latency_output}\n',encoding='ascii')
 # One [Diagnostics] section: a second one would be ignored by GetPrivateProfile*.
 diagnostics=(['StallTrace=1'] if args.d3d_debug else [])+(['SummaryIntervalMs=200'] if args.game_vsync else [])
@@ -137,7 +143,7 @@ if args.reframework: flags+=['--ref-'+args.reframework]
 if args.steam_observer: flags+=['--steam-observer']
 if args.stale_input: flags+=['--stale-input']
 if args.active_support: flags+=['--active-support']
-for name in ('game_vsync','legacy_markers','mixed_markers','alias_markers','stall_trace','queue_proxy','parallel_factory','foreign_refs','retained_output','secondary_viewport','normal_depth','hud_conflict','tail_sleep','zero_resource','jittered_motion','simulation_sleep','midsim_sleep','struct_probe','reflex_v2','reflex_next','constants_v3','tag_next','backbuffer_subrect','menu_viewport_first','late_interposer','sl1_interposer','sleep_gap','constant_sleep_token','late_interposer_hooked','unsupported_dlssg','scrgb_output','native_game_xefg','ffx_adapter','dlss_sr_adapter','dlss_sr_default_off','duplicate_tags','game_xefg_probe','ffx_with_streamline','ffx_with_reflex','ffx_with_dlssg'):
+for name in ('game_vsync','legacy_markers','mixed_markers','alias_markers','stall_trace','queue_proxy','parallel_factory','foreign_refs','retained_output','secondary_viewport','normal_depth','hud_conflict','tail_sleep','zero_resource','jittered_motion','simulation_sleep','midsim_sleep','struct_probe','reflex_v2','reflex_next','constants_v3','tag_next','backbuffer_subrect','menu_viewport_first','late_interposer','sl1_interposer','sleep_gap','constant_sleep_token','late_interposer_hooked','unsupported_dlssg','scrgb_output','native_game_xefg','ffx_adapter','dlss_sr_adapter','dlss_sr_default_off','duplicate_tags','reserved_state','hud_srgb','hud_typeless','display_cap','scrgb_hudless','game_xefg_probe','ffx_with_streamline','ffx_with_reflex','ffx_with_dlssg'):
     if getattr(args,name): flags+=['--'+name.replace('_','-')]
 if args.runtime_layout in ('preloaded-storage','mutated-storage'): flags+=['--preload-runtimes']
 if args.runtime_layout in ('mutated-storage','missing'): flags+=['--expect-startup-rejection']
@@ -164,7 +170,7 @@ if args.dlss_sr_default_off:
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,
         dlss_sr_default_off_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
-    raise SystemExit(0 if result.returncode==0 and verified else 1)
+    evidence.finish(d,result.returncode==0 and verified)
 if args.dlss_sr_adapter:
     # Plan 5.4: opt-in NGX DLSS-SR adapter; DLSS itself keeps running.
     verified=('PASS: DLSS-SR adapter reached ready' in result.stdout
@@ -175,7 +181,7 @@ if args.dlss_sr_adapter:
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,
         dlss_sr_adapter_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
-    raise SystemExit(0 if result.returncode==0 and verified else 1)
+    evidence.finish(d,result.returncode==0 and verified)
 if args.ffx_adapter or args.ffx_with_reflex or args.ffx_with_dlssg:
     # Plan 5.3: FSR 3.1 contexts replaced by the Intel output; markers synthesized.
     hooks=[e for e in events if e.get('event')=='native_ffx_hooks']
@@ -196,7 +202,7 @@ if args.ffx_adapter or args.ffx_with_reflex or args.ffx_with_dlssg:
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,
         ffx_adapter_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
-    raise SystemExit(0 if result.returncode==0 and verified else 1)
+    evidence.finish(d,result.returncode==0 and verified)
 if args.native_game_xefg:
     # Plan 5.2: the game's own XeFG context receives the user's multiplier.
     counts=[e for e in events if e.get('event')=='count_result' and e.get('owner')=='game']
@@ -206,7 +212,19 @@ if args.native_game_xefg:
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,
         game_multiplier_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
-    raise SystemExit(0 if result.returncode==0 and verified else 1)
+    evidence.finish(d,result.returncode==0 and verified)
+if args.reserved_state:
+    # 1.5.6 (Witcher 3): a reserved state is replaced by the last valid state
+    # of the SAME resource, never by a released resource's at the same address.
+    reserved=[e for e in events if e.get('event')=='native_tag_reserved_state']
+    verified=('PASS: reserved resource state substituted per resource and not inherited' in result.stdout
+        and any(e.get('substituted')==64 for e in reserved)
+        and any(e.get('substituted') is None for e in reserved)
+        and not any(e.get('event') in ('native_present_failure','native_device_failure') for e in events))
+    (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,
+        reserved_state_verified=verified),indent=2))
+    print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
+    evidence.finish(d,result.returncode==0 and verified)
 if args.scrgb_output:
     # Plan 4.4: FP16 scRGB is converted to HDR10 PQ for the Intel proxy.
     inits=[e for e in events if e.get('event')=='native_swapchain_init']
@@ -218,13 +236,13 @@ if args.scrgb_output:
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,
         scrgb_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
-    raise SystemExit(0 if result.returncode==0 and verified else 1)
+    evidence.finish(d,result.returncode==0 and verified)
 if args.sl1_interposer:
     untouched='PASS: SL 1.x interposer left untouched' in result.stdout
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,
         sl1_untouched_verified=untouched),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
-    raise SystemExit(0 if result.returncode==0 and untouched else 1)
+    evidence.finish(d,result.returncode==0 and untouched)
 if args.reframework:
     blocked=args.reframework in ('blocked','invalid','exception','ambiguous')
     decisions=[e for e in events if e.get('event')=='native_reframework_retire']
@@ -237,12 +255,12 @@ if args.reframework:
         verified=verified and 'REFramework safe handoff: reentrant callback, module lease and recreation verified' in result.stdout
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,scenario=args.reframework,retirement_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
-    raise SystemExit(0 if result.returncode==0 and verified else 1)
+    evidence.finish(d,result.returncode==0 and verified)
 if args.parallel_factory:
     verified='PASS: simultaneous factory callers published one Intel owner; both outputs and contexts retired' in result.stdout
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,parallel_factory_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
-    raise SystemExit(0 if result.returncode==0 and verified else 1)
+    evidence.finish(d,result.returncode==0 and verified)
 if args.foreign_refs or args.retained_output:
     verified='PASS: foreign native references block HWND recreation; only observer-owned releases permit recovery' in result.stdout
     if args.retained_output:
@@ -250,12 +268,16 @@ if args.foreign_refs or args.retained_output:
         verified=verified and any(e.get('event')=='native_output_reused' and e.get('result')==0 for e in events)
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,foreign_reference_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
-    raise SystemExit(0 if result.returncode==0 and verified else 1)
+    evidence.finish(d,result.returncode==0 and verified)
 if args.retire_sleep:
-    verified=any(e.get('event')=='native_output_retired' and e.get('sleep_in_flight') and e.get('destroy_result')==0 for e in events)
+    # 1.5.6: the game's native Reflex wait runs before any XeLL operation, so
+    # nothing is in flight on the Intel side when the output retires during it
+    # (sleep_in_flight false). Retirement during an in-flight XeLL wait is
+    # covered by xemfg_latency_translation.
+    verified=any(e.get('event')=='native_output_retired' and e.get('sleep_in_flight') is False and e.get('destroy_result')==0 for e in events)
     (d/'result.json').write_text(json.dumps(dict(inputs=manifest,exit=result.returncode,stdout=result.stdout,stderr=result.stderr,retirement_during_sleep_verified=verified),indent=2))
     print(result.stdout,end='');print(result.stderr,end='');print('Evidence:',d)
-    raise SystemExit(0 if result.returncode==0 and verified and 'same HWND rebound before sleep returned' in result.stdout else 1)
+    evidence.finish(d,result.returncode==0 and verified and 'same HWND rebound before sleep returned' in result.stdout)
 if args.game_vsync:
     # The game presents with sync interval 1. It is reported once; the
     # override happens only with ForceVSyncOff, and native_summary carries
@@ -271,7 +293,7 @@ if args.game_vsync:
         game_vsync_verified=verified,reported=reported,forced=forced,summaries=summaries[:3]),indent=2))
     print(result.stdout,end=''); print(result.stderr,end=''); print('Evidence:',d)
     if not verified: print('game VSync not reported as expected:',reported,forced,summaries[:2])
-    raise SystemExit(0 if result.returncode==0 and 'PASS:' in result.stdout and verified else 1)
+    evidence.finish(d,result.returncode==0 and 'PASS:' in result.stdout and verified)
 if args.runtime_layout in ('mutated-storage','missing'):
     expected='unreviewed_Intel_runtime_pair' if args.runtime_layout=='mutated-storage' else 'missing_Intel_runtime:libxess_fg.dll'
     refused=any(e.get('event')=='startup_rejected' and e.get('reason')==expected for e in events)
@@ -289,7 +311,7 @@ if args.runtime_layout in ('mutated-storage','missing'):
         runtime_files_described=described),indent=2))
     print(result.stdout,end=''); print(result.stderr,end=''); print('Evidence:',d)
     if not described: print('runtime_files did not describe the refused files:',files[-1] if files else None)
-    raise SystemExit(0 if result.returncode==0 and 'PASS:' in result.stdout and refused and unpublished and described else 1)
+    evidence.finish(d,result.returncode==0 and 'PASS:' in result.stdout and refused and unpublished and described)
 selections=[e for e in events if e.get('event')=='runtime_selection']
 runtime_selection=bool(selections) and all('_storage_' in e['provider_path'] and '_storage_' in e['xell_path'] for e in selections) if args.runtime_layout!='adjacent' else bool(selections)
 sdk_deadlines=[e for e in events if e.get('event')=='dlssg_interval_deadline' and e.get('sdk_deadlines')]
@@ -417,6 +439,30 @@ if args.game_xefg_probe:
 if args.duplicate_tags:
     diagnostics_verified['duplicate_tags']=any(e.get('event')=='native_tag_duplicate' for e in events) and not any(
         e.get('event')=='native_sdk_log' and 'already tagged' in e.get('message','') for e in events)
+if args.display_cap:
+    # 1.5.7: with no game limit, the XeLL interval is the display cap for the
+    # measured refresh and multiplier, and 0 again after it is turned off.
+    caps=[e for e in events if e.get('event')=='native_display_cap' and e.get('interval_us',0)>0]
+    modes=[e.get('interval_us') for e in events if e.get('event')=='native_sleep_mode']
+    diagnostics_verified['display_cap']=(bool(caps) and caps[0].get('enabled')==1
+        and caps[0]['interval_us'] in modes and 0 in modes[modes.index(caps[0]['interval_us']):])
+if args.scrgb_hudless:
+    # 1.5.7: the FP16 HUD-less of an scRGB game is encoded to HDR10 and used.
+    copies=[e for e in events if e.get('event')=='native_hud_copy']
+    diagnostics_verified['scrgb_hudless']=(any(e.get('event')=='native_scrgb_ready' and e.get('result')==0 for e in events)
+        and any(e.get('event')=='native_hud_input' and e.get('type')==0 and e.get('format')==10 and e.get('copied') is True for e in events)
+        and bool(copies) and all(e.get('ok') is True for e in copies)
+        and not any(e.get('event')=='native_tag_rejected' and e.get('type')==0 and e.get('format')==10 for e in events)
+        and not any(e.get('event')=='native_sdk_log' and e.get('level',0)>=3 for e in events))
+if args.hud_srgb or args.hud_typeless:
+    # 1.5.7: the HUD-less tag in another type of the output's bits is copied
+    # into the output format, at the tag (volatile) and at Present.
+    copies=[e for e in events if e.get('event')=='native_hud_copy']
+    diagnostics_verified['hud_copy']=(any(e.get('event')=='native_hud_input' and e.get('type')==0 and e.get('copied') is True for e in events)
+        # Frame 38 tags motion vectors as HUD-less on purpose; only this case's format must pass.
+        and not any(e.get('event')=='native_tag_rejected' and e.get('type')==0 and e.get('format')==(29 if args.hud_srgb else 27) for e in events)
+        and bool(copies) and all(e.get('ok') is True for e in copies)
+        and not any(e.get('event')=='native_sdk_log' and e.get('level',0)>=3 for e in events))
 if args.backbuffer_subrect:
     diagnostics_verified['backbuffer_region']=any(e.get('event')=='native_backbuffer_region' and e.get('width')==320 and e.get('height')==180 for e in events)
 # Shipped profiles load once per session, with no override error.
@@ -453,4 +499,4 @@ if args.struct_probe:
     'gpu_queue_timestamps_verified':any(e.get('event')=='gpu_queue_span' for e in events) if args.stall_trace else None,
     'legacy_factory_success_records':sum(e.get('event')=='native_legacy_factory_create' and e.get('replaced') for e in events)},indent=2),encoding='utf-8')
 print(result.stdout,end=''); print(result.stderr,end=''); print('Evidence:',d)
-raise SystemExit(0 if result.returncode==0 and 'PASS:' in result.stdout and learned_verified is not False and all(diagnostics_verified.values()) and compatibility_verified and all(input_verified.values()) and active_support_verified is not False and runtime_selection and persisted and policy_activation and passthrough is not False and hud_filter and passthrough_identity and native_keys is not False and native_child is not False and foreground_verified is not False and legacy_verified is not False and markers_verified is not False and tail_verified is not False and observer_verified is not False and stale_verified is not False and (not args.stall_trace or any(e.get('event')=='gpu_queue_span' for e in events)) and (not args.queue_proxy or 'Queue native identity: wrapper unwrapped; inference and lifetime verified' in result.stdout) else 1)
+evidence.finish(d,result.returncode==0 and 'PASS:' in result.stdout and learned_verified is not False and all(diagnostics_verified.values()) and compatibility_verified and all(input_verified.values()) and active_support_verified is not False and runtime_selection and persisted and policy_activation and passthrough is not False and hud_filter and passthrough_identity and native_keys is not False and native_child is not False and foreground_verified is not False and legacy_verified is not False and markers_verified is not False and tail_verified is not False and observer_verified is not False and stale_verified is not False and (not args.stall_trace or any(e.get('event')=='gpu_queue_span' for e in events)) and (not args.queue_proxy or 'Queue native identity: wrapper unwrapped; inference and lifetime verified' in result.stdout))

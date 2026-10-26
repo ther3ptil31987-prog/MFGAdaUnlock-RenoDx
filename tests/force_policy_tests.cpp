@@ -120,6 +120,22 @@ int main() {
   CHECK(SendDownstream(4, 2, false, true).generated_frames == 1);
   CHECK(SendDownstream(4, 6, false, true).generated_frames == 5);
 
+  // 1.5.6: a count refused twice is not retried until a reset boundary.
+  {
+    mfgunlock::forcepolicy::RefusalMemory refusal;
+    CHECK(!refusal.Refused(3));
+    CHECK(!refusal.Refused(0));  // zero is "no refusal", never a count
+    refusal.Record(3);           // 4x refused
+    CHECK(refusal.Refused(3));
+    CHECK(refusal.Value() == 3);
+    CHECK(!refusal.Refused(2));  // another count (3x) is tried normally
+    CHECK(!refusal.Refused(4));
+    refusal.Record(4);           // the latest refusal replaces the previous
+    CHECK(refusal.Refused(4) && !refusal.Refused(3));
+    refusal.Clear();             // game off/on, multiplier change, new swapchain
+    CHECK(!refusal.Refused(4) && refusal.Value() == 0);
+  }
+
   std::cout << "force policy tests passed\n";
   return EXIT_SUCCESS;
 }

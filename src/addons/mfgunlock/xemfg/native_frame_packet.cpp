@@ -4,6 +4,8 @@
 
 namespace mfgunlock::xemfg::native::packet {
 namespace {
+// Private-data key on tagged resources: the last valid state accepted for it.
+constexpr GUID kTaggedState={0x6f1c2b8e,0x4a5d,0x4e7b,{0x9c,0x1a,0x3d,0x2f,0x8e,0x6b,0x7a,0x10}};
 // Plan 4.2: jittered motion is held for conversion at Present instead of
 // being tagged; a volatile tag is copied now, on the producer's list.
 xefg_swapchain_result_t StageMotion(Output& o,Frame& frame,ID3D12CommandList* producer,ID3D12Resource* resource,
@@ -21,6 +23,76 @@ xefg_swapchain_result_t StageMotion(Output& o,Frame& frame,ID3D12CommandList* pr
   frame.motionRegion={0,0,region.width,region.height};
   return XEFG_SWAPCHAIN_RESULT_SUCCESS;
 }
+// 1.5.7: a HUD input whose type differs from the output format is tagged
+// through an owned copy in the output format. A volatile tag is copied and
+// tagged now on the producer's list (XeFG copies ONLY_NOW inputs at the tag);
+// one valid until Present waits for the source Present (SubmitPendingHud).
+xefg_swapchain_result_t StageHudCopy(Output& o,Frame& frame,ID3D12CommandList* producer,ID3D12Resource* resource,
+    const xefg_swapchain_d3d12_resource_data_t& data,uint32_t id,unsigned slot,bool encode) {
+  if(!o.hudCopy) {
+    auto copy=std::make_unique<HudCopy>();
+    if(!copy->Initialize(o.device.Get())) return XEFG_SWAPCHAIN_RESULT_ERROR_INVALID_ARGUMENT;
+    o.hudCopy=std::move(copy);
+  }
+  const DejitterRegion region{uint32_t(data.resourceBase.x),uint32_t(data.resourceBase.y),data.resourceSize.x,data.resourceSize.y};
+  if(data.validity!=XEFG_SWAPCHAIN_RV_ONLY_NOW) {
+    frame.pendingHud[slot]={resource,data.incomingState,region,data.type,encode};
+    return XEFG_SWAPCHAIN_RESULT_SUCCESS;
+  }
+  ComPtr<ID3D12GraphicsCommandList> graphics;
+  ID3D12Resource* copy{};
+  // An FP16 input is copied as it is now and encoded at the source Present,
+  // on the encoder's own list (no heap or pipeline state on the game's list).
+  const auto format=encode?resource->GetDesc().Format:o.format;
+  if(!producer || FAILED(producer->QueryInterface(IID_PPV_ARGS(&graphics)))
+      || !(copy=o.hudCopy->Record(graphics.Get(),resource,data.incomingState,region,format,slot,id)))
+    return XEFG_SWAPCHAIN_RESULT_ERROR_INVALID_ARGUMENT;
+  if(encode) {
+    frame.pendingHud[slot]={copy,D3D12_RESOURCE_STATE_COMMON,{0,0,region.width,region.height},data.type,true};
+    return XEFG_SWAPCHAIN_RESULT_SUCCESS;
+  }
+  auto copied=data; copied.pResource=copy; copied.incomingState=D3D12_RESOURCE_STATE_COMMON; copied.resourceBase={0,0};
+  RuntimeCall trace("xefg_tag_resource",o.diagnosticOutput,id);
+  const auto r=State().api.xefgSwapChainD3D12TagFrameResource(o.fg,producer,id,&copied);trace.Result(r);return r;
+}
+}
+bool SubmitPendingHud(Output& o,Frame& f,uint32_t id) {
+  if(!f.pendingHud[0].source && !f.pendingHud[1].source) return true;
+  // FP16 scRGB inputs are encoded first, on the encoder's list; the tags
+  // below then run on the copy list, after it on the same queue.
+  ID3D12Resource* encoded[2]{};
+  bool ok=o.hudCopy!=nullptr;
+  for(unsigned slot=0;ok && slot<2;++slot) {
+    auto& pending=f.pendingHud[slot];
+    if(!pending.source || !pending.encode) continue;
+    encoded[slot]=o.hudCopy->Target(slot,id,ScrgbEncoder::kTargetFormat,pending.region.width,pending.region.height,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    ok=encoded[slot] && o.scrgbEncoder && o.scrgbEncoder->Encode(o.queue.Get(),pending.source.Get(),pending.state,
+        encoded[slot],D3D12_RESOURCE_STATE_COMMON);
+  }
+  auto* list=ok?o.hudCopy->Begin():nullptr;
+  ok=list!=nullptr;
+  int tag=XEFG_SWAPCHAIN_RESULT_ERROR_INVALID_ARGUMENT;
+  for(unsigned slot=0;ok && slot<2;++slot) {
+    auto& pending=f.pendingHud[slot];
+    if(!pending.source) continue;
+    auto* copy=encoded[slot]?encoded[slot]:o.hudCopy->Record(list,pending.source.Get(),pending.state,pending.region,o.format,slot,id);
+    xefg_swapchain_d3d12_resource_data_t data{};
+    data.type=pending.type; data.pResource=copy; data.validity=XEFG_SWAPCHAIN_RV_ONLY_NOW;
+    data.incomingState=D3D12_RESOURCE_STATE_COMMON; data.resourceSize={pending.region.width,pending.region.height};
+    if(copy) {
+      RuntimeCall trace("xefg_tag_resource",o.diagnosticOutput,id);
+      tag=State().api.xefgSwapChainD3D12TagFrameResource(o.fg,list,id,&data); trace.Result(tag);
+    }
+    ok=copy && tag>=0;
+  }
+  if(list) ok=o.hudCopy->Submit(o.queue.Get()) && ok; // an open list is always submitted
+  if(o.hudCopyLogBudget<4 || (!ok && o.hudCopyLogBudget<12)) {
+    ++o.hudCopyLogBudget;
+    xess_mod::WriteLog("native_hud_copy","\"id\":"+std::to_string(id)+",\"phase\":\"present\",\"ok\":"+(ok?"true":"false")
+        +",\"tag_result\":"+std::to_string(tag)+",\"hr\":"+std::to_string(int32_t(o.hudCopy?o.hudCopy->LastError():E_FAIL)));
+  }
+  return ok;
 }
 void SubmitBackbufferRegion(Output& o,Frame& frame,uint32_t id,const DejitterRegion& e) {
   // Plan 4.3: only the extent is used; XeFG reads its own swapchain buffer.
@@ -53,7 +125,7 @@ void SubmitResource(Output& o,Frame& frame,uint32_t id,const Resource& t) {
     // Cannot retract an earlier successful tag for this same frame: bypass
     // that batch instead. Otherwise omit only the incompatible optional tag.
     if(optional) {
-      frame.hudIssues|=issues; ++State().hudRejected;
+      frame.hudIssues|=issues; frame.hudFiltered|=bit; ++State().hudRejected;
       if(o.hudLogBudget<8) { ++o.hudLogBudget; xess_mod::WriteLog("native_hud_filtered","\"id\":"+std::to_string(id)+",\"type\":"+std::to_string(type)+",\"issues\":"+std::to_string(issues)); }
     }
     // A game pausing FG removes its tags every time, and a HUD tag in another
@@ -91,15 +163,17 @@ void SubmitResource(Output& o,Frame& frame,uint32_t id,const Resource& t) {
   // bits fails Close(); executing that list removes the device. Witcher 3
   // tags depth as 0x80000000 (RESERVED_INTERNAL_8000) for whole FG periods
   // after some graphics-menu changes while the resource is still COPY_DEST,
-  // the state it declares for it otherwise. Reuse the last valid state this
-  // output accepted for the same resource; without one, reject the tag.
+  // the state it declares for it otherwise. Reuse the last valid state
+  // accepted for the same resource; without one, reject the tag. The state is
+  // kept as private data on the resource itself, so it dies with it: a
+  // resource recreated at a released address starts with none (1.5.6).
   constexpr uint32_t publicStates=0x3FFFu|0xF0000u|0x200000u|0x400000u|0x800000u|0x1000000u;
   auto state=t.state;
   const bool reserved=state&~publicStates;
   if(reserved) {
-    const auto known=o.taggedStates.find(resource.Get());
-    const bool substituted=known!=o.taggedStates.end();
-    if(substituted) state=known->second;
+    uint32_t known{}; UINT size=sizeof(known);
+    const bool substituted=SUCCEEDED(resource->GetPrivateData(kTaggedState,&size,&known)) && size==sizeof(known);
+    if(substituted) state=known;
     ++State().reservedStates;
     if(o.reservedStateLogBudget<8) {
       ++o.reservedStateLogBudget;
@@ -125,11 +199,21 @@ void SubmitResource(Output& o,Frame& frame,uint32_t id,const Resource& t) {
   data.resourceSize={t.extent.width?t.extent.width:uint32_t(desc.Width),t.extent.height?t.extent.height:desc.Height};
   if(uint64_t(data.resourceBase.x)+data.resourceSize.x>desc.Width
       || uint64_t(data.resourceBase.y)+data.resourceSize.y>desc.Height) { rejection="extent"; reject(HudExtent); return; }
+  bool copyFormat{},encodeScrgb{};
   if(optional) {
     // XeFG requires HUD-less and backbuffer resolutions to match (plan 4.3).
     const auto& area=o.backbufferRegion;
-    const auto issues=CheckHudInput(desc,o.format,area.width?area.width:o.width,area.width?area.height:o.height,
+    auto issues=CheckHudInput(desc,o.format,area.width?area.width:o.width,area.width?area.height:o.height,
         data.resourceBase.x,data.resourceBase.y,data.resourceSize.x,data.resourceSize.y);
+    // 1.5.7: the same bits under another type are tagged through a copy, and
+    // a full-size FP16 HUD-less of an scRGB game is encoded to HDR10 with the
+    // backbuffer's own conversion (both hold the game's linear scRGB).
+    if(issues==HudFormat && CopyableHudFormat(desc.Format,o.format)) { issues=0; copyFormat=true; }
+    else if(issues==HudFormat && type==XEFG_SWAPCHAIN_RES_HUDLESS_COLOR && o.scrgb && o.scrgbEncoder
+        && (desc.Format==DXGI_FORMAT_R16G16B16A16_FLOAT || desc.Format==DXGI_FORMAT_R16G16B16A16_TYPELESS)
+        && !data.resourceBase.x && !data.resourceBase.y && data.resourceSize.x==desc.Width && data.resourceSize.y==desc.Height) {
+      issues=0; copyFormat=encodeScrgb=true;
+    }
     if(issues) { rejection="optional_hud"; reject(issues); return; }
   }
   const unsigned hudSlot=type==XEFG_SWAPCHAIN_RES_UI?1:0;
@@ -174,6 +258,7 @@ void SubmitResource(Output& o,Frame& frame,uint32_t id,const Resource& t) {
   }
   const auto code=[&] {
     if(type==XEFG_SWAPCHAIN_RES_MOTION_VECTOR && o.dejitter) return StageMotion(o,frame,list.Get(),resource.Get(),data,id);
+    if(copyFormat) return StageHudCopy(o,frame,list.Get(),resource.Get(),data,id,hudSlot,encodeScrgb);
     RuntimeCall trace("xefg_tag_resource",o.diagnosticOutput,id);
     const auto r=State().api.xefgSwapChainD3D12TagFrameResource(o.fg,list.Get(),id,&data);trace.Result(r);return r;
   }();
@@ -187,16 +272,14 @@ void SubmitResource(Output& o,Frame& frame,uint32_t id,const Resource& t) {
     frame.resources|=bit;
     // Only the first tag of a type is used; a later duplicate may declare
     // another state for the same resource and must not replace this one.
-    if(!reserved) {
-      if(o.taggedStates.size()>=64) o.taggedStates.clear();
-      o.taggedStates[resource.Get()]=state;
-    }
+    if(!reserved) resource->SetPrivateData(kTaggedState,sizeof(state),&state);
     if(optional) { frame.hudTags[hudSlot]=hudIdentity; frame.hudAllocations[hudSlot]=std::move(allocation); }
+    if(copyFormat) frame.hudCopied|=bit;
     if(optional && !(o.hudKindsSeen&bit)) {
       o.hudKindsSeen|=bit;
       xess_mod::WriteLog("native_hud_input","\"type\":"+std::to_string(type)+",\"format\":"+std::to_string(desc.Format)
           +",\"output_format\":"+std::to_string(o.format)+",\"width\":"+std::to_string(data.resourceSize.x)
-          +",\"height\":"+std::to_string(data.resourceSize.y)+",\"encoding_verified\":false");
+          +",\"height\":"+std::to_string(data.resourceSize.y)+",\"copied\":"+(copyFormat?"true":"false")+",\"encoding_verified\":false");
     }
     if(type==XEFG_SWAPCHAIN_RES_MOTION_VECTOR) {
       frame.motionWidth=data.resourceSize.x; frame.motionHeight=data.resourceSize.y;

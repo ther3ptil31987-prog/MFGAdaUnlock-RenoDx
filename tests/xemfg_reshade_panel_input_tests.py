@@ -1,5 +1,6 @@
 """Foreground keyboard check confined to an isolated test process/window."""
 import argparse,configparser,datetime,hashlib,json,shutil,subprocess
+import evidence
 from pathlib import Path
 ap=argparse.ArgumentParser()
 for name in ('directory','addon','exe','reshade','config-reference','sdk-fg','sdk-ll'):
@@ -35,4 +36,4 @@ result={'exit':r.returncode,'passed':passed,'stdout':r.stdout,'stderr':r.stderr,
     'runtime_pair_rejected':rejected,'expected_pair':args.expect_pair,'manual_runtime_verified':args.expect_pair=='accepted' and 'manual_runtime=1' in r.stdout,'gameplay_validated':False}
 (d/'result.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
 print(r.stdout,end='');print(r.stderr,end='');print('Evidence:',d)
-raise SystemExit(0 if passed else 1)
+evidence.finish(d,passed)

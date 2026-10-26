@@ -82,6 +82,8 @@ inline std::atomic<unsigned int> g_fixed_override_status{
     static_cast<unsigned int>(forcepolicy::FixedOverrideStatus::kNative)};
 inline std::atomic_bool g_declined_no_pacing{false};
 inline std::atomic<unsigned int> g_force_failed_for{0};
+// Forced count refused twice; not retried until a reset boundary (1.5.6).
+inline forcepolicy::RefusalMemory g_override_refusal;
 inline std::atomic<unsigned int> g_last_result{0};
 inline std::atomic_bool g_native_request_seen{false};
 inline std::atomic<unsigned int> g_native_requested{0};
@@ -1933,6 +1935,7 @@ inline sl::Result HookedSetOptions(const sl::ViewportHandle& viewport,
     // transient or provider-version rejection.
     g_dynamic_runtime_declined.store(false, std::memory_order_release);
     g_dynamic_applied.store(false, std::memory_order_relaxed);
+    g_override_refusal.Clear();
   }
   const bool dynamic_ready =
       game_enabled && g_dynamic_mfg_enabled.load(std::memory_order_relaxed) &&
@@ -2116,6 +2119,24 @@ inline sl::Result HookedSetOptions(const sl::ViewportHandle& viewport,
     }
   }
 
+  // The runtime refused this count twice since the last reset boundary (game
+  // FG off/on, multiplier change, new swapchain): forward the game's own
+  // request once instead of repeating the refused count and its retry.
+  if (g_override_refusal.Refused(desired)) {
+    const sl::Result fallback = CallSetOptions(viewport, options);
+    g_last_forced.store(0, std::memory_order_relaxed);
+    if (fallback == sl::Result::eOk) {
+      g_last_effective_generated.store(requested, std::memory_order_relaxed);
+      g_effective_request_seen.store(true, std::memory_order_release);
+    } else {
+      g_effective_request_seen.store(false, std::memory_order_release);
+    }
+    g_fixed_override_status.store(
+        static_cast<unsigned int>(forcepolicy::FixedOverrideStatus::kRejected),
+        std::memory_order_release);
+    return fallback;
+  }
+
   // Forward through a local upgraded structure when HDR recomposition is
   // active. The native fallback temporarily changes only the requested count
   // and restores the game-owned structure before returning.
@@ -2163,6 +2184,7 @@ inline sl::Result HookedSetOptions(const sl::ViewportHandle& viewport,
     }
     g_last_result.store(static_cast<unsigned int>(retry), std::memory_order_relaxed);
     g_last_forced.store(0, std::memory_order_relaxed);
+    g_override_refusal.Record(desired);
     const sl::Result fallback = CallSetOptions(viewport, options);
     if (fallback == sl::Result::eOk) {
       g_last_effective_generated.store(requested, std::memory_order_relaxed);
@@ -2497,6 +2519,7 @@ inline void NotifyHdrState(bool hdr) {
 }
 
 inline void NotifySwapchainTransition() {
+  g_override_refusal.Clear();
   g_latency_guard_epoch.fetch_add(1, std::memory_order_acq_rel);
   if (g_latency_guard_auto_cap_ready.exchange(false,
                                                std::memory_order_acq_rel)) {
@@ -2562,6 +2585,7 @@ inline void NotifyFixedMultiplierChanged(unsigned int) {
   g_effective_request_seen.store(false, std::memory_order_release);
   g_declined_no_pacing.store(false, std::memory_order_relaxed);
   g_force_failed_for.store(0, std::memory_order_relaxed);
+  g_override_refusal.Clear();
   g_latency_guard_multiplier_override.store(0, std::memory_order_release);
   g_latency_guard_epoch.fetch_add(1, std::memory_order_acq_rel);
   const bool source_cap_should_apply = internal::UserSourceCapRequested();

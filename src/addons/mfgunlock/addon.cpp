@@ -137,6 +137,8 @@
 #include "./midpoint.hpp"
 #include "./nvapi_status.hpp"
 #include "./ngx_hook.hpp"
+#include "./ngx_param_vtable.hpp"
+#include "./module_scan.hpp"
 #include "./cuda_temporal.hpp"
 #include "./quality_build_policy.hpp"
 #include "./pacing_policy.hpp"
@@ -148,9 +150,6 @@ namespace {
 
 constexpr const char* kConfigSection = "RenoDX.MFGUnlock";
 constexpr const char* kParamName = "DLSSG.MultiFrameCountMax";
-
-// Slot 11 of NVSDK_NGX_Parameter == Get(const char*, unsigned int*).
-constexpr size_t kGetUInt32Slot = 11;
 
 constexpr unsigned int kMinCount = 2;
 constexpr unsigned int kMaxCount = 5;
@@ -379,23 +378,20 @@ const char* RenderApiName(DetectedRenderApi api) {
 // make sense of it. Harmless where the real plugin is enumerated first;
 // fatal where it is not loaded at all.
 
-std::atomic_bool g_vtable_patched{false};
+mfgunlock::ngxparam::VTablePatch g_vtable_patch;
 std::atomic_bool g_override_reported{false};
 std::atomic<unsigned int> g_override_hits{0};
 std::atomic<unsigned int> g_runtime_reported_value{0};
 
-void** g_patched_slot = nullptr;
-void* g_original_slot_value = nullptr;
-
 using GetUInt32Fn = NVSDK_NGX_Result (*)(void* self, const char* name, unsigned int* out);
-GetUInt32Fn g_real_get_uint32 = nullptr;
 
 bool NgxFailed(NVSDK_NGX_Result result) {
   return (static_cast<unsigned int>(result) & 0xfff00000u) == 0xbad00000u;
 }
 
 NVSDK_NGX_Result HookedGetUInt32(void* self, const char* name, unsigned int* out) {
-  NVSDK_NGX_Result result = g_real_get_uint32(self, name, out);
+  const auto real = reinterpret_cast<GetUInt32Fn>(g_vtable_patch.original.load(std::memory_order_acquire));
+  NVSDK_NGX_Result result = real(self, name, out);
 
   if (!g_enabled.load(std::memory_order_relaxed)) return result;
   if (name == nullptr || out == nullptr) return result;
@@ -428,47 +424,30 @@ NVSDK_NGX_Result HookedGetUInt32(void* self, const char* name, unsigned int* out
 }
 
 bool PatchParameterVTable(NVSDK_NGX_Parameter* params) {
-  if (params == nullptr) return false;
-  if (g_vtable_patched.load(std::memory_order_acquire)) return true;
-
-  auto** vtable = *reinterpret_cast<void***>(params);
-  if (vtable == nullptr) return false;
-  void** slot = &vtable[kGetUInt32Slot];
-
-  DWORD old_protect = 0;
-  if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old_protect) == 0) {
+  using mfgunlock::ngxparam::PatchResult;
+  const auto result = mfgunlock::ngxparam::Patch(
+      g_vtable_patch, params, reinterpret_cast<void*>(&HookedGetUInt32));
+  if (result == PatchResult::kProtectFailed) {
     reshade::log::message(reshade::log::level::error,
                           "mfgunlock: could not make the NGX parameter vtable writable.");
     return false;
   }
-
-  g_original_slot_value = *slot;
-  g_real_get_uint32 = reinterpret_cast<GetUInt32Fn>(g_original_slot_value);
-  *slot = reinterpret_cast<void*>(&HookedGetUInt32);
-  g_patched_slot = slot;
-
-  DWORD ignored = 0;
-  VirtualProtect(slot, sizeof(void*), old_protect, &ignored);
-
-  g_vtable_patched.store(true, std::memory_order_release);
-  reshade::log::message(
-      reshade::log::level::info,
-      "mfgunlock: NGX parameter vtable patched; multi-frame capability override armed.");
-  return true;
-}
-
-void RestoreParameterVTable() {
-  if (!g_vtable_patched.load(std::memory_order_acquire)) return;
-  if (g_patched_slot == nullptr || g_original_slot_value == nullptr) return;
-
-  DWORD old_protect = 0;
-  if (VirtualProtect(g_patched_slot, sizeof(void*), PAGE_READWRITE, &old_protect) != 0) {
-    *g_patched_slot = g_original_slot_value;
-    DWORD ignored = 0;
-    VirtualProtect(g_patched_slot, sizeof(void*), old_protect, &ignored);
+  if (result == PatchResult::kPatched) {
+    reshade::log::message(
+        reshade::log::level::info,
+        "mfgunlock: NGX parameter vtable patched; multi-frame capability override armed.");
   }
-  g_vtable_patched.store(false, std::memory_order_release);
+  if (result == PatchResult::kForeignHook) {
+    static std::atomic_bool warned{false};
+    if (!warned.exchange(true, std::memory_order_relaxed))
+      reshade::log::message(
+          reshade::log::level::warning,
+          "mfgunlock: NGX parameter vtable already points to this hook without a recorded original; left unchanged.");
+  }
+  return result == PatchResult::kPatched || result == PatchResult::kAlreadyPatched;
 }
+
+void RestoreParameterVTable() { mfgunlock::ngxparam::Restore(g_vtable_patch); }
 
 // ---------------------------------------------------------------- NGX entries
 
@@ -568,7 +547,7 @@ int g_bootstrap_attempts = 0;
 constexpr int kMaxBootstrapAttempts = 2000;
 
 void TryBootstrapVTable() {
-  if (g_vtable_patched.load(std::memory_order_acquire)) return;
+  if (g_vtable_patch.patched.load(std::memory_order_acquire)) return;
   if (!g_hooked.load(std::memory_order_acquire)) return;
   if (g_real_allocate_parameters == nullptr) return;
   if (g_bootstrap_attempts >= kMaxBootstrapAttempts) return;
@@ -652,24 +631,21 @@ SRWLOCK g_provider_maintenance_lock = SRWLOCK_INIT;
 std::atomic_bool g_provider_rescan_requested{false};
 
 bool ModuleContains(HMODULE mod, const char* needle, size_t needle_len) {
-  auto* base = reinterpret_cast<unsigned char*>(mod);
-  const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-  if (IsBadReadPtr(base, sizeof(IMAGE_DOS_HEADER)) != 0) return false;
-  if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
-  const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
-  if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
-  if (nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return false;
+  return mfgunlock::modulescan::ImageContains(mod, needle, needle_len);
+}
 
-  const auto* section = IMAGE_FIRST_SECTION(nt);
-  for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section) {
-    if ((section->Characteristics & IMAGE_SCN_MEM_READ) == 0) continue;
-    unsigned char* start = base + section->VirtualAddress;
-    const size_t size = section->Misc.VirtualSize;
-    if (size < needle_len) continue;
-    for (size_t off = 0; off + needle_len <= size; ++off) {
-      if (std::memcmp(start + off, needle, needle_len) == 0) return true;
-    }
-  }
+// Modules searched for a marker that do not contain it. A module that does
+// contain it is retried, since its session may fail only transiently. Updated
+// under g_streamline_maintenance_lock.
+mfgunlock::modulescan::SearchedImages g_ceiling_searched, g_flip_searched;
+
+// True when the module has not been searched before and contains the marker.
+bool UnsearchedModuleContains(mfgunlock::modulescan::SearchedImages& searched, HMODULE mod,
+                              const char* needle, size_t needle_len) {
+  mfgunlock::modulescan::ImageIdentity identity;
+  if (!mfgunlock::modulescan::ReadIdentity(mod, identity) || searched.Contains(identity)) return false;
+  if (ModuleContains(mod, needle, needle_len)) return true;
+  searched.Add(identity);
   return false;
 }
 
@@ -1535,7 +1511,8 @@ void TryPatchFrameCountCeiling() {
         if (Module32FirstW(snap, &me)) {
           do {
             if (me.hModule == g_self_module ||
-                !ModuleContains(me.hModule, kFlipMarker, sizeof(kFlipMarker) - 1)) {
+                !UnsearchedModuleContains(g_ceiling_searched, me.hModule, kFlipMarker,
+                                          sizeof(kFlipMarker) - 1)) {
               continue;
             }
             PatchFrameCountCeiling(me.hModule);
@@ -1559,7 +1536,10 @@ bool TryPatchFlipMeteringInModule(HMODULE mod) {
   const auto* profile = mfgunlock::binarypatch::ProfileFor(mod, 1);
   if (!profile) return false;
   ++g_flip_meter_attempts;
+  // No module lease (the module is unloading or unidentified): leave it alone,
+  // as the architecture gate does.
   const auto* session = mfgunlock::modulesession::Acquire(mod);
+  if (session == nullptr) return false;
   CodeTransaction transaction{mod, session->generation, {}};
   if (!mfgunlock::binarypatch::Plan(mod, *profile, transaction.writes) ||
       !mfgunlock::binarypatch::Apply(mod, transaction.writes)) {
@@ -1591,6 +1571,10 @@ void TryPatchFlipMeteringUnlocked() {
   if (Module32FirstW(snap, &me)) {
     do {
       if (me.hModule == g_self_module) continue;
+      // Only the DLSS-G plugin carries the marker. Profiles validate a module
+      // by hashing its whole code, so unrelated modules never reach them.
+      if (!UnsearchedModuleContains(g_flip_searched, me.hModule, kFlipMarker, sizeof(kFlipMarker) - 1))
+        continue;
       if (TryPatchFlipMeteringInModule(me.hModule)) break;
     } while (Module32NextW(snap, &me));
   }
@@ -2900,6 +2884,29 @@ void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool /*resize*/) {
   }
 }
 
+// The synchronous maintenance on device and queue creation, timed (1.5.7).
+// It stays synchronous: the worker starts only at the first Present, and this
+// is one of the chances to commit the gates before NGX queries the provider.
+// The first passes report how long the game's thread waited for it.
+void RunCreationMaintenance(const char* event) {
+  static std::atomic<unsigned int> reported{0};
+  LARGE_INTEGER start{}, end{}, frequency{};
+  QueryPerformanceCounter(&start);
+  RunProviderMaintenance();
+  TryPatchFrameCountCeiling();
+  if (g_force_flip_meter_off.load(std::memory_order_relaxed)) TryPatchFlipMetering();
+  mfgunlock::framecount::TryInstall();
+  mfgunlock::loadhook::TryInstall();
+  QueryPerformanceCounter(&end);
+  QueryPerformanceFrequency(&frequency);
+  if (reported.fetch_add(1, std::memory_order_relaxed) < 6 && frequency.QuadPart > 0) {
+    std::stringstream s;
+    s << "mfgunlock: provider maintenance on " << event << " took " << std::fixed << std::setprecision(2)
+      << double(end.QuadPart - start.QuadPart) * 1000.0 / double(frequency.QuadPart) << " ms.";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+  }
+}
+
 // These remain immediate, finite retries during graphics-device initialization. They do
 // not start a thread and therefore cannot keep a temporary addon instance alive.
 void OnInitDevice(reshade::api::device* device) {
@@ -2944,19 +2951,11 @@ void OnInitDevice(reshade::api::device* device) {
     }
   }
 
-  RunProviderMaintenance();
-  TryPatchFrameCountCeiling();
-  if (g_force_flip_meter_off.load(std::memory_order_relaxed)) TryPatchFlipMetering();
-  mfgunlock::framecount::TryInstall();
-  mfgunlock::loadhook::TryInstall();
+  RunCreationMaintenance("device creation");
 }
 
 void OnInitCommandQueue(reshade::api::command_queue* /*queue*/) {
-  RunProviderMaintenance();
-  TryPatchFrameCountCeiling();
-  if (g_force_flip_meter_off.load(std::memory_order_relaxed)) TryPatchFlipMetering();
-  mfgunlock::framecount::TryInstall();
-  mfgunlock::loadhook::TryInstall();
+  RunCreationMaintenance("command queue creation");
 #if !defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
   if (g_render_api.load(std::memory_order_relaxed) ==
       DetectedRenderApi::kD3D12)
@@ -7536,7 +7535,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
 
   }
 
-  mfgunlock::ui::Footer("MFG Unlock | 1.5.5");
+  mfgunlock::ui::Footer("MFG Unlock | 1.5.7");
   ImGui::TextDisabled(
       "Changes marked for restart keep the current session unchanged.");
 }
@@ -7962,7 +7961,7 @@ void LoadConfig() {
 extern "C" __declspec(dllexport) constexpr const char* NAME = "MFG Unlock";
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
-    "MFG Unlock 1.5.5 - DLSS-G and XeMFG backends";
+    "MFG Unlock 1.5.7 - DLSS-G and XeMFG backends";
 #elif defined(MFGUNLOCK_DUAL_BACKEND)
     "Dual Backend Preview X1 - official 1.4.5 base; DLSS-G and XeMFG via OptiScaler; gameplay validation pending";
 #elif defined(MFGUNLOCK_RELEASE_1_4_5)

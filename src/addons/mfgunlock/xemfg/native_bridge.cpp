@@ -240,8 +240,10 @@ HRESULT CreateOutput(IDXGIFactory2* factory,IUnknown* source,HWND hwnd,
   if(a.xefgSwapChainD3D12CreateContext(o->device.Get(),&o->fg)!=0) return E_NOINTERFACE;
   a.xefgSwapChainSetLoggingCallback(o->fg,TraceEnabled()?XEFG_SWAPCHAIN_LOGGING_LEVEL_DEBUG:XEFG_SWAPCHAIN_LOGGING_LEVEL_WARNING,
       [](const char* message,xefg_swapchain_logging_level_t level,void*) {
-        static std::atomic<uint32_t> messages{0};
-        if(messages.fetch_add(1)<100) xess_mod::WriteLog("native_sdk_log","\"level\":"+std::to_string(level)+",\"message\":\""+escape(message?message:"")+"\"");
+        static PatternBudget budget(48);
+        if(const auto count=AdmitSdkMessage(budget,message))
+          xess_mod::WriteLog("native_sdk_log","\"level\":"+std::to_string(level)+",\"message\":\""+escape(message?message:"")
+              +"\",\"occurrence\":"+std::to_string(count));
       },nullptr);
   const bool nativeReflex=s.latencyOutput==LatencyOutput::Reflex;
   if(nativeReflex && !reflex_profile::Available(a.fgModule)) {

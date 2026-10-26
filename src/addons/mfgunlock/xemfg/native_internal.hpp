@@ -11,6 +11,8 @@
 #include "native_session.hpp"
 #include "native_dejitter.hpp"
 #include "native_scrgb.hpp"
+#include "native_hud_copy.hpp"
+#include "display_cap.hpp"
 #include "vendor/port/port_support.h"
 #include "vendor/overlay_native.h"
 #include <xefg_swapchain_d3d12.h>
@@ -20,7 +22,6 @@
 #include <sl_reflex.h>
 #include <sl_pcl.h>
 #include <atomic>
-#include <unordered_map>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -66,10 +67,22 @@ struct Frame {
   // Plan 4.3: the game's kBufferTypeBackbuffer extent; empty means the whole buffer.
   DejitterRegion backbufferRegion{};
   uint32_t hudIssues{};
+  // 1.5.7: optional HUD kinds (1u<<xefg type) filtered or tagged through a copy.
+  uint32_t hudFiltered{}, hudCopied{};
   HudTagIdentity hudTags[2]{};
   // Pin the allocation identity until frame retirement, never infer its
   // generation from a reused address. Contents still obey the SDK lifecycle.
   ComPtr<IUnknown> hudAllocations[2];
+  // 1.5.7: HUD inputs valid until Present whose type differs from the output
+  // format (CopyableHudFormat). Copied and tagged on the presentation queue
+  // at the source Present. Index 0 HUD-less, 1 UI.
+  struct PendingHud {
+    ComPtr<ID3D12Resource> source;
+    D3D12_RESOURCE_STATES state{};
+    DejitterRegion region{};
+    xefg_swapchain_resource_type_t type{};
+    bool encode{}; // FP16 scRGB HUD-less encoded to HDR10 like the backbuffer
+  } pendingHud[2];
   uint32_t constantIssues{};
   LatencyOutput latencyOutput{LatencyOutput::XeLL};
   xefg_swapchain_frame_constant_data_t data{};
@@ -127,13 +140,17 @@ struct Output {
   bool invert{}, jitter{}, enabled{}, compatible{true},retired{};
   // Present when the game's vectors are jittered; XeFG then runs unjittered.
   std::unique_ptr<MotionDejitter> dejitter;
+  // 1.5.7: owned copies of HUD inputs in the output format; created on first use.
+  std::unique_ptr<HudCopy> hudCopy;
+  uint32_t hudCopyLogBudget{};
+  uint64_t refreshTick{};
+  bool displayCapLogged{};
+  int64_t lastSourcePresentQpc{};
   DejitterVector lastJitter{};
   uint32_t lastJitterId{}, dejitterLogBudget{};
   uint32_t backbufferLogBudget{};
   bool viewportReset{}; // the selected viewport changed; the next admitted frame resets history
   uint32_t duplicateTagLogBudget{};
-  // Last valid state accepted per tagged resource, for tags with reserved bits.
-  std::unordered_map<ID3D12Resource*,uint32_t> taggedStates;
   uint32_t reservedStateLogBudget{};
   DejitterRegion backbufferRegion{}; // last region the game declared; HUD inputs match it
   // Plan 4.4: the game's FP16 scRGB view over the Intel HDR10 proxy. The game
@@ -181,10 +198,14 @@ struct Bridge {
   std::atomic<uint32_t> gameReflexMode{0};
   // Sync interval of the game's last Present, before ForceVSyncOff; UINT32_MAX until one is seen.
   std::atomic<uint32_t> gameSyncInterval{UINT32_MAX};
+  // 1.5.7: refresh of the output's display (mHz, refreshed every 2 s) and the
+  // smoothed interval between source Presents, for the display cap and notice.
+  std::atomic<uint32_t> displayRefreshMilliHz{0}, sourceIntervalUs{0};
+  std::atomic<bool> displayCap{false}; // [XeFG] DisplayCap, set by the controls
   // Totals for native_summary; the per-event logs keep only their first entries.
   std::atomic<uint64_t> tagsRejected{0},tagsRemoved{0},reservedStates{0};
   std::atomic<uint32_t> summaryIntervalMs{10000};
-  std::atomic<uint32_t> lastHudIssues{0},lastHudInputs{0};
+  std::atomic<uint32_t> lastHudIssues{0},lastHudInputs{0},lastHudFiltered{0},lastHudCopied{0};
   std::atomic<uint64_t> hudRejected{0};
   bool lowLatency{true}, invert{true}, jitter{false};
   // Plan 3.3: conventions set explicitly in the INI are never relearned.
@@ -194,6 +215,12 @@ struct Bridge {
   std::atomic<uint64_t> staleInputs{0},externalResolutions{0};
 };
 Bridge& State();
+// 1.5.7: minimum source interval of the display cap for the XeLL output, or 0.
+inline uint32_t DisplayCapIntervalForOutput() noexcept {
+  auto& s=State();
+  if(!s.displayCap.load(std::memory_order_relaxed) || s.latencyOutput.load()!=LatencyOutput::XeLL) return 0;
+  return DisplayCapIntervalUs(s.displayRefreshMilliHz.load(),s.multiplier.load());
+}
 inline Frame* FindFrame(Output& o,uint32_t id) {
   return o.frames.Acquire(id);
 }

@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 namespace mfgunlock::forcepolicy {
@@ -62,5 +63,30 @@ inline constexpr RequestDecision Resolve(uint32_t game_generated_frames,
   }
   return decision;
 }
+
+// A generated-frame count the runtime refused twice (1.5.6). Games call
+// slDLSSGSetOptions every frame; without this memory every call repeats the
+// refused count and its retry before forwarding the game's own request, three
+// Streamline calls instead of one. The refusal stands until a boundary where
+// the runtime's answer can change: the game turns frame generation off and on,
+// the user changes the multiplier, or the swapchain is recreated. Zero means
+// none: an override always generates at least one frame.
+class RefusalMemory {
+ public:
+  [[nodiscard]] bool Refused(uint32_t generated_frames) const {
+    const uint32_t refused = refused_.load(std::memory_order_acquire);
+    return refused != 0 && refused == generated_frames;
+  }
+  void Record(uint32_t generated_frames) {
+    refused_.store(generated_frames, std::memory_order_release);
+  }
+  void Clear() { refused_.store(0, std::memory_order_release); }
+  [[nodiscard]] uint32_t Value() const {
+    return refused_.load(std::memory_order_acquire);
+  }
+
+ private:
+  std::atomic<uint32_t> refused_{0};
+};
 
 }  // namespace mfgunlock::forcepolicy
