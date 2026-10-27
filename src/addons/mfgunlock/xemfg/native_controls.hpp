@@ -14,6 +14,9 @@ struct ControlSettings {
   bool forceVSyncOff{};
   // 1.5.7: limit the source rate to the display refresh / multiplier (XeLL output).
   bool displayCap{};
+  // 1.5.8: an exclusive fullscreen request on the XeMFG output is served as
+  // borderless (off by default).
+  bool exclusiveAsBorderless{};
 };
 struct ControlStatus {
   uint32_t version{5};
@@ -48,11 +51,17 @@ struct ControlStatus {
   // 1.5.7: display refresh (mHz, 0 unknown), smoothed source interval and the
   // display cap's minimum source interval (0 when off or unavailable).
   uint32_t displayRefreshMilliHz{}, sourceIntervalUs{}, displayCapIntervalUs{};
+  // 1.5.8: the game's exclusive fullscreen is currently served as borderless;
+  // exclusive requests served so far and Alt+Enter presses held back.
+  bool exclusiveServed{};
+  uint64_t exclusiveRequests{}, altEnterBlocked{};
 };
 void LoadControls();
 ControlSettings ControlsSettings();
 // Lock-free read of ControlSettings::forceVSyncOff for the Present path.
 bool ForceVSyncOff() noexcept;
+// Lock-free read of ControlSettings::exclusiveAsBorderless for swapchain calls.
+bool ExclusiveAsBorderless() noexcept;
 bool ConfigureControls(const ControlSettings& settings);
 ControlStatus ControlsSnapshot();
 enum class PanelPage { General, Quality, Latency, Diagnostics };

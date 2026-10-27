@@ -296,6 +296,7 @@ artifact on a HUD/UI element, switch back to **Native**.
 | Kingdom Come: Deliverance II | Working with the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) |
 | Red Dead Redemption 2 | Working with the DLSS-SR input (user report; the game has no native frame generation): turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) |
 | Elden Ring | Working with the DLSS-SR input and the EldenRingDLSS addon, offline with Easy Anti-Cheat off; turn on **Force game VSync off** in the panel for correct frame pacing (see [Elden Ring](#elden-ring)) |
+| Metro Exodus Enhanced Edition | Working with the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) |
 
 These games were tested with the XeMFG backend of this fork. This is not a
 claim of universal compatibility. The XeMFG backend needs a game that
@@ -306,7 +307,10 @@ provides frame-generation inputs (see [Supported inputs](#supported-xemfg-inputs
 > **Windowed Fullscreen** in the game's display settings. In exclusive
 > fullscreen the game runs normally, but XeMFG keeps frame generation off and
 > the panel reports *"XeMFG needs a windowed output"*. Many Unreal Engine games,
-> such as S.T.A.L.K.E.R. 2, default to exclusive fullscreen.
+> such as S.T.A.L.K.E.R. 2, default to exclusive fullscreen. For games without
+> a borderless mode, turn on **Exclusive fullscreen as borderless** in the
+> panel (**General → Smoothness and display**): XeMFG then serves the game's
+> exclusive fullscreen as a borderless window covering the monitor.
 
 > [!IMPORTANT]
 > **Capcom / RE Engine games (Resident Evil Requiem, Monster Hunter Wilds,
@@ -412,8 +416,9 @@ turn frame generation on or off.
 - GeForce **RTX 20, 30, 40 or 50-series**, D3D12.
 - ReShade with addon support (or a RenoDX mod for the game).
 - Windowed or borderless display. Exclusive fullscreen is not supported with
-  XeMFG; the game's display mode is kept unchanged and frame generation stays
-  off in that mode.
+  XeMFG; by default the game's display mode is kept unchanged and frame
+  generation stays off in that mode. The optional **Exclusive fullscreen as
+  borderless** setting serves it as borderless instead.
 - Intel's `libxess_fg.dll` and `libxell.dll` beside the game executable. The
   panel installs the supported versions for you (step 4 below). That is the
   folder of the running `.exe`, not the installation root: in Unreal Engine
@@ -623,7 +628,10 @@ file. If it still fails, send that log together with the `runtime_files` and
   needs a windowed output"*, the game is in exclusive fullscreen. In Unreal
   Engine games the setting is usually called *Fullscreen Mode*; with the game
   closed, `FullscreenMode=1` in the game's `GameUserSettings.ini` also selects
-  windowed fullscreen.
+  windowed fullscreen. If the game has no borderless mode, turn on **Exclusive
+  fullscreen as borderless** in the panel and switch the game's display mode
+  once, or restart the game. The monitor's resolution and refresh rate are not
+  changed in that mode; a lower game resolution is scaled to the screen.
 - Check **General**: it states the current reason, such as waiting for the
   game to enable frame generation, missing inputs, or unsupported format.
 - If the game offers both DLSS and FSR frame generation and the panel never

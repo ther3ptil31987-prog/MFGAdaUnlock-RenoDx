@@ -124,7 +124,24 @@ public:
     }
     return chain->GetBuffer(a,b,c);
   }
+  // 1.5.8: XeFG does not support exclusive fullscreen. With the option on, a
+  // request for it is served as borderless: the Intel chain stays windowed,
+  // the window covers the monitor, and the game is told it is in fullscreen.
+  // Leaving restores the window. A chain already exclusive (option turned on
+  // later) keeps the original path until the game leaves it.
+  bool ServeExclusive(BOOL fullscreen,IDXGIOutput* target) {
+    if(!owner->exclusiveServed && (!fullscreen || !ExclusiveAsBorderless())) return false;
+    if(ReadFullscreen(chain.Get()).exclusive) return false;
+    { std::lock_guard lock(owner->io); owner->exclusiveTarget=fullscreen?target:nullptr; }
+    const bool was=owner->exclusiveServed.exchange(fullscreen!=FALSE);
+    if(fullscreen && !was) ++State().exclusiveRequests;
+    if(owner->window) owner->window->Request(fullscreen!=FALSE);
+    xess_mod::WriteLog("native_exclusive_as_borderless","\"output\":"+std::to_string(owner->diagnosticOutput)
+        +",\"fullscreen\":"+(fullscreen?"true":"false")+",\"window\":"+(owner->window?"true":"false"));
+    return true;
+  }
   HRESULT STDMETHODCALLTYPE SetFullscreenState(BOOL a,IDXGIOutput* b) override {
+    if(ServeExclusive(a,b)) return S_OK;
     const auto hr=chain->SetFullscreenState(a,b);
     if(SUCCEEDED(hr)) {
       const auto display=ReadFullscreen(chain.Get());
@@ -138,14 +155,28 @@ public:
     }
     return hr;
   }
-  HRESULT STDMETHODCALLTYPE GetFullscreenState(BOOL* a,IDXGIOutput** b) override { return chain->GetFullscreenState(a,b); }
+  HRESULT STDMETHODCALLTYPE GetFullscreenState(BOOL* a,IDXGIOutput** b) override {
+    if(!owner->exclusiveServed) return chain->GetFullscreenState(a,b);
+    if(a) *a=TRUE;
+    if(b) {
+      { std::lock_guard lock(owner->io); *b=owner->exclusiveTarget.Get(); }
+      if(*b) (*b)->AddRef();
+      else if(FAILED(chain->GetContainingOutput(b))) *b=nullptr;
+    }
+    return S_OK;
+  }
   HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SWAP_CHAIN_DESC* a) override {
-    const auto hr=chain->GetDesc(a); if(SUCCEEDED(hr) && a && owner->scrgb) a->BufferDesc.Format=kScrgbFormat; return hr;
+    const auto hr=chain->GetDesc(a);
+    if(SUCCEEDED(hr) && a && owner->scrgb) a->BufferDesc.Format=kScrgbFormat;
+    if(SUCCEEDED(hr) && a && owner->exclusiveServed) a->Windowed=FALSE;
+    return hr;
   }
   HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT a,UINT b,UINT c,DXGI_FORMAT d,UINT e) override {
     auto hr=chain->ResizeBuffers(a,b,c,IntelFormat(d),e); Resized(hr); ResizedScrgb(hr,d); return hr;
   }
   HRESULT STDMETHODCALLTYPE ResizeTarget(const DXGI_MODE_DESC* a) override {
+    // Served borderless: the window keeps covering the monitor; no mode change.
+    if(owner->exclusiveServed) return a?S_OK:DXGI_ERROR_INVALID_CALL;
     return chain->ResizeTarget(a);
   }
   HRESULT STDMETHODCALLTYPE GetContainingOutput(IDXGIOutput** a) override { return chain->GetContainingOutput(a); }
@@ -154,7 +185,9 @@ public:
   HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_SWAP_CHAIN_DESC1* a) override {
     const auto hr=chain->GetDesc1(a); if(SUCCEEDED(hr) && a && owner->scrgb) a->Format=kScrgbFormat; return hr;
   }
-  HRESULT STDMETHODCALLTYPE GetFullscreenDesc(DXGI_SWAP_CHAIN_FULLSCREEN_DESC* a) override { return chain->GetFullscreenDesc(a); }
+  HRESULT STDMETHODCALLTYPE GetFullscreenDesc(DXGI_SWAP_CHAIN_FULLSCREEN_DESC* a) override {
+    const auto hr=chain->GetFullscreenDesc(a); if(SUCCEEDED(hr) && a && owner->exclusiveServed) a->Windowed=FALSE; return hr;
+  }
   HRESULT STDMETHODCALLTYPE GetHwnd(HWND* a) override { return chain->GetHwnd(a); }
   HRESULT STDMETHODCALLTYPE GetCoreWindow(REFIID a,void** b) override { return chain->GetCoreWindow(a,b); }
   HRESULT STDMETHODCALLTYPE Present1(UINT sync,UINT flags,const DXGI_PRESENT_PARAMETERS* params) override {

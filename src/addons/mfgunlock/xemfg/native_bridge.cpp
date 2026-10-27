@@ -139,6 +139,11 @@ HRESULT CreateOutput(IDXGIFactory2* factory,IUnknown* source,HWND hwnd,
     IDXGIOutput* restrictOutput,IDXGISwapChain1** result) {
   RuntimeCall createTrace("create_output");
   if(!result || !desc || !hwnd || restrictOutput) return E_NOINTERFACE;
+  // 1.5.8: with Exclusive fullscreen as borderless, a swapchain created in
+  // exclusive fullscreen becomes a windowed Intel output served as borderless.
+  DXGI_SWAP_CHAIN_FULLSCREEN_DESC windowedFull{};
+  const bool serveExclusive=full && !full->Windowed && ExclusiveAsBorderless();
+  if(serveExclusive) { windowedFull=*full; windowedFull.Windowed=TRUE; full=&windowedFull; }
   if(full && !full->Windowed) {
     Report("XeMFG is unavailable in exclusive fullscreen; the game's display mode was preserved");
     return E_NOINTERFACE;
@@ -289,6 +294,13 @@ HRESULT CreateOutput(IDXGIFactory2* factory,IUnknown* source,HWND hwnd,
   xess_mod::WriteLog("native_window_bind","\"hwnd\":"+std::to_string(uintptr_t(hwnd))
       +",\"thread\":"+std::to_string(GetCurrentThreadId())+",\"available\":"+(o->window?"true":"false")
       +",\"error\":"+std::to_string(o->windowBindError));
+  if(o->window) o->window->BlockAltEnter(ExclusiveAsBorderless());
+  if(serveExclusive) {
+    o->exclusiveServed=true; ++s.exclusiveRequests;
+    if(o->window) o->window->Request(true);
+    xess_mod::WriteLog("native_exclusive_as_borderless","\"output\":"+std::to_string(o->diagnosticOutput)
+        +",\"fullscreen\":true,\"at_creation\":true,\"window\":"+(o->window?"true":"false"));
+  }
   *result=Wrap(std::move(chain),o);
   { std::lock_guard guard(s.lock); s.output=o; s.status.output=true; s.status.xell=true; }
   if(!ffx::CreatingOutput()) ngx::OutputCreated(o);

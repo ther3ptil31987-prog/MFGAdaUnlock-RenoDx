@@ -17,6 +17,7 @@ ControlSettings settings;
 std::atomic<bool> settingsSaved{true};
 std::atomic<bool> invalidConfiguration{};
 std::atomic<bool> forceVSyncOff{};
+std::atomic<bool> exclusiveAsBorderless{};
 auto Ini() { return backend::Directory()/L"MFGAdaUnlock.ini"; }
 bool ReadChoice(const wchar_t* section,const wchar_t* key,const wchar_t* choice) {
   wchar_t value[64]{};
@@ -51,6 +52,8 @@ void LoadControls() {
   forceVSyncOff=settings.forceVSyncOff;
   settings.displayCap=ReadBool(L"XeFG",L"DisplayCap",false);
   State().displayCap=settings.displayCap;
+  settings.exclusiveAsBorderless=ReadBool(L"XeFG",L"ExclusiveAsBorderless",false);
+  exclusiveAsBorderless=settings.exclusiveAsBorderless;
   wchar_t flip[32]{}; GetPrivateProfileStringW(L"XeFG",L"XeFGFlipMetering",L"auto",flip,32,Ini().c_str());
   settings.flipMetering=_wcsicmp(flip,L"off") && _wcsicmp(flip,L"false") && wcscmp(flip,L"0");
   if(_wcsicmp(flip,L"auto") && _wcsicmp(flip,L"on") && _wcsicmp(flip,L"true") && wcscmp(flip,L"1")
@@ -74,12 +77,16 @@ bool ConfigureControls(const ControlSettings& incoming) {
     {L"XeFG",L"UIComposition",value.uiComposition?L"1":L"0"},
     {L"XeFG",L"SdkDeadlines",value.sdkDeadlines?L"1":L"0"},
     {L"XeFG",L"ForceVSyncOff",value.forceVSyncOff?L"1":L"0"},
-    {L"XeFG",L"DisplayCap",value.displayCap?L"1":L"0"}});
+    {L"XeFG",L"DisplayCap",value.displayCap?L"1":L"0"},
+    {L"XeFG",L"ExclusiveAsBorderless",value.exclusiveAsBorderless?L"1":L"0"}});
   settingsSaved=saved;
   if(!saved) return false;
   settings=value; invalidConfiguration=false; settingsGuard.unlock();
   forceVSyncOff=value.forceVSyncOff;
   State().displayCap=value.displayCap;
+  exclusiveAsBorderless=value.exclusiveAsBorderless;
+  if(old.exclusiveAsBorderless!=value.exclusiveAsBorderless)
+    if(auto output=Active(); output && output->window) output->window->BlockAltEnter(value.exclusiveAsBorderless);
   sdk_pacing::RequestQueueAhead(value.queueAhead);
   if(old.flipMetering!=value.flipMetering) sdk_pacing::RequestFlipMetering(value.flipMetering);
   if(old.sdkDeadlines!=value.sdkDeadlines) sdk_pacing::RequestSdkDeadlines(value.sdkDeadlines);
@@ -87,11 +94,13 @@ bool ConfigureControls(const ControlSettings& incoming) {
       +",\"output\":"+std::to_string(uint32_t(value.output))+",\"flip_requested\":"+(value.flipMetering?"true":"false")
       +",\"borderless_requested\":"+(value.forceBorderless?"true":"false")
       +",\"ui_composition_requested\":"+(value.uiComposition?"true":"false")
-      +",\"force_vsync_off\":"+(value.forceVSyncOff?"true":"false")+",\"display_cap\":"+(value.displayCap?"true":"false")+",\"saved\":"+(saved?"true":"false"));
+      +",\"force_vsync_off\":"+(value.forceVSyncOff?"true":"false")+",\"display_cap\":"+(value.displayCap?"true":"false")
+      +",\"exclusive_as_borderless\":"+(value.exclusiveAsBorderless?"true":"false")+",\"saved\":"+(saved?"true":"false"));
   return saved;
 }
 ControlSettings ControlsSettings() { std::lock_guard guard(settingsLock); return settings; }
 bool ForceVSyncOff() noexcept { return forceVSyncOff.load(std::memory_order_relaxed); }
+bool ExclusiveAsBorderless() noexcept { return exclusiveAsBorderless.load(std::memory_order_relaxed); }
 ControlStatus ControlsSnapshot() {
   ControlStatus result;
   result.settings=ControlsSettings();
@@ -149,8 +158,13 @@ ControlStatus ControlsSnapshot() {
       result.uiCompositionUpdates=last.updates;
     }
   }
-  if(output && output->window) result.window=output->window->Snapshot();
+  if(output && output->window) {
+    result.window=output->window->Snapshot();
+    result.altEnterBlocked=output->window->AltEnterBlocked();
+  }
   else if(output) result.window.error=output->windowBindError;
+  result.exclusiveServed=output && output->exclusiveServed.load();
+  result.exclusiveRequests=s.exclusiveRequests;
   const auto flip=sdk_pacing::Snapshot(pacingHandle);
   result.flipAvailable=flip.available; result.flipInstalled=flip.installed;
   result.flipRegistered=flip.registered; result.flipQueue=flip.queue; result.flipBusy=flip.busy;
@@ -233,8 +247,19 @@ void DrawControls(PanelPage page) {
       if(status.sdkDeadlinesRequested!=status.sdkDeadlinesActive) ui::Description("Waiting for the next generated group.");
     }
     ImGui::Separator();
-    ui::Readout("##xe_window_state","Display mode",w.pending?"Change pending":window,
-        "The game controls its display mode. XeMFG does not force Borderless or replace fullscreen requests. Exclusive fullscreen is not supported by the Intel frame-generation SDK.");
+    // 1.5.8: exclusive fullscreen served as borderless (off by default).
+    constexpr const char* exclusiveHelp="Intel frame generation does not support exclusive fullscreen. When the game asks for it, XeMFG keeps the game windowed instead: the window covers the monitor without borders, and the game is told it is in fullscreen. The monitor resolution and refresh rate are not changed; a lower game resolution is scaled to the screen. Alt+Enter is held back so the game cannot switch to exclusive fullscreen. Applies at the game's next display mode change, or after a restart if the game is already in exclusive fullscreen.";
+    ui::Setting("##xe_exclusive_row","Exclusive fullscreen as borderless",exclusiveHelp,[&] {
+      if(ImGui::Checkbox("##xe_exclusive_borderless",&value.exclusiveAsBorderless)) ConfigureControls(value);
+    });
+    ui::Readout("##xe_window_state","Display mode",w.pending?"Change pending":status.exclusiveServed?"Borderless (game asked for exclusive fullscreen)":window,
+        "The game controls its display mode. Exclusive fullscreen is not supported by the Intel frame-generation SDK; with Exclusive fullscreen as borderless on, XeMFG serves it as borderless.",
+        status.exclusiveServed?ui::Accent:w.mode==DisplayMode::Exclusive?ui::Warning:ui::Muted);
+    // Suggest it, never enable it automatically (the user decides).
+    if(w.mode==DisplayMode::Exclusive && State().requested.load())
+      ui::Notice(value.exclusiveAsBorderless?
+          "The game is in exclusive fullscreen, so frame generation is off. Switch the game's display mode once (or restart the game) to apply Exclusive fullscreen as borderless.":
+          "The game is in exclusive fullscreen, which Intel frame generation does not support. Set the game to Borderless, or turn on Exclusive fullscreen as borderless.");
   }
   if(page==PanelPage::Quality) {
     ui::Section("Image quality");
@@ -318,7 +343,7 @@ void DrawControls(PanelPage page) {
     if(reports("Copy detailed counters","Copies technical status, error codes and accumulated counters for support. These counters are not displayed FPS or physical input latency.")) {
       mfgunlock::xemfg::Status model;
       const bool modelAvailable=TryModelStatus(model);
-      std::ostringstream report; report<<"MFG Unlock 1.5.7\nstartup_failed="<<ModelStartupFailed()
+      std::ostringstream report; report<<"MFG Unlock 1.5.8\nstartup_failed="<<ModelStartupFailed()
           <<" model_status_available="<<modelAvailable<<" model_detail="<<(modelAvailable?model.detail:"busy")
           <<"\nmodel="<<status.modelPort<<" initialized="<<status.modelInitialized
           <<"\nCUDA="<<status.cudaState<<" compute="<<status.cudaMajor<<'.'<<status.cudaMinor<<" layers="<<status.cudaLayers

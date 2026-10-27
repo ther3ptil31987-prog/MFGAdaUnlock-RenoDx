@@ -178,6 +178,19 @@ void WindowControl::Retire() {
 LRESULT CALLBACK WindowControl::MessageHook(int code,WPARAM w,LPARAM l) {
   if(code>=0 && w==PM_REMOVE) {
     auto* message=reinterpret_cast<MSG*>(l);
+    // Alt+Enter (WM_SYSKEYDOWN with the context bit) on the bound window or
+    // one of its children: DXGI's window association would toggle exclusive
+    // fullscreen on the Intel chain directly.
+    if(message && message->message==WM_SYSKEYDOWN && message->wParam==VK_RETURN && (message->lParam&(1<<29))) {
+      const HWND root=message->hwnd?GetAncestor(message->hwnd,GA_ROOT):nullptr;
+      std::lock_guard guard(registryLock);
+      for(HWND candidate:{message->hwnd,root}) {
+        auto it=candidate?windows.find(candidate):windows.end();
+        if(it!=windows.end() && it->second->blockAltEnter.load(std::memory_order_relaxed)) {
+          message->message=WM_NULL; ++it->second->altEnterBlocked; break;
+        }
+      }
+    }
     if(message && message->message==ControlMessage()) {
       std::shared_ptr<WindowControl> value;
       { std::lock_guard guard(registryLock);

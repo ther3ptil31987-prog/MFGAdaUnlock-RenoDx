@@ -28,11 +28,17 @@ public:
   static LRESULT CALLBACK MessageHook(int code, WPARAM w, LPARAM l);
   void Request(bool force,bool explicitRequest=true);
   void ObserveFullscreen(bool known,bool exclusive);
+  // 1.5.8: hold back Alt+Enter on this window before DXGI sees it, so DXGI
+  // cannot switch the output to exclusive fullscreen behind the game's back.
+  void BlockAltEnter(bool block) { blockAltEnter.store(block,std::memory_order_relaxed); }
+  uint64_t AltEnterBlocked() const { return altEnterBlocked.load(std::memory_order_relaxed); }
   void Retire();
   WindowStatus Snapshot();
 private:
   HWND hwnd{};
   std::atomic<HHOOK> hook{};
+  std::atomic<bool> blockAltEnter{};
+  std::atomic<uint64_t> altEnterBlocked{};
   DWORD thread{};
   uintptr_t generation{};
   std::mutex lock;

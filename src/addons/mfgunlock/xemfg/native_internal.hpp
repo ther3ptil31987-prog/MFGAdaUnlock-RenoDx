@@ -161,6 +161,11 @@ struct Output {
   uint32_t scrgbLogBudget{};
   bool deviceLost{};
   bool presentationSupported{true};
+  // 1.5.8: the game asked for exclusive fullscreen and is served borderless
+  // instead; it is told it is in fullscreen (on exclusiveTarget, when given).
+  // The Intel chain stays windowed. exclusiveTarget is guarded by io.
+  std::atomic<bool> exclusiveServed{};
+  ComPtr<IDXGIOutput> exclusiveTarget;
   HRESULT presentFailure{S_OK},removedReason{S_OK};
   HRESULT dredResult{E_NOINTERFACE};
   uint32_t dredNodes{},dredUnfinished{};
@@ -202,6 +207,8 @@ struct Bridge {
   // smoothed interval between source Presents, for the display cap and notice.
   std::atomic<uint32_t> displayRefreshMilliHz{0}, sourceIntervalUs{0};
   std::atomic<bool> displayCap{false}; // [XeFG] DisplayCap, set by the controls
+  // 1.5.8: exclusive fullscreen requests served as borderless (creation and runtime).
+  std::atomic<uint64_t> exclusiveRequests{0};
   // Totals for native_summary; the per-event logs keep only their first entries.
   std::atomic<uint64_t> tagsRejected{0},tagsRemoved{0},reservedStates{0};
   std::atomic<uint32_t> summaryIntervalMs{10000};

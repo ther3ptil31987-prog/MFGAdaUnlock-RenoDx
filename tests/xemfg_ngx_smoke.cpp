@@ -9,6 +9,7 @@
 #include <nvsdk_ngx.h>
 #include "../src/addons/mfgunlock/xemfg/backend_api.hpp"
 #include "../src/addons/mfgunlock/xemfg/native_bridge.hpp"
+#include "../src/addons/mfgunlock/xemfg/native_controls.hpp"
 #include <iostream>
 #include <map>
 #include <memory>
@@ -64,7 +65,21 @@ using ReleaseFn=NVSDK_NGX_Result(NVSDK_CONV*)(NVSDK_NGX_Handle*);
 int main(int argc,char** argv) {
   try {
     const unsigned multiplier=argc>1?unsigned(std::stoul(argv[1])):4;
-    bool expectOff=false; for(int i=2;i<argc;++i) expectOff|=std::string(argv[i])=="--dlss-sr-default-off";
+    bool expectOff=false,exclusive=false,exclusiveFirst=false,exclusiveCreate=false,borderless=false,hdr10=false;
+    for(int i=2;i<argc;++i) {
+      const std::string arg=argv[i];
+      expectOff|=arg=="--dlss-sr-default-off";
+      exclusive|=arg=="--exclusive-transition" || arg=="--exclusive-borderless";
+      // The game enters exclusive fullscreen before its first Present, as the
+      // Metro log shows (the first admission already refused the display mode).
+      exclusiveFirst|=arg=="--exclusive-first" || arg=="--exclusive-borderless-first";
+      // 1.5.8: the swapchain is created in exclusive fullscreen.
+      exclusiveCreate|=arg=="--exclusive-borderless-create";
+      // 1.5.8: [XeFG] ExclusiveAsBorderless=1 serves the request as borderless.
+      borderless|=arg.rfind("--exclusive-borderless",0)==0;
+      hdr10|=arg=="--hdr10";
+    }
+    exclusiveFirst|=exclusiveCreate; exclusive|=exclusiveFirst;
     auto reshade=LoadLibraryW(L".\\dxgi.dll"); Require(reshade,"ReShade");
     ComPtr<IDXGIFactory4> factory;
     Check(Import<HRESULT(WINAPI*)(REFIID,void**)>(reshade,"CreateDXGIFactory1")(IID_PPV_ARGS(&factory)),"factory");
@@ -120,7 +135,37 @@ int main(int argc,char** argv) {
     Require(hwnd,"window");
     DXGI_SWAP_CHAIN_DESC1 desc{}; desc.Width=640; desc.Height=360; desc.Format=DXGI_FORMAT_R8G8B8A8_UNORM; desc.SampleDesc.Count=1;
     desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT; desc.BufferCount=3; desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    DXGI_SWAP_CHAIN_FULLSCREEN_DESC windowed{}; windowed.Windowed=TRUE;
+    // RenoDX HDR mods present HDR10 (Metro Exodus field report).
+    if(hdr10) desc.Format=DXGI_FORMAT_R10G10B10A2_UNORM;
+    if(exclusive) {
+      // Metro Exodus field report (1.5.5): the game creates its swapchain
+      // windowed and enters exclusive fullscreen afterwards. DXGI only grants
+      // that to a visible, foreground window.
+      desc.Flags=DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+      // A background process may not take the foreground; joining the current
+      // foreground thread's input queue allows it without sending any input.
+      ShowWindow(hwnd,SW_SHOWNORMAL);
+      const auto foreground=GetWindowThreadProcessId(GetForegroundWindow(),nullptr),self=GetCurrentThreadId();
+      if(foreground && foreground!=self) AttachThreadInput(self,foreground,TRUE);
+      SetForegroundWindow(hwnd); BringWindowToTop(hwnd); SetFocus(hwnd);
+      if(foreground && foreground!=self) AttachThreadInput(self,foreground,FALSE);
+      MSG msg{}; while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) DispatchMessageW(&msg);
+      std::cout<<"Window foreground="<<(GetForegroundWindow()==hwnd)<<std::endl;
+    }
+    DXGI_SWAP_CHAIN_FULLSCREEN_DESC windowed{}; windowed.Windowed=!exclusiveCreate;
+    // The window the served borderless state must restore (taken again right
+    // before a runtime request, after the game's windowed ResizeTarget).
+    RECT originalRect{}; GetWindowRect(hwnd,&originalRect);
+    auto originalStyle=GetWindowLongPtrW(hwnd,GWL_STYLE);
+    const auto pump=[] { MSG msg{}; while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) DispatchMessageW(&msg); };
+    using ControlsStatus=bool(*)(mfgunlock::xemfg::native::ControlStatus*,uint32_t);
+    const auto controls=Import<ControlsStatus>(addon,"MFGAXeControlsStatus");
+    // The window covers its monitor without a caption (served borderless).
+    const auto coversMonitor=[&] {
+      MONITORINFO monitor{sizeof(monitor)}; GetMonitorInfoW(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&monitor);
+      RECT now{}; GetWindowRect(hwnd,&now);
+      return EqualRect(&now,&monitor.rcMonitor) && !(GetWindowLongPtrW(hwnd,GWL_STYLE)&WS_CAPTION);
+    };
     ComPtr<IDXGISwapChain1> base; Check(factory->CreateSwapChainForHwnd(queue.Get(),hwnd,&desc,&windowed,nullptr,&base),"swapchain");
     ComPtr<IDXGISwapChain4> chain; Check(base.As(&chain),"chain4"); base.Reset();
     mfgunlock::xemfg::native::Status ready{}; bridgeStatus(&ready,sizeof(ready));
@@ -150,8 +195,10 @@ int main(int argc,char** argv) {
     NVSDK_NGX_Handle* feature{};
     Require(NVSDK_NGX_SUCCEED(create(list.Get(),NVSDK_NGX_Feature_SuperSampling,&params,&feature)) && feature,"DLSS-SR feature");
     submit();
+    unsigned frame{};
+    const auto run=[&](unsigned count) {
     unsigned readyFrames{};
-    for(unsigned frame=0;frame<24;++frame) {
+    for(const unsigned end=frame+count;frame<end;++frame) {
       Check(allocator->Reset(),"allocator reset"); Check(list->Reset(allocator.Get(),nullptr),"list reset");
       ComPtr<ID3D12Resource> back; Check(chain->GetBuffer(chain->GetCurrentBackBufferIndex(),IID_PPV_ARGS(&back)),"back buffer");
       auto handle=rtv->GetCPUDescriptorHandleForHeapStart(); device->CreateRenderTargetView(back.Get(),nullptr,handle);
@@ -170,14 +217,83 @@ int main(int argc,char** argv) {
       bridgeStatus(&ready,sizeof(ready)); if(ready.enabled) ++readyFrames;
       MSG msg{}; while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) DispatchMessageW(&msg);
     }
+    return readyFrames;
+    };
+    unsigned readyFrames=exclusiveFirst?0:run(24);
+    mfgunlock::xemfg::native::ControlStatus cs;
+    if(exclusiveCreate) {
+      // Created in exclusive fullscreen: a windowed Intel output, served borderless.
+      pump();
+      Require(controls(&cs,sizeof(cs)) && cs.exclusiveServed && cs.exclusiveRequests==1,"exclusive creation was not served as borderless");
+      Require(coversMonitor(),"the window does not cover the monitor after an exclusive creation");
+      BOOL full{}; chain->GetFullscreenState(&full,nullptr); Require(full,"the game was not told it is in fullscreen");
+      // Alt+Enter is held back before DXGI sees it.
+      PostMessageW(hwnd,WM_SYSKEYDOWN,VK_RETURN,LPARAM(1u<<29)|1); pump();
+      Require(controls(&cs,sizeof(cs)) && cs.altEnterBlocked==1,"Alt+Enter was not held back");
+      const auto servedReady=run(24);
+      std::cout<<"Exclusive creation served borderless; ready frames="<<servedReady<<std::endl;
+      Require(servedReady>=16,"frames were not generated while served borderless");
+      Check(chain->SetFullscreenState(FALSE,nullptr),"leave served fullscreen"); pump();
+      chain->GetFullscreenState(&full,nullptr); Require(!full,"the game still sees fullscreen after leaving");
+      Require(controls(&cs,sizeof(cs)) && !cs.exclusiveServed,"served state kept after leaving");
+      readyFrames=run(24);
+      exclusive=false; // The transition below is covered by the other cases.
+    }
+    if(exclusive) {
+      Require(exclusiveFirst || readyFrames>=16,"DLSS-SR frames did not reach ready before the transition");
+      // A game's sequence: target mode, fullscreen, target again, buffers at the mode size.
+      ComPtr<IDXGIOutput> output; Check(chain->GetContainingOutput(&output),"containing output");
+      DXGI_OUTPUT_DESC od{}; output->GetDesc(&od);
+      DXGI_MODE_DESC mode{}; mode.Width=UINT(od.DesktopCoordinates.right-od.DesktopCoordinates.left);
+      mode.Height=UINT(od.DesktopCoordinates.bottom-od.DesktopCoordinates.top); mode.Format=desc.Format;
+      DXGI_MODE_DESC closest{}; Check(output->FindClosestMatchingMode(&mode,&closest,nullptr),"closest mode");
+      std::cout<<"Mode "<<closest.Width<<"x"<<closest.Height<<" @ "<<closest.RefreshRate.Numerator<<"/"<<closest.RefreshRate.Denominator<<std::endl;
+      Check(chain->ResizeTarget(&closest),"ResizeTarget");
+      pump(); GetWindowRect(hwnd,&originalRect); originalStyle=GetWindowLongPtrW(hwnd,GWL_STYLE);
+      const auto entered=chain->SetFullscreenState(TRUE,output.Get());
+      BOOL full{}; chain->GetFullscreenState(&full,nullptr);
+      std::cout<<"SetFullscreenState(TRUE)=0x"<<std::hex<<uint32_t(entered)<<std::dec<<" fullscreen="<<full<<std::endl;
+      if(SUCCEEDED(entered)) {
+        DXGI_MODE_DESC again=closest; again.RefreshRate={};
+        Check(chain->ResizeTarget(&again),"exclusive ResizeTarget");
+        Check(chain->ResizeBuffers(0,closest.Width,closest.Height,DXGI_FORMAT_UNKNOWN,desc.Flags),"exclusive ResizeBuffers");
+      }
+      if(borderless) {
+        pump();
+        Require(entered==S_OK && full,"the served request did not report fullscreen to the game");
+        Require(controls(&cs,sizeof(cs)) && cs.exclusiveServed && cs.exclusiveRequests==1,"exclusive request was not served as borderless");
+        Require(coversMonitor(),"the window does not cover the monitor while served borderless");
+      }
+      const auto exclusiveReady=run(24);
+      std::cout<<"Exclusive fullscreen ready frames="<<exclusiveReady<<std::endl;
+      if(full) {
+        Check(chain->SetFullscreenState(FALSE,nullptr),"leave exclusive fullscreen");
+        Check(chain->ResizeBuffers(0,desc.Width,desc.Height,DXGI_FORMAT_UNKNOWN,desc.Flags),"windowed ResizeBuffers");
+      }
+      if(borderless) {
+        pump();
+        RECT now{}; GetWindowRect(hwnd,&now);
+        Require(EqualRect(&now,&originalRect) && GetWindowLongPtrW(hwnd,GWL_STYLE)==originalStyle,"the window was not restored after leaving");
+        Require(controls(&cs,sizeof(cs)) && !cs.exclusiveServed,"served state kept after leaving");
+      }
+      readyFrames=run(24);
+      std::cout<<"Windowed again ready frames="<<readyFrames<<std::endl;
+      // Without the option, XeFG presents the game's frames only; with it,
+      // generation continues in the served borderless window.
+      if(borderless) Require(exclusiveReady>=16,"frames were not generated while served borderless");
+      else Require(!full || exclusiveReady==0,"frames were generated in exclusive fullscreen");
+    }
     mfgunlock::xemfg::Status ms; modelStatus(&ms,sizeof(ms));
     std::cout<<"DLSS-SR ready frames="<<readyFrames<<" evaluations="<<evaluations()<<" presented="<<ms.presented
         <<" generated="<<ms.generated<<" result="<<ms.result<<" detail="<<ready.detail<<std::endl;
-    Require(evaluations()==24,"DLSS-SR itself did not run every frame");
+    Require(evaluations()==frame,"DLSS-SR itself did not run every frame");
     Require(readyFrames>=16,"DLSS-SR frames did not reach ready");
     // A covered or unfocused window may have one generated frame dropped by DWM,
     // as in the Streamline check of xemfg_native_smoke; all were generated.
-    Require(ms.generated==multiplier-1 && ms.presented>=multiplier-1 && ms.result==0,"DLSS-SR output presented no generated frames");
+    // The exclusive cases show their window; when Windows refuses the mode
+    // (window not foreground), DWM may show only the source frame of the last
+    // Present (presented=1) while XeFG still generated every frame.
+    Require(ms.generated==multiplier-1 && (exclusiveFirst || exclusive || ms.presented>=multiplier-1) && ms.result==0,"DLSS-SR output presented no generated frames");
     Require(NVSDK_NGX_SUCCEED(release(feature)),"DLSS-SR release");
     chain.Reset(); DestroyWindow(hwnd);
     Require(Import<bool(*)(uint32_t)>(addon,"MFGAXeLogFlush")(2000),"log flush");
