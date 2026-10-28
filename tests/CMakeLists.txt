@@ -234,6 +234,10 @@ add_executable(force_policy_tests force_policy_tests.cpp)
 target_include_directories(force_policy_tests SYSTEM PRIVATE
   "${RENODX_SOURCE_DIR}/external/Streamline/include")
 add_test(NAME force_policy_tests COMMAND force_policy_tests)
+add_executable(dlss_preset_tests dlss_preset_tests.cpp)
+target_include_directories(dlss_preset_tests SYSTEM PRIVATE
+  "${RENODX_SOURCE_DIR}/external/Streamline/include")
+add_test(NAME dlss_preset_tests COMMAND dlss_preset_tests)
 add_executable(ngx_param_vtable_tests ngx_param_vtable_tests.cpp)
 add_test(NAME ngx_param_vtable_tests COMMAND ngx_param_vtable_tests)
 add_executable(module_scan_tests module_scan_tests.cpp)

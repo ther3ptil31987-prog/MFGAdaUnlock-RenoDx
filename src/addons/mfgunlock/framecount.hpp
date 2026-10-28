@@ -53,6 +53,7 @@
 
 #include <include/reshade.hpp>
 
+#include "./dlss_preset.hpp"
 #include "./force_policy.hpp"
 #include "./hdr_compat.hpp"
 #include "./input_diagnostics.hpp"
@@ -248,6 +249,87 @@ inline std::atomic<unsigned int> g_latency_guard_clear_samples{0};
 inline std::atomic<unsigned int> g_latency_guard_candidate_cap_fps{0};
 inline std::atomic_bool g_latency_guard_refresh_pending{false};
 inline std::atomic<unsigned long long> g_latency_guard_ui_heartbeat_ms{0};
+
+// Plan 6.5: one coherent copy of the Latency Guard results for the panel and
+// the diagnostics report. The Present thread publishes it after each guard
+// update; the UI copies it once per draw instead of reading the separate
+// atomics above while the Present thread may be updating them, which could
+// show values from two different samples side by side. The mode is a user
+// setting and stays read from g_latency_guard_mode.
+struct LatencyGuardView {
+  bool sample_seen{}, iflip_known{}, iflip_active{}, oversubscribed{};
+  bool timing_confident{}, queue_timing_confident{}, multiplier_trial_accepted{};
+  unsigned int units{}, new_frames{}, display_refresh_fps{}, live_multiplier{};
+  unsigned int recommended_source_cap_fps{}, active_source_cap_fps{};
+  unsigned int estimated_source_fps{}, simulation_fps{}, projected_output_fps{};
+  unsigned int marker_health{}, timing_issue_mask{}, bottleneck{};
+  unsigned int queue_wait_us{}, queue_p95_us{}, gpu_active_us{};
+  unsigned int pipeline_latency_us{}, pipeline_p95_us{}, input_to_gpu_end_us{};
+  unsigned int ai_frame_time_us{}, sample_cost_us{};
+  unsigned int multiplier_override{}, multiplier_trial_phase{};
+  unsigned int multiplier_trial_reason{}, trial_blocker{};
+  unsigned int multiplier_approved{}, multiplier_candidate{};
+  unsigned int multiplier_baseline_samples{}, multiplier_trial_samples{};
+  unsigned int multiplier_baseline_pipeline_us{}, multiplier_baseline_p95_us{};
+  unsigned int multiplier_trial_pipeline_us{}, multiplier_trial_p95_us{};
+};
+inline SRWLOCK g_latency_guard_view_lock = SRWLOCK_INIT;
+inline LatencyGuardView g_latency_guard_view{};
+
+inline void PublishLatencyGuardView() {
+  constexpr auto r = std::memory_order_acquire;
+  LatencyGuardView v;
+  v.sample_seen = g_latency_guard_sample_seen.load(r);
+  v.iflip_known = g_latency_guard_iflip_known.load(r);
+  v.iflip_active = g_latency_guard_iflip_active.load(r);
+  v.oversubscribed = g_latency_guard_oversubscribed.load(r);
+  v.timing_confident = g_latency_guard_timing_confident.load(r);
+  v.queue_timing_confident = g_latency_guard_queue_timing_confident.load(r);
+  v.multiplier_trial_accepted = g_latency_guard_multiplier_trial_accepted.load(r);
+  v.units = g_latency_guard_units.load(r);
+  v.new_frames = g_latency_guard_new_frames.load(r);
+  v.display_refresh_fps = g_latency_guard_display_refresh_fps.load(r);
+  v.live_multiplier = g_latency_guard_live_multiplier.load(r);
+  v.recommended_source_cap_fps = g_latency_guard_recommended_source_cap_fps.load(r);
+  v.active_source_cap_fps = g_latency_guard_active_source_cap_fps.load(r);
+  v.estimated_source_fps = g_latency_guard_estimated_source_fps.load(r);
+  v.simulation_fps = g_latency_guard_simulation_fps.load(r);
+  v.projected_output_fps = g_latency_guard_projected_output_fps.load(r);
+  v.marker_health = g_latency_guard_marker_health.load(r);
+  v.timing_issue_mask = g_latency_guard_timing_issue_mask.load(r);
+  v.bottleneck = g_latency_guard_bottleneck.load(r);
+  v.queue_wait_us = g_latency_guard_queue_wait_us.load(r);
+  v.queue_p95_us = g_latency_guard_queue_p95_us.load(r);
+  v.gpu_active_us = g_latency_guard_gpu_active_us.load(r);
+  v.pipeline_latency_us = g_latency_guard_pipeline_latency_us.load(r);
+  v.pipeline_p95_us = g_latency_guard_pipeline_p95_us.load(r);
+  v.input_to_gpu_end_us = g_latency_guard_input_to_gpu_end_us.load(r);
+  v.ai_frame_time_us = g_latency_guard_ai_frame_time_us.load(r);
+  v.sample_cost_us = g_latency_guard_sample_cost_us.load(r);
+  v.multiplier_override = g_latency_guard_multiplier_override.load(r);
+  v.multiplier_trial_phase = g_latency_guard_multiplier_trial_phase.load(r);
+  v.multiplier_trial_reason = g_latency_guard_multiplier_trial_reason.load(r);
+  v.trial_blocker = g_latency_guard_trial_blocker.load(r);
+  v.multiplier_approved = g_latency_guard_multiplier_approved.load(r);
+  v.multiplier_candidate = g_latency_guard_multiplier_candidate.load(r);
+  v.multiplier_baseline_samples = g_latency_guard_multiplier_baseline_samples.load(r);
+  v.multiplier_trial_samples = g_latency_guard_multiplier_trial_samples.load(r);
+  v.multiplier_baseline_pipeline_us = g_latency_guard_multiplier_baseline_pipeline_us.load(r);
+  v.multiplier_baseline_p95_us = g_latency_guard_multiplier_baseline_p95_us.load(r);
+  v.multiplier_trial_pipeline_us = g_latency_guard_multiplier_trial_pipeline_us.load(r);
+  v.multiplier_trial_p95_us = g_latency_guard_multiplier_trial_p95_us.load(r);
+  AcquireSRWLockExclusive(&g_latency_guard_view_lock);
+  g_latency_guard_view = v;
+  ReleaseSRWLockExclusive(&g_latency_guard_view_lock);
+}
+
+inline LatencyGuardView LatencyGuardSnapshot() {
+  AcquireSRWLockShared(&g_latency_guard_view_lock);
+  const LatencyGuardView v = g_latency_guard_view;
+  ReleaseSRWLockShared(&g_latency_guard_view_lock);
+  return v;
+}
+
 // Policy source: 0 = native/no addon policy, 1 = explicit user output cap,
 // 2 = Latency Guard queue trim.
 inline std::atomic<unsigned int> g_reflex_limit_source{0};
@@ -2426,10 +2508,136 @@ inline sl::Result HookedGetState(const sl::ViewportHandle& viewport, sl::DLSSGSt
   return result;
 }
 
+// 1.6 (plan B): the DLSS Super Resolution preset selected in the panel.
+using DlssSetOptionsFn = sl::Result (*)(const sl::ViewportHandle&, const sl::DLSSOptions&);
+inline std::atomic<DlssSetOptionsFn> g_real_dlss_set_options{nullptr};
+
+inline sl::Result HookedDlssSetOptions(const sl::ViewportHandle& viewport,
+                                       const sl::DLSSOptions& options) {
+  const auto real = g_real_dlss_set_options.load(std::memory_order_acquire);
+  if (real == nullptr) return sl::Result::eErrorNotInitialized;
+  using dlsspreset::Status;
+  const uint32_t selected = dlsspreset::g_selected.load(std::memory_order_relaxed);
+  dlsspreset::g_mode.store(static_cast<uint32_t>(options.mode), std::memory_order_relaxed);
+  dlsspreset::g_game_preset.store(static_cast<uint32_t>(dlsspreset::GamePreset(options)),
+                                  std::memory_order_relaxed);
+  sl::DLSSOptions forwarded;
+  if (!g_addon_enabled.load(std::memory_order_relaxed) ||
+      !dlsspreset::Override(options, selected, forwarded)) {
+    const bool unknown = selected != 0 && options.mode != sl::DLSSMode::eOff &&
+                         dlsspreset::KnownSize(options.structVersion) == 0;
+    if (unknown && dlsspreset::g_status.exchange(static_cast<uint32_t>(Status::kUnknownAbi)) !=
+                       static_cast<uint32_t>(Status::kUnknownAbi)) {
+      reshade::log::message(reshade::log::level::warning,
+          "mfgunlock: refusing to change the DLSS preset in an unknown DLSSOptions ABI; forwarding the game's options unchanged.");
+    } else if (!unknown) {
+      dlsspreset::g_status.store(static_cast<uint32_t>(Status::kGame), std::memory_order_relaxed);
+      dlsspreset::g_applied_preset.store(0, std::memory_order_relaxed);
+    }
+    return real(viewport, options);
+  }
+  const sl::Result result = real(viewport, forwarded);
+  if (result != sl::Result::eOk) {
+    if (dlsspreset::g_status.exchange(static_cast<uint32_t>(Status::kRejected)) !=
+        static_cast<uint32_t>(Status::kRejected)) {
+      std::stringstream s;
+      s << "mfgunlock: slDLSSSetOptions refused DLSS preset " << selected << " (sl::Result "
+        << static_cast<unsigned int>(result) << "); forwarding the game's options.";
+      reshade::log::message(reshade::log::level::warning, s.str().c_str());
+    }
+    return real(viewport, options);
+  }
+  dlsspreset::g_status.store(static_cast<uint32_t>(Status::kApplied), std::memory_order_relaxed);
+  if (dlsspreset::g_applied_preset.exchange(selected, std::memory_order_relaxed) != selected) {
+    std::stringstream s;
+    s << "mfgunlock: DLSS Super Resolution preset " << selected << " applied (game preset "
+      << static_cast<uint32_t>(dlsspreset::GamePreset(options))
+      << " for its mode); Streamline recreates the DLSS feature.";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+  }
+  return result;
+}
+
+// 1.6 (plan B.6): the DLSS Ray Reconstruction preset selected in the panel.
+using DlssdSetOptionsFn = sl::Result (*)(const sl::ViewportHandle&, const sl::DLSSDOptions&);
+inline std::atomic<DlssdSetOptionsFn> g_real_dlssd_set_options{nullptr};
+
+inline sl::Result HookedDlssdSetOptions(const sl::ViewportHandle& viewport,
+                                        const sl::DLSSDOptions& options) {
+  const auto real = g_real_dlssd_set_options.load(std::memory_order_acquire);
+  if (real == nullptr) return sl::Result::eErrorNotInitialized;
+  using dlsspreset::Status;
+  const uint32_t selected = dlsspreset::g_rr_selected.load(std::memory_order_relaxed);
+  dlsspreset::g_rr_version.store(static_cast<uint32_t>(options.structVersion), std::memory_order_relaxed);
+  dlsspreset::g_rr_game_preset.store(static_cast<uint32_t>(dlsspreset::GamePresetRr(options)),
+                                     std::memory_order_relaxed);
+  sl::DLSSDOptions forwarded;
+  if (!g_addon_enabled.load(std::memory_order_relaxed) ||
+      !dlsspreset::OverrideRr(options, selected, forwarded)) {
+    // Versions 1 and 2 have no presets; a newer version is not known here.
+    const bool unchangeable = selected != 0 && options.mode != sl::DLSSMode::eOff &&
+                              options.structVersion != sl::kStructVersion3;
+    if (unchangeable &&
+        dlsspreset::g_rr_status.exchange(static_cast<uint32_t>(Status::kUnknownAbi)) !=
+            static_cast<uint32_t>(Status::kUnknownAbi)) {
+      std::stringstream s;
+      s << "mfgunlock: DLSSDOptions version " << static_cast<uint32_t>(options.structVersion)
+        << " has no Ray Reconstruction preset this build can change; forwarding the game's options unchanged.";
+      reshade::log::message(reshade::log::level::warning, s.str().c_str());
+    } else if (!unchangeable) {
+      dlsspreset::g_rr_status.store(static_cast<uint32_t>(Status::kGame), std::memory_order_relaxed);
+      dlsspreset::g_rr_applied_preset.store(0, std::memory_order_relaxed);
+    }
+    return real(viewport, options);
+  }
+  const sl::Result result = real(viewport, forwarded);
+  if (result != sl::Result::eOk) {
+    if (dlsspreset::g_rr_status.exchange(static_cast<uint32_t>(Status::kRejected)) !=
+        static_cast<uint32_t>(Status::kRejected)) {
+      std::stringstream s;
+      s << "mfgunlock: slDLSSDSetOptions refused Ray Reconstruction preset " << selected
+        << " (sl::Result " << static_cast<unsigned int>(result) << "); forwarding the game's options.";
+      reshade::log::message(reshade::log::level::warning, s.str().c_str());
+    }
+    return real(viewport, options);
+  }
+  dlsspreset::g_rr_status.store(static_cast<uint32_t>(Status::kApplied), std::memory_order_relaxed);
+  if (dlsspreset::g_rr_applied_preset.exchange(selected, std::memory_order_relaxed) != selected) {
+    std::stringstream s;
+    s << "mfgunlock: DLSS Ray Reconstruction preset " << selected << " applied (game preset "
+      << static_cast<uint32_t>(dlsspreset::GamePresetRr(options))
+      << " for its mode); Streamline recreates the Ray Reconstruction feature.";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+  }
+  return result;
+}
+
 inline sl::Result HookedGetFeatureFunction(sl::Feature feature, const char* function_name,
                                            void*& function) {
   const sl::Result result = g_real_get_feature_function(feature, function_name, function);
   if (result != sl::Result::eOk || function_name == nullptr || function == nullptr) return result;
+  if (feature == sl::kFeatureDLSS && std::strcmp(function_name, "slDLSSSetOptions") == 0 &&
+      function != reinterpret_cast<void*>(&HookedDlssSetOptions)) {
+    g_real_dlss_set_options.store(reinterpret_cast<DlssSetOptionsFn>(function),
+                                  std::memory_order_release);
+    function = reinterpret_cast<void*>(&HookedDlssSetOptions);
+    if (!dlsspreset::g_wrapped.exchange(true, std::memory_order_relaxed)) {
+      reshade::log::message(reshade::log::level::info,
+          "mfgunlock: wrapped slDLSSSetOptions; the DLSS Super Resolution preset selector is live.");
+    }
+    return result;
+  }
+  if (feature == sl::kFeatureDLSS_RR && std::strcmp(function_name, "slDLSSDSetOptions") == 0 &&
+      function != reinterpret_cast<void*>(&HookedDlssdSetOptions)) {
+    g_real_dlssd_set_options.store(reinterpret_cast<DlssdSetOptionsFn>(function),
+                                   std::memory_order_release);
+    function = reinterpret_cast<void*>(&HookedDlssdSetOptions);
+    if (!dlsspreset::g_rr_wrapped.exchange(true, std::memory_order_relaxed)) {
+      reshade::log::message(reshade::log::level::info,
+          "mfgunlock: wrapped slDLSSDSetOptions; the DLSS Ray Reconstruction preset selector is live.");
+    }
+    return result;
+  }
   if (feature == sl::kFeatureDLSS_G &&
       std::strcmp(function_name, "slDLSSGSetOptions") == 0 &&
       function != reinterpret_cast<void*>(&HookedSetOptions)) {

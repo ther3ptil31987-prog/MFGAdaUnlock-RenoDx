@@ -13,7 +13,10 @@ std::string Read(const std::filesystem::path& path) {
 }
 int main() {
   const std::filesystem::path root{RELEASE_SOURCE_ROOT};
-  for (const auto* name : {"addon.cpp", "framecount.hpp", "input_diagnostics.hpp", "thin_geometry.hpp"}) {
+  // addon_*.inl are fragments of addon.cpp (plan 6.2-6.6).
+  for (const auto* name : {"addon.cpp", "addon_provider.inl", "addon_streamline.inl", "addon_discovery.inl",
+                           "addon_latency.inl", "addon_overlay.inl", "framecount.hpp", "input_diagnostics.hpp",
+                           "thin_geometry.hpp"}) {
     const auto source = Read(root / "src/addons/mfgunlock" / name);
     for (const auto* forbidden : {"MFGUNLOCK_QUALITY_PIPELINE_LAB", "warp_quality_lab.hpp", "Warp Quality Lab", "pipeline_ngx.hpp", "ngxprearm", "g_warp_preset"})
       CHECK(source.find(forbidden) == std::string::npos);

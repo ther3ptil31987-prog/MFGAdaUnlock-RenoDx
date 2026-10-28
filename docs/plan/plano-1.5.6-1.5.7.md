@@ -127,13 +127,13 @@ Um PR por item.
 
 | # | Tarefa | Est. | Status |
 |---|---|---|---|
-| 6.1 | Fixture com Streamline falso para o DLSS-G (`SetOptions`, `GetState`, Reflex) | 3 h | pendente |
-| 6.2 | Extrair `provider_patches` (gates, midpoint, thin geometry) do `addon.cpp` | 2 h | pendente |
-| 6.3 | Extrair `streamline_patches` (teto, flip metering) | 1,5 h | pendente |
-| 6.4 | Extrair `discovery` (worker, varreduras) | 1,5 h | pendente |
-| 6.5 | Extrair `latency_guard` e publicar um snapshot único para a UI | 3 h | pendente |
-| 6.6 | Extrair o overlay (UI) | 3 h | pendente |
-| 6.7 | Limpezas: detecção de API duplicada, comentário repetido, atribuição redundante, `IsBadReadPtr` | 1 h | pendente |
+| 6.1 | Fixture com Streamline falso para o DLSS-G (`SetOptions`, `GetState`, Reflex) | 3 h | feito |
+| 6.2 | Extrair `provider_patches` (gates, midpoint, thin geometry) do `addon.cpp` | 2 h | feito (`addon_provider.inl`) |
+| 6.3 | Extrair `streamline_patches` (teto, flip metering) | 1,5 h | feito (`addon_streamline.inl`) |
+| 6.4 | Extrair `discovery` (worker, varreduras) | 1,5 h | feito (`addon_discovery.inl`; as varreduras já estavam em `module_scan.hpp` desde o 5.1) |
+| 6.5 | Extrair `latency_guard` e publicar um snapshot único para a UI | 3 h | feito (`addon_latency.inl`, `LatencyGuardView`) |
+| 6.6 | Extrair o overlay (UI) | 3 h | feito (`addon_overlay.inl`) |
+| 6.7 | Limpezas: detecção de API duplicada, comentário repetido, atribuição redundante, `IsBadReadPtr` | 1 h | feito (`IsBadReadPtr` já tinha saído no 5.1) |
 
 ## Fora do plano (registrado para não perder)
 
@@ -188,4 +188,6 @@ Um PR por item.
 - **2026-10-25 · medição do 5.2** No Cyberpunk, a manutenção na criação do device levou 1.677 ms e algumas criações de fila 332–698 ms (thread do jogo, no carregamento). Não causou o crash; fica para investigar depois (provável custo dos patches e hashes de módulo, não da busca).
 - **2026-10-25 · flicker do painel** Vídeo do usuário (Cyberpunk, XeMFG 4x): as linhas *HUD handling* e a dica do UI Composition alternavam a cada quadro com *Waiting for frame status*, porque o painel só tenta a trava da saída e mostrava valores padrão quando ela estava ocupada. Corrigido mostrando o último estado lido da mesma saída (`4a8f03e`). Confirmado no jogo; matriz 186/186.
 - **2026-10-26 · release 1.5.7** Blocos 4 e 5 (sem o 4.3 e o 5.4), mais a correção do flicker. Versão 1.5.7, notas em `docs/releases/1.5.7.md`.
+- **2026-10-26 · bloco 6** Fixture do DLSS-G (`dlssg_streamline_fixture`) e extração do `addon.cpp` (8.120 → ~1.300 linhas) em `addon_provider.inl`, `addon_streamline.inl`, `addon_discovery.inl`, `addon_latency.inl` e `addon_overlay.inl`, fragmentos incluídos no mesmo lugar e no mesmo namespace (todos usam os ~80 atômicos de configuração). Cada movimentação conferida com `.text`/`.data`/`.pdata` idênticos byte a byte ao build anterior. Mudanças de código só no 6.5 (`LatencyGuardView`, snapshot único para o painel e o relatório) e no 6.7 (limpezas). Gate 193/193 (3 skipped de proveniência).
+- **2026-10-26 · campo do bloco 6** DLSS-G em quatro engines: Cyberpunk 2077 (REDengine 4: gates, wrappers, pedidos 6x/4x do jogo aceitos), Alan Wake 2 (Northlight: override 4x → 6x aceito), Resonance: A Plague Tale Legacy (Zouna: teto 6x, override 6x → 3x aceito) e Dragon's Dogma 2 (RE Engine: funcionou; o ReShade desse jogo está com log desligado). Monster Hunter Wilds não está instalado. Os quatro voltaram para XeMFG; o build novo ficou instalado e os anteriores como `*.before-block6.bak`.
 

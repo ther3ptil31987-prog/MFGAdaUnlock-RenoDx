@@ -53,6 +53,9 @@ inline void (*g_on_dlssg_plugin_loaded)(HMODULE) = nullptr;
 // slInit must be hooked before the game calls it, and it calls it early --
 // so catch the interposer as it is mapped rather than hoping to beat it.
 inline void (*g_on_interposer_loaded)() = nullptr;
+// 1.6 (plan B.3): the NGX driver module, mapped by games that create DLSS
+// through NGX; it usually loads after the device-creation maintenance.
+inline void (*g_on_ngx_loaded)() = nullptr;
 inline std::atomic_bool g_hooked{false};
 inline std::atomic_bool g_installing{false};
 inline std::atomic<unsigned int> g_catches{0};
@@ -62,6 +65,7 @@ namespace internal {
 constexpr wchar_t kNeedle[] = L"nvngx_dlssg";
 constexpr wchar_t kOtaNeedle[] = L"\\models\\dlssg\\";
 constexpr wchar_t kInterposerNeedle[] = L"sl.interposer";
+constexpr wchar_t kNgxNeedle[] = L"_nvngx.dll";
 constexpr wchar_t kDlssgPluginNeedle[] = L"sl.dlss_g";
 constexpr wchar_t kDlssgPluginOtaNeedle[] = L"\\models\\sl_dlss_g_0\\";
 
@@ -116,6 +120,9 @@ inline void Notify(HMODULE module, const wchar_t* path) {
   }
   if (g_on_interposer_loaded != nullptr && is_interposer) {
     g_on_interposer_loaded();
+  }
+  if (g_on_ngx_loaded != nullptr && (NameContains(path, kNgxNeedle) || NameContains(resolved, kNgxNeedle))) {
+    g_on_ngx_loaded();
   }
 }
 
