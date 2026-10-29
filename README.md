@@ -263,6 +263,7 @@ necessarily been tested with the other.
 | Star Wars Outlaws | Working — Dynamic MFG not supported |
 | The Sinking City 2 | Working |
 | Control Resonant | Working |
+| Phantom Blade Zero | Working |
 
 These are the games personally tested with this fork; this is not a claim of
 universal compatibility. Results may vary with the game version, DLSS and
