@@ -38,7 +38,13 @@ int main() {
     Check(ApplyUiComposition(output,true) && !output.uiCompositionApplied,"uncheck did not disable composition");
     output.uiCompositionKnown=false; const auto before=calls;
     Check(ApplyUiComposition(output,true) && calls==before+1 && last==XEFG_SWAPCHAIN_UI_COMPOSITION_STATE_DISABLED,"reset state not reapplied");
-    std::cout<<"PASS: default interpolation, opt-in/off, missing inputs, cache, failure/retry and reset\n";
+    // 1.7 (plan E.2): stabilized frames compose without the UI Composition
+    // preference, and their own inputs are not offered as the game's HUD-less.
+    Check(ApplyUiComposition(output,true,true) && output.uiCompositionApplied && output.uiStabilized
+        && !output.uiCompositionAvailable && last==XEFG_SWAPCHAIN_UI_COMPOSITION_STATE_ENABLED,"stabilized frame not composed");
+    Check(ApplyUiComposition(output,false) && !output.uiCompositionApplied && !output.uiStabilized
+        && last==XEFG_SWAPCHAIN_UI_COMPOSITION_STATE_DISABLED,"stabilization did not end with its inputs");
+    std::cout<<"PASS: default interpolation, opt-in/off, missing inputs, cache, failure/retry, reset and HUD stabilization\n";
     return 0;
   } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

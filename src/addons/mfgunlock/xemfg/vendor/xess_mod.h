@@ -1,9 +1,25 @@
 #pragma once
 #include <windows.h>
 #include <string>
+struct ID3D12Device;
 // Small host adapter for the MIT program port and pacing component. The
 // original project's standalone renderer, HUD logic and DLSS backend are absent.
 namespace xess_mod {
 HMODULE Self() noexcept;
 void WriteLog(const char* stage, const std::string& fields) noexcept;
+// 1.7 (plan F): what the Vulkan host (vendor/xvkhost/vk_host.cpp) asks of the
+// route. Its calls come from this module, so the backend already treats them
+// as the host's own (HostAddress): the scope has nothing left to mark.
+struct VulkanHostCallScope {
+  VulkanHostCallScope() noexcept {}
+};
+// The validated libxess_fg/libxell pair the backend hooked (starts it if needed).
+bool ActiveSdkPair(HMODULE& fg, HMODULE& ll) noexcept;
+// The Vulkan host drives exactly that pair.
+bool AdoptVulkanHostPair(HMODULE fg, HMODULE ll) noexcept;
+// OptiScaler's XeLL redirects; never present in this build.
+bool HostRedirectedExport(HMODULE module, const char* name) noexcept;
+// The xvk device: no CUDA route, NVAPI flip metering or flip queue on it.
+void SetVulkanHostDevice(ID3D12Device* device) noexcept;
+bool VulkanHostDevice(const ID3D12Device* device) noexcept;
 }

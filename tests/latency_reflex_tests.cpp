@@ -203,6 +203,29 @@ int main() {
   CHECK(fc::internal::HookedReflexSleep(bypass_frame) == sl::Result::eOk);
   CHECK(native_sleep_calls == 0);
 
+  // 1.7 B.2: the game set its options once; a panel change is replayed by
+  // the game's next sleep on the owner thread, never by another thread.
+  mfgunlock::reflexpacing::g_sleep_dispatch.store(
+      mfgunlock::reflexpacing::SleepDispatch::kNative);
+  mfgunlock::reflexpacing::g_mode_override.store(
+      static_cast<uint32_t>(mfgunlock::pacing::ReflexModeOverride::kOnBoost));
+  fc::g_latency_guard_refresh_pending.store(true);
+  fc::internal::g_reflex_owner_thread.store(GetCurrentThreadId() + 1);
+  calls.clear(); mode_calls.clear(); native_sleep_calls = 0;
+  Frame foreign_frame(100);
+  CHECK(fc::internal::HookedReflexSleep(foreign_frame) == sl::Result::eOk);
+  CHECK(mode_calls.empty() && native_sleep_calls == 1 &&
+        fc::g_latency_guard_refresh_pending.load());
+  fc::internal::g_reflex_owner_thread.store(GetCurrentThreadId());
+  Frame owner_frame(101);
+  CHECK(fc::internal::HookedReflexSleep(owner_frame) == sl::Result::eOk);
+  CHECK(mode_calls.size() == 1 &&
+        mode_calls[0] ==
+            static_cast<uint32_t>(sl::ReflexMode::eLowLatencyWithBoost));
+  CHECK(native_sleep_calls == 2 && !fc::g_latency_guard_refresh_pending.load());
+  CHECK(fc::internal::HookedReflexSleep(owner_frame) == sl::Result::eOk);
+  CHECK(mode_calls.size() == 1);
+
   mfgunlock::reflexpacing::g_mode_override.store(
       static_cast<uint32_t>(mfgunlock::pacing::ReflexModeOverride::kGame));
 

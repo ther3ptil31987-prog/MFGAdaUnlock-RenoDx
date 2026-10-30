@@ -718,20 +718,16 @@ std::string FrameGenerationPresetText(
          " (NVIDIA override)";
 }
 
-std::string DynamicMultiplierText(
-    const mfgunlock::nvapistatus::Snapshot& status,
-    unsigned int maximum_generated_frames) {
-  if (status.sleep_status != mfgunlock::nvapistatus::kOk ||
-      status.sleep.frame_generation_multiplier < 2) {
-    return "Dynamic (waiting for live multiplier)";
-  }
-  std::string result =
-      std::to_string(status.sleep.frame_generation_multiplier) + "x live";
-  if (maximum_generated_frames != 0) {
-    result += " / " + std::to_string(maximum_generated_frames + 1) +
-              "x max";
-  }
-  return result;
+// Hero readout while Dynamic MFG is applied: the driver's live multiplier and
+// the advertised ceiling, e.g. "3x / 6x". The ceiling alone is still useful
+// before the driver reports a live value.
+std::string DynamicMultiplierText(unsigned int driver_multiplier,
+                                  unsigned int maximum_generated_frames) {
+  const std::string live =
+      driver_multiplier >= 2 ? std::to_string(driver_multiplier) + "x"
+                             : "Auto";
+  if (maximum_generated_frames == 0) return live;
+  return live + " / " + std::to_string(maximum_generated_frames + 1) + "x";
 }
 
 void DrawAdvancedQualityControls(bool adaptive_quality_managed) {
@@ -1067,12 +1063,12 @@ void NotifyReflexPacingSettingChanged() {
       true, std::memory_order_release);
 }
 
-void DrawReflexPacingLabControl() {
+void DrawReflexPacingLabControl(reshade::api::effect_runtime* runtime) {
   using namespace mfgunlock;
   reflexpacing::g_ui_heartbeat_ms.store(GetTickCount64(),
                                         std::memory_order_release);
   constexpr const char* kModeOverrides[] = {
-      "Game controlled", "Off (FG-safe sleep bypass)", "Force On",
+      "Game controlled", "Off (skip Reflex sleep; FG stays on)", "Force On",
       "Force On + Boost"};
   int mode_override = static_cast<int>(pacing::NormalizeReflexModeOverride(
       reflexpacing::g_mode_override.load(std::memory_order_relaxed)));
@@ -1087,7 +1083,12 @@ void DrawReflexPacingLabControl() {
                               mode_override);
   }
   HelpMarker(
-      "FG-safe Off keeps Streamline's internal Reflex mode On because several DLSS-G integrations disable Frame Generation when mode Off is submitted. It bypasses slReflexSleep instead, while preserving frame tokens and markers. With DXGI Waitable selected, the waitable pacer replaces that sleep after its safety probe. On + Boost may improve clock stability at the cost of power and temperature.");
+      "Off does not turn Reflex off: DLSS-G needs it, and several games disable Frame Generation when Reflex is off. Streamline and the NVIDIA overlay keep reporting Reflex On; only the Reflex sleep is skipped, while frame tokens and markers are preserved. With DXGI Waitable selected, the waitable pacer replaces that sleep after its safety probe.\n\nWith Frame Generation on, DLSS-G paces its own queue, so Off, On and On + Boost usually measure the same latency (Cyberpunk 2077 at 6x: within 2 ms of each other). Boost only helps when the CPU is the bottleneck and the GPU would otherwise lower its clocks; it costs power and temperature.");
+  if (mode_override == static_cast<int>(pacing::ReflexModeOverride::kOff) ||
+      mode_override == static_cast<int>(pacing::ReflexModeOverride::kOnBoost)) {
+    ImGui::TextDisabled(
+        "With Frame Generation on, expect little or no latency change.");
+  }
 
   constexpr const char* kPacingMethods[] = {
       "Native Reflex Sleep", "DXGI Waitable (Experimental)"};
@@ -1194,6 +1195,20 @@ void DrawReflexPacingLabControl() {
                          std::memory_order_relaxed)
                          ? kUiPositive
                          : kUiMuted));
+    // The driver's own view (NvAPI_D3D_GetSleepStatus). It reports low
+    // latency mode and whether the game sleeps; it has no Boost field.
+    const auto& nvapi_status = ObserveNvapiUiStatus(runtime);
+    if (nvapi_status.sleep_status == mfgunlock::nvapistatus::kOk) {
+      const std::string driver_reflex =
+          std::string(nvapi_status.sleep.low_latency_mode != 0
+                          ? "Low latency On"
+                          : "Low latency Off") +
+          (nvapi_status.sleep.game_sleep != 0 ? "; game sleeps"
+                                              : "; no game sleep");
+      StatusRow("Driver Reflex", driver_reflex.c_str(), kUiMuted);
+    } else {
+      StatusRow("Driver Reflex", "Not reported", kUiMuted);
+    }
     if (state == reflexpacing::WaitableState::kFallback)
       StatusRow("Fallback reason", ReflexWaitableFallbackText(reason),
                 kUiWarning);
@@ -2412,9 +2427,16 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
   const bool ray_reconstruction_configured =
       mfgunlock::nvapistatus::NgxFeatureConfigured(
           nvapi_status.ngx.feedback_ray_reconstruction);
-  const unsigned int dynamic_max_generated =
+  // The ceiling this addon advertises when it patched the plugin; otherwise
+  // the runtime's own numFramesToGenerateMax (OTA plugins are not patched).
+  const unsigned int advertised_max_generated =
       mfgunlock::framecount::g_advertised_max_generated.load(
           std::memory_order_relaxed);
+  const unsigned int dynamic_max_generated =
+      advertised_max_generated != 0
+          ? advertised_max_generated
+          : mfgunlock::framecount::g_runtime_max_generated.load(
+                std::memory_order_relaxed);
 
   const bool restart_pending =
       configured_enabled != enabled ||
@@ -2539,7 +2561,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
   }
 
   const bool dynamic_applied=mfgunlock::framecount::g_dynamic_applied.load();
-  const std::string multiplier_text=dynamic_applied?(sleep_status_available && driver_multiplier>=2?std::to_string(driver_multiplier)+"x":"Auto"):
+  const std::string multiplier_text=dynamic_applied?DynamicMultiplierText(driver_multiplier,dynamic_max_generated):
       effective_seen?std::to_string(effective_multiplier)+"x":game_request_seen?std::to_string(game_multiplier)+"x":"Waiting";
   const char* player_state=runtime_error?"Compatibility issue":!enabled?"Disabled this session":mfg_confirmed?"Generating frames":
       mfg_live?"Driver reports MFG active":mfg_request_accepted?"Multiplier requested":provider_ready?"Ready - enable FG in the game":"Waiting for frame generation";
@@ -2937,7 +2959,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
     mfgunlock::dlssglatency::Draw();
 #endif
-    if(ImGui::CollapsingHeader("Advanced pacing (testing)")) DrawReflexPacingLabControl();
+    if(ImGui::CollapsingHeader("Advanced pacing (testing)")) DrawReflexPacingLabControl(runtime);
     ImGui::Spacing();
     ImGui::TextDisabled("LATENCY GUARD");
     ImGui::Separator();
@@ -4606,7 +4628,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
 
   }
 
-  mfgunlock::ui::Footer("MFG Unlock | 1.6.0");
+  mfgunlock::ui::Footer("MFG Unlock | 1.7.0");
   ImGui::TextDisabled(
       "Changes marked for restart keep the current session unchanged.");
 }

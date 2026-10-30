@@ -379,10 +379,35 @@ std::vector<HMODULE> g_gate_modules;
 std::vector<HMODULE> g_gate_rejected_modules;
 std::atomic<int> g_gate_attempts{0};
 
+// 1.7 (plan C): on a machine whose NVIDIA adapters are all RTX 50, DLSS-G
+// already takes its Blackwell path and executes sm_120 cubins. The arch-gate
+// rewrite is pointless there, and the quality kernels, which replace the
+// provider's sm_89 (Ada) cubins, never run. Leave the provider alone and say so
+// once, instead of logging "applied" for code the GPU does not execute.
+bool NativeBlackwellLeavesProviderAlone() {
+  if (!mfgunlock::gpuarch::AllNvidiaAdaptersBlackwell()) return false;
+  static std::atomic_bool logged{false};
+  if (!logged.exchange(true, std::memory_order_relaxed)) {
+    reshade::log::message(reshade::log::level::info,
+        g_rtx50_quality_fixes.load(std::memory_order_relaxed)
+            ? "mfgunlock: RTX 50 (Blackwell) GPU: DLSS-G runs its native path; "
+              "architecture gates and the Ada (sm_89) kernels are left alone. "
+              "Rtx50QualityFixes=1: the validated warp blend is applied to the "
+              "provider's sm_120 PTX (experimental)."
+            : "mfgunlock: RTX 50 (Blackwell) GPU: DLSS-G runs its native path; "
+              "architecture gates are left alone, and the quality fixes, built "
+              "for Ada (sm_89) kernels, are not applied because this GPU does "
+              "not run those kernels. Rtx50QualityFixes=1 applies the "
+              "experimental sm_120 warp blend.");
+  }
+  return true;
+}
+
 // Split out so the load-time trigger can patch a module it already holds a
 // handle to. That path runs under the loader lock, where CreateToolhelp32Snapshot
 // (which FindDlssgModule uses) would deadlock -- so it must never scan.
 void PatchArchGatesInModule(HMODULE mod) {
+  if (NativeBlackwellLeavesProviderAlone()) return;
   if (!mod || std::find(g_gate_modules.begin(), g_gate_modules.end(), mod) != g_gate_modules.end() ||
       std::find(g_gate_rejected_modules.begin(), g_gate_rejected_modules.end(), mod) != g_gate_rejected_modules.end()) return;
   const auto* profile = mfgunlock::binarypatch::ProfileFor(mod, 0);
@@ -642,6 +667,9 @@ void LogThinGeometryMechanism(
 }
 
 void PatchThinGeometryInModule(HMODULE mod) {
+  const bool native_blackwell = NativeBlackwellLeavesProviderAlone();
+  if (native_blackwell && !g_rtx50_quality_fixes.load(std::memory_order_relaxed))
+    return;
   if (!mfgunlock::modulesession::Acquire(mod)) return;
   if (mod == nullptr || !ThinGeometryRequested() ||
       ModuleHasThinGeometryResult(mod)) {
@@ -653,11 +681,14 @@ void PatchThinGeometryInModule(HMODULE mod) {
   module_result.module = mod;
   const bool adaptive_quality =
       g_adaptive_quality.load(std::memory_order_relaxed);
+  // On RTX 50 only the sm_120 warp blend applies: previous scatter rewrites
+  // an sm_89 entry that GPU never selects.
   const mfgunlock::thingeometry::Options options{
       adaptive_quality ||
           g_thin_geometry_validated_warp_blend.load(std::memory_order_relaxed),
-      !adaptive_quality &&
-          g_thin_geometry_previous_scatter.load(std::memory_order_relaxed)};
+      !native_blackwell && !adaptive_quality &&
+          g_thin_geometry_previous_scatter.load(std::memory_order_relaxed),
+      native_blackwell ? 120u : 89u};
   mfgunlock::thingeometry::Apply(mod, options, module_result.redirects,
                                 module_result.result,
                                 module_result.provider_version);
@@ -833,6 +864,7 @@ void PatchMidpointInModule(HMODULE mod) {
 
 void PatchTemporalInModule(HMODULE mod) {
   if (mod == nullptr || ModuleHasTemporalPatch(mod)) return;
+  if (NativeBlackwellLeavesProviderAlone()) return;
   // NGX may map a DriverStore fallback only long enough to inspect it and then
   // unload it. Once both full-kernel and midpoint validation rejected a module,
   // never dereference that cached HMODULE again: it may no longer name mapped

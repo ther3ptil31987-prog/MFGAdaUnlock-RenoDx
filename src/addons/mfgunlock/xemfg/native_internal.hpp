@@ -10,6 +10,7 @@
 #include "compatibility_policy.hpp"
 #include "native_session.hpp"
 #include "native_dejitter.hpp"
+#include "native_ui_mask.hpp"
 #include "native_scrgb.hpp"
 #include "native_hud_copy.hpp"
 #include "display_cap.hpp"
@@ -83,6 +84,9 @@ struct Frame {
     xefg_swapchain_resource_type_t type{};
     bool encode{}; // FP16 scRGB HUD-less encoded to HDR10 like the backbuffer
   } pendingHud[2];
+  // 1.7 (plan E.2): the game's HUD-less color, held back from XeFG while HUD
+  // stabilization runs; it tells the mask exactly where HUD is drawn.
+  PendingHud heldHudless;
   uint32_t constantIssues{};
   LatencyOutput latencyOutput{LatencyOutput::XeLL};
   xefg_swapchain_frame_constant_data_t data{};
@@ -143,6 +147,10 @@ struct Output {
   // 1.5.7: owned copies of HUD inputs in the output format; created on first use.
   std::unique_ptr<HudCopy> hudCopy;
   uint32_t hudCopyLogBudget{};
+  // 1.7 (plan E.2): HUD stabilization; created on first use.
+  std::unique_ptr<UiMask> uiMask;
+  bool uiStabilized{}, uiMaskFailed{};
+  uint32_t uiMaskLogBudget{};
   uint64_t refreshTick{};
   bool displayCapLogged{};
   int64_t lastSourcePresentQpc{};
@@ -237,7 +245,10 @@ sl::Result SleepSourceFrame(const std::shared_ptr<Output>& output,uint32_t id,
 bool ForwardSourceMarker(const std::shared_ptr<Output>& output,uint32_t id,uint32_t marker);
 // Caller holds output.io.
 void LogTagHistogram(Output& output,const char* phase);
-bool ApplyUiComposition(Output& output,bool hudlessAvailable);
+bool ApplyUiComposition(Output& output,bool hudlessAvailable,bool stabilized=false);
+// 1.7 (plan E.2): records the HUD stabilization pass for `id` and tags its
+// HUD-less and UI outputs. False leaves the frame without them.
+bool StabilizeHud(Output& output,Frame& frame,uint32_t id);
 void Report(const char* reason);
 bool Hook(void* entry,void* replacement,void** trampoline);
 void DiscoverStreamline();

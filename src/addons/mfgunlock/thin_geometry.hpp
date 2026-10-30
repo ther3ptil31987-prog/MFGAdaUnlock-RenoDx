@@ -71,6 +71,11 @@ inline const char* MechanismName(Mechanism mechanism) {
 struct Options {
   bool validated_warp_blend = false;
   bool previous_scatter = false;
+  // 1.7 (plan C.3): the GPU that runs the rewritten PTX. Ada (89) retargets
+  // NVIDIA's sm_120 PTX to sm_89 as before. An RTX 50 (120) keeps sm_120: the
+  // 310.9.x providers ship these kernels as sm_120 PTX with no sm_120 cubin,
+  // so the driver JIT-compiles whichever sm_120 PTX entry the fatbin holds.
+  uint32_t target_arch = 89;
 };
 
 struct DescriptorPatch {
@@ -592,14 +597,20 @@ inline bool FindPtxEntry(const uint8_t* fatbin, size_t fatbin_size,
 
 inline bool BuildRedirectedFatbin(const uint8_t* fatbin, size_t fatbin_size,
                                   const PtxProfile& profile,
+                                  uint32_t target_arch,
                                   std::vector<uint8_t>& rebuilt,
                                    adaptivequality::ComponentVersion& version,
                                   std::string& why) {
+  if (target_arch != kAdaArch &&
+      !(target_arch == kBlackwellArch && profile.arch == kBlackwellArch)) {
+    why = "this PTX entry cannot target the GPU architecture";
+    return false;
+  }
   size_t entry = 0;
   std::vector<uint8_t> source;
   if (!FindPtxEntry(fatbin, fatbin_size, profile, entry, source, why)) return false;
   std::string ptx(reinterpret_cast<const char*>(source.data()), source.size());
-  if (profile.arch == kBlackwellArch &&
+  if (profile.arch == kBlackwellArch && target_arch == kAdaArch &&
       !ReplaceOnce(ptx, ".target sm_120", ".target sm_89", why)) {
     return false;
   }
@@ -691,7 +702,7 @@ inline bool BuildRedirectedFatbin(const uint8_t* fatbin, size_t fatbin_size,
   const uint64_t zero64 = 0;
   std::memcpy(rebuilt.data() + entry + 8, &payload, sizeof(payload));
   std::memcpy(rebuilt.data() + entry + 16, &zero32, sizeof(zero32));
-  std::memcpy(rebuilt.data() + entry + 28, &kAdaArch, sizeof(kAdaArch));
+  std::memcpy(rebuilt.data() + entry + 28, &target_arch, sizeof(target_arch));
   std::memcpy(rebuilt.data() + entry + 40, &kUncompressedFlags,
               sizeof(kUncompressedFlags));
   std::memcpy(rebuilt.data() + entry + 56, &zero64, sizeof(zero64));
@@ -756,14 +767,14 @@ inline bool LocateUniqueFatbin(HMODULE module, const PtxProfile& profile,
 }
 
 inline bool RedirectFatbin(HMODULE module, const PtxProfile& profile,
-                            Redirect& redirect,
+                            uint32_t target_arch, Redirect& redirect,
                             adaptivequality::ComponentVersion& version,
                             std::string& detail) {
   LocatedFatbin located;
   if (!LocateUniqueFatbin(module, profile, located, detail)) return false;
   std::vector<uint8_t> rebuilt;
   if (!BuildRedirectedFatbin(located.address, located.size, profile,
-                              rebuilt, version, detail)) {
+                              target_arch, rebuilt, version, detail)) {
     return false;
   }
   auto* base = reinterpret_cast<uint8_t*>(module);
@@ -917,7 +928,8 @@ inline bool Apply(HMODULE module, const Options& options,
       return;
     }
     Redirect redirect;
-    if (!internal::RedirectFatbin(module, *profile, redirect,
+    if (!internal::RedirectFatbin(module, *profile, options.target_arch,
+                                  redirect,
                                   mechanism_result->adaptive_version,
                                   mechanism_result->detail)) {
       if (redirect.allocation != nullptr) redirects.push_back(std::move(redirect));

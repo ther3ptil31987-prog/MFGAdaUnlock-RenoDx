@@ -2,6 +2,9 @@
 // Own overlay/control implementation. No OptiScaler code is incorporated.
 #include "native_internal.hpp"
 #include "native_controls.hpp"
+#ifdef MFGUNLOCK_XEMFG_VULKAN
+#include "native_vulkan.hpp"
+#endif
 #include "native_overlay.hpp"
 #include "backend_api.hpp"
 #include "../backend_selection.hpp"
@@ -46,6 +49,7 @@ void LoadControls() {
   // Kept in the settings ABI for older callers. XeMFG never changes window mode.
   settings.forceBorderless=false;
   settings.uiComposition=ReadBool(L"XeFG",L"UIComposition",false);
+  settings.uiStabilization=ReadBool(L"XeFG",L"UIStabilization",false);
   settings.sdkDeadlines=ReadBool(L"XeFG",L"SdkDeadlines",false);
   sdk_pacing::RequestSdkDeadlines(settings.sdkDeadlines);
   settings.forceVSyncOff=ReadBool(L"XeFG",L"ForceVSyncOff",false);
@@ -75,6 +79,7 @@ bool ConfigureControls(const ControlSettings& incoming) {
     {L"XeFG",L"XeFGFlipMetering",value.flipMetering?L"on":L"off"},
     {L"XeFG",L"ForceBorderless",value.forceBorderless?L"1":L"0"},
     {L"XeFG",L"UIComposition",value.uiComposition?L"1":L"0"},
+    {L"XeFG",L"UIStabilization",value.uiStabilization?L"1":L"0"},
     {L"XeFG",L"SdkDeadlines",value.sdkDeadlines?L"1":L"0"},
     {L"XeFG",L"ForceVSyncOff",value.forceVSyncOff?L"1":L"0"},
     {L"XeFG",L"DisplayCap",value.displayCap?L"1":L"0"},
@@ -94,6 +99,7 @@ bool ConfigureControls(const ControlSettings& incoming) {
       +",\"output\":"+std::to_string(uint32_t(value.output))+",\"flip_requested\":"+(value.flipMetering?"true":"false")
       +",\"borderless_requested\":"+(value.forceBorderless?"true":"false")
       +",\"ui_composition_requested\":"+(value.uiComposition?"true":"false")
+      +",\"ui_stabilization\":"+(value.uiStabilization?"true":"false")
       +",\"force_vsync_off\":"+(value.forceVSyncOff?"true":"false")+",\"display_cap\":"+(value.displayCap?"true":"false")
       +",\"exclusive_as_borderless\":"+(value.exclusiveAsBorderless?"true":"false")+",\"saved\":"+(saved?"true":"false"));
   return saved;
@@ -141,14 +147,14 @@ ControlStatus ControlsSnapshot() {
     // and pacing lines, and the rows below them, flicker (1.5.7).
     struct LastRead {
       uint64_t output{}; void* pacing{};
-      bool available{},applied{},known{}; int result{}; uint64_t updates{};
+      bool available{},applied{},known{}; int result{}; uint64_t updates{}; bool stabilized{};
     };
     static std::mutex lastLock; static LastRead last;
     std::unique_lock guard(output->io,std::try_to_lock);
     std::lock_guard lastGuard(lastLock);
     if(guard.owns_lock())
       last={output->diagnosticOutput,output->fg,output->uiCompositionAvailable,output->uiCompositionApplied,
-          output->uiCompositionKnown,output->uiCompositionResult,output->uiCompositionUpdates};
+          output->uiCompositionKnown,output->uiCompositionResult,output->uiCompositionUpdates,output->uiStabilized};
     if(last.output==output->diagnosticOutput) {
       pacingHandle=last.pacing;
       result.uiCompositionAvailable=last.available;
@@ -156,6 +162,7 @@ ControlStatus ControlsSnapshot() {
       result.uiCompositionKnown=last.known;
       result.uiCompositionResult=last.result;
       result.uiCompositionUpdates=last.updates;
+      result.uiStabilized=last.stabilized;
     }
   }
   if(output && output->window) {
@@ -178,7 +185,13 @@ ControlStatus ControlsSnapshot() {
 void DrawControls(PanelPage page) {
   const auto status=ControlsSnapshot(); auto value=status.settings;
   const bool metering=status.flipMetered && !status.flipBusy;
-  const char* flip=status.sdkDeadlinesActive?"Intel SDK timing (experimental)":status.flipBusy?"Checking...":!status.flipAvailable?"XeFG pacing (driver unavailable)":
+#ifdef MFGUNLOCK_XEMFG_VULKAN
+  // 1.7 (plan F): the Vulkan host paces with XeLL and the CPU pacer (no NVIDIA flip metering on its device).
+  const bool vulkanHost=vulkan::Status().game;
+#else
+  const bool vulkanHost=false;
+#endif
+  const char* flip=vulkanHost?"XeFG pacing (Vulkan)":status.sdkDeadlinesActive?"Intel SDK timing (experimental)":status.flipBusy?"Checking...":!status.flipAvailable?"XeFG pacing (driver unavailable)":
       !status.flipRegistered || !status.flipQueue?"Waiting for frame generation":
       status.flipRefused?"XeFG pacing (driver declined)":metering?"NVIDIA driver - active":
       status.flipConfigured?"XeFG pacing (current display mode)":!status.flipEnabled?"XeFG pacing (driver metering off)":"Waiting for a stable frame rate";
@@ -191,9 +204,10 @@ void DrawControls(PanelPage page) {
       status.cudaState==1?"NVIDIA acceleration ready":"Compatibility shaders";
   constexpr const char* flipHelp="Uses the NVIDIA driver to space generated frames evenly. Leave enabled for driver pacing when available; otherwise XeFG uses its own pacing. Changes apply at the next frame group. Active reports driver acceptance, not a monitor scanout measurement.";
   constexpr const char* compositionHelp="Off by default: XeFG interpolates the HUD with the image. Enable only if HUD interpolation causes artifacts. Composition needs HUD-less color from the game and updates the HUD at the real frame rate, so moving HUD elements may look less smooth. Changes apply at the next source frame.";
-  const char* composition=!status.uiCompositionKnown?"Waiting for frame status":status.uiCompositionApplied?"UI composition":
+  constexpr const char* stabilizationHelp="Experimental, off by default. For games that do not provide HUD-less color: pixels that stay unchanged for a few real frames (static HUD text, icons and the minimap frame) are composed from the newest real frame over every generated frame instead of being interpolated, which removes their flicker. Moving or semi-transparent HUD elements are still interpolated. Costs one copy and one small compute pass per real frame. Also works in games that provide HUD-less color, as an alternative to UI Composition: UI Composition updates the whole HUD at the real frame rate, while this keeps moving HUD interpolated at the output rate. When on, it replaces UI Composition.";
+  const char* composition=!status.uiCompositionKnown?"Waiting for frame status":status.uiStabilized?"HUD stabilization (static HUD composed)":status.uiCompositionApplied?"UI composition":
       value.uiComposition && !status.uiCompositionAvailable?"Waiting for HUD-less input":
-      value.uiComposition?"Change pending":"UI interpolation (default)";
+      value.uiComposition?"Change pending":value.uiStabilization && !status.uiCompositionAvailable?"Waiting for HUD stabilization":"UI interpolation (default)";
   if(page==PanelPage::General) {
     ui::Section("Smoothness and display");
     ui::Card card("##xe_presentation");
@@ -274,6 +288,9 @@ void DrawControls(PanelPage page) {
       if(ImGui::Checkbox("##xe_ui_composition",&value.uiComposition)) ConfigureControls(value);
       ImGui::EndDisabled();
     });
+    ui::Setting("##xe_stabilization_row","HUD stabilization (experimental)",stabilizationHelp,[&] {
+      if(ImGui::Checkbox("##xe_ui_stabilization",&value.uiStabilization)) ConfigureControls(value);
+    });
     ui::Readout("##xe_composition_state","HUD handling",composition,compositionHelp);
     // 1.5.7: what the game provides, per kind: received, converted, filtered or absent.
     const auto hudKind=[&](unsigned type,const char* name) {
@@ -343,7 +360,7 @@ void DrawControls(PanelPage page) {
     if(reports("Copy detailed counters","Copies technical status, error codes and accumulated counters for support. These counters are not displayed FPS or physical input latency.")) {
       mfgunlock::xemfg::Status model;
       const bool modelAvailable=TryModelStatus(model);
-      std::ostringstream report; report<<"MFG Unlock 1.6.0\nstartup_failed="<<ModelStartupFailed()
+      std::ostringstream report; report<<"MFG Unlock 1.7.0\nstartup_failed="<<ModelStartupFailed()
           <<" model_status_available="<<modelAvailable<<" model_detail="<<(modelAvailable?model.detail:"busy")
           <<"\nmodel="<<status.modelPort<<" initialized="<<status.modelInitialized
           <<"\nCUDA="<<status.cudaState<<" compute="<<status.cudaMajor<<'.'<<status.cudaMinor<<" layers="<<status.cudaLayers

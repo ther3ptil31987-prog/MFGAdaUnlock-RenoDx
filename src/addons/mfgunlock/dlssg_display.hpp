@@ -64,23 +64,16 @@ inline void Observe(reshade::api::swapchain* swapchain) {
     if(requested || state.managed) value->Request(requested,explicitRequest);
   }
 }
+// 1.7: Force Borderless is no longer offered in the panel; [DLSSG]
+// ForceBorderless in MFGAdaUnlock.ini still applies, read once at startup.
 inline void Draw() {
-  static bool saveFailed{};
-  bool requested=Preference();
-  ui::Setting("##dlssg_borderless","Force Borderless",
-      "Optional. Native borderless is preserved without rewriting the window. Exclusive or unknown DXGI states require a safe transition in the game menu. Does not recreate the swapchain or change the refresh rate.",[&] {
-    if(ImGui::Checkbox("##dlssg_force_borderless",&requested)) {
-      saveFailed=!config::Save(backend::Directory()/L"MFGAdaUnlock.ini",{{L"DLSSG",L"ForceBorderless",requested?L"1":L"0"}});
-      if(!saveFailed) { Preference()=requested; refresh=true; }
-    }
-  });
+  const bool requested=Preference();
   std::shared_ptr<WindowControl> value; { std::lock_guard guard(mutex); value=controller; }
   const auto state=value?value->Snapshot():WindowStatus{};
   const char* text=!value && !requested?"Game controlled":state.pending?"Change pending":state.mode==DisplayMode::NativeBorderless?"Borderless (game controlled)":
       state.mode==DisplayMode::ManagedBorderless?"Borderless (addon controlled)":state.mode==DisplayMode::Exclusive?"Exclusive - use the game's display menu":
       state.mode==DisplayMode::Windowed?"Windowed":"Unknown - no presentation change";
   ui::Readout("##dlssg_display_state","Display mode",text);
-  if(saveFailed) ui::Notice("Display preference was not saved or applied.");
   if(state.error==ERROR_BUSY) ui::Notice("The game or another addon changed the window; that change was preserved.");
 }
 }

@@ -31,5 +31,8 @@ bool GameContextInitializing() noexcept;
 // The game runs its own XeFG (a game-owned context initializing on any thread,
 // or alive): it owns presentation, and the bridge adds no Intel output.
 bool GameOwnsFrameGeneration() noexcept;
+// 1.7 (plan J): back buffers for XeFG's native swap chain while the flip
+// queue is on ([XeFG] XeFGNativeBuffers); 0 keeps the game's count.
+uint32_t FlipQueueNativeBuffers() noexcept;
 #endif
 }

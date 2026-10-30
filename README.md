@@ -275,30 +275,31 @@ artifact on a HUD/UI element, switch back to **Native**.
 
 ### XeMFG backend tested games
 
-| Game | Status |
-|---|---|
-| Resident Evil Requiem | Working |
-| Monster Hunter Wilds | Working |
-| Dragon's Dogma 2 | Working |
-| Onimusha: Way of the Sword | Working |
-| PRAGMATA | Working |
-| Control Resonant | Working |
-| Assassin's Creed IV: Black Flag Resynced | Working — a built-in profile turns off native-output retention for this game |
-| Cyberpunk 2077 | Working — after a game update, run **Install / update files** again (see [below](#the-panel-says-intel-files-are-missing-or-a-different-version)) |
-| The Witcher 3: Wild Hunt (next-gen) | Working — turn off the game's **VSync** for correct frame pacing. Fixed in 1.5.3: changing path tracing or other graphics settings with frame generation on no longer loses the graphics device |
-| Alan Wake 2 | Working |
-| The Last of Us Part II Remastered | Working |
-| Mafia: The Old Country | Working |
-| Resonance: A Plague Tale Legacy | Working |
-| Death Stranding 2: On the Beach | Working — its jittered motion vectors are corrected automatically |
-| Ghostrunner 2 | Working |
-| S.T.A.L.K.E.R. 2: Heart of Chornobyl | Working — set the display mode to **Borderless / Windowed Fullscreen** |
-| Warhammer 40,000: Darktide | Working — fixed in 1.5.1; on 1.5.0, add `[Adapters] FidelityFX=0` to `MFGAdaUnlock.ini` |
-| Black Myth: Wukong | Working |
-| Kingdom Come: Deliverance II | Working with the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) |
-| Red Dead Redemption 2 | Working with the DLSS-SR input (user report; the game has no native frame generation): turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) |
-| Elden Ring | Working with the DLSS-SR input and the EldenRingDLSS addon, offline with Easy Anti-Cheat off; turn on **Force game VSync off** in the panel for correct frame pacing (see [Elden Ring](#elden-ring)) |
-| Metro Exodus Enhanced Edition | Working with the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) |
+| Game | API | Status |
+|---|---|---|
+| Resident Evil Requiem | DX12 | Working |
+| Monster Hunter Wilds | DX12 | Working |
+| Dragon's Dogma 2 | DX12 | Working |
+| Onimusha: Way of the Sword | DX12 | Working |
+| PRAGMATA | DX12 | Working |
+| Control Resonant | DX12 | Working |
+| Assassin's Creed IV: Black Flag Resynced | DX12 | Working — a built-in profile turns off native-output retention for this game |
+| Cyberpunk 2077 | DX12 | Working — after a game update, run **Install / update files** again (see [below](#the-panel-says-intel-files-are-missing-or-a-different-version)) |
+| The Witcher 3: Wild Hunt (next-gen) | DX12 | Working — turn off the game's **VSync** for correct frame pacing. Fixed in 1.5.3: changing path tracing or other graphics settings with frame generation on no longer loses the graphics device |
+| Alan Wake 2 | DX12 | Working |
+| The Last of Us Part II Remastered | DX12 | Working |
+| Mafia: The Old Country | DX12 | Working |
+| Resonance: A Plague Tale Legacy | DX12 | Working |
+| Death Stranding 2: On the Beach | DX12 | Working — its jittered motion vectors are corrected automatically |
+| Ghostrunner 2 | DX12 | Working |
+| S.T.A.L.K.E.R. 2: Heart of Chornobyl | DX12 | Working — set the display mode to **Borderless / Windowed Fullscreen** |
+| Warhammer 40,000: Darktide | DX12 | Working — fixed in 1.5.1; on 1.5.0, add `[Adapters] FidelityFX=0` to `MFGAdaUnlock.ini` |
+| Black Myth: Wukong | DX12 | Working |
+| Kingdom Come: Deliverance II | DX12 | Working with the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) |
+| Red Dead Redemption 2 | DX12, Vulkan | DX12: working with the DLSS-SR input (user report; the game has no native frame generation): turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)). Vulkan (experimental, 1.7): working with DLSS on, in fullscreen, borderless or windowed; no setting needed |
+| Elden Ring | DX12 | Working with the DLSS-SR input and the EldenRingDLSS addon, offline with Easy Anti-Cheat off; turn on **Force game VSync off** in the panel for correct frame pacing (see [Elden Ring](#elden-ring)) |
+| Metro Exodus Enhanced Edition | DX12 | Working with the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) |
+| Indiana Jones and the Great Circle | Vulkan | Working (experimental, 1.7): turn DLSS on (Super Resolution or Ray Reconstruction); the game's Frame Generation switch turns XeMFG on and off. Launch with `+r_allowBlackListedLayers 1` so ReShade can load |
 
 These games were tested with the XeMFG backend of this fork. This is not a
 claim of universal compatibility. The XeMFG backend needs a game that
@@ -354,10 +355,10 @@ runtime version.
 |---|---|---|
 | GPU | GeForce RTX 40-series | GeForce RTX 20/30/40/50 |
 | Frame generation | NVIDIA DLSS-G, unlocked to 3x–6x on Ada | Intel XeSS-FG with a multi-frame model, 2x–6x |
-| Game requirement | DLSS frame generation through Streamline | DLSS-G inputs through Streamline, the game's own XeSS-FG, or FSR 3.1 frame generation |
+| Game requirement | DLSS frame generation through Streamline | DLSS-G inputs through Streamline, the game's own XeSS-FG, or FSR 3.1 frame generation (D3D12); DLSS Super Resolution or Ray Reconstruction (Vulkan) |
 | Latency | NVIDIA Reflex | Intel XeLL |
 | Extra files | A modern `nvngx_dlssg.dll` | Intel `libxess_fg.dll` + `libxell.dll`, installed from the panel |
-| Graphics API | D3D12 (Vulkan experimental) | D3D12 |
+| Graphics API | D3D12 (Vulkan experimental) | D3D12, Vulkan (experimental, 1.7) |
 
 Both backends are in the same `renodx-mfgunlock.addon64`. A new installation
 uses **DLSS-G**. Select the backend in the panel under **General → Frame
@@ -441,9 +442,22 @@ XeSS-FG, or FSR 3.1 frame generation. The game's own frame generation is
 turned off while XeMFG is active; you keep using the game's menu toggle to
 turn frame generation on or off.
 
+**Vulkan (experimental, new in 1.7, on by default):** in Vulkan games XeMFG
+runs Intel's XeFG and XeLL on the game's own Vulkan device through a
+D3D12-on-Vulkan layer from dashdogy's MFG Unlocker 1.7.0. Its inputs come from
+the game's DLSS Super Resolution or Ray Reconstruction, so DLSS must be on. In
+games with DLSS frame generation (Indiana Jones) the game's switch turns XeMFG
+on and off; in games without it (Red Dead Redemption 2) XeMFG generates frames
+whenever DLSS runs. The Vulkan path replaces the game's swap chain, so a game
+it has not been tested with can still fail: if a Vulkan game crashes, freezes
+or shows a black screen with XeMFG selected, set `[XeFG] Vulkan=0` in
+`MFGAdaUnlock.ini` and report it (see [Reporting an XeMFG problem](#reporting-an-xemfg-problem)).
+Tested Vulkan games are marked **Vulkan** in the
+[XeMFG table](#xemfg-backend-tested-games).
+
 ### XeMFG requirements
 
-- GeForce **RTX 20, 30, 40 or 50-series**, D3D12.
+- GeForce **RTX 20, 30, 40 or 50-series**, D3D12 or Vulkan (experimental).
 - ReShade with addon support (or a RenoDX mod for the game).
 - Windowed or borderless display. Exclusive fullscreen is not supported with
   XeMFG; by default the game's display mode is kept unchanged and frame
@@ -507,9 +521,12 @@ users never need to edit it.
 | `[Backend] Selected` | `DLSSG` | `XeMFG` selects the XeMFG backend; restart required |
 | `[XeFG] Multiplier` | `4` | Output multiplier, `2`–`6` |
 | `[XeFG] UIComposition` | `0` | `1` composes the HUD from the game's HUD-less image, which avoids HUD interpolation artifacts (the HUD then updates at the real frame rate). Needs the game to provide a HUD-less image |
+| `[XeFG] UIStabilization` | `0` | Experimental, for games without a HUD-less image. `1` composes back-buffer pixels that stayed unchanged for a few real frames (static HUD text and icons) over every generated frame instead of interpolating them, which removes their flicker. Moving or semi-transparent HUD elements are still interpolated. In games that provide a HUD-less image it replaces `UIComposition`: the game's HUD inputs are not used, the static HUD is composed and moving HUD stays interpolated at the output rate |
 | `[XeFG] XeFGFlipMetering` | `auto` | NVIDIA driver flip metering for generated frames; can also be toggled live in the panel |
 | `[XeFG] ForceVSyncOff` | `0` | `1` presents the game's frames with sync interval 0, as with VSync off in the game, for games that offer no VSync option (Elden Ring). Game VSync keeps flip metering and generated-frame pacing from applying; the panel warns when that happens. Also in the panel as **Force game VSync off** |
 | `[Latency] Input` / `Output` | `Auto` | Latency route. XeMFG always uses XeLL for output; Reflex input from the game is translated to XeLL |
+| `[XeFG] Vulkan` | `1` | Experimental. XeMFG on Vulkan games: Intel's own XeFG/XeLL run on the game's Vulkan device through a D3D12-on-Vulkan layer (from dashdogy's MFG Unlocker 1.7.0). Inputs come from the game's DLSS Super Resolution or Ray Reconstruction, so turn DLSS on; the game's frame generation switch turns XeMFG on and off. `0` leaves Vulkan games untouched. Restart required |
+| `[XeFG] VulkanPresentMetering` | `1` | NVIDIA present metering (`VK_NV_present_metering`, the Vulkan form of flip metering) for XeMFG's Vulkan output, where the driver offers it; not used with VSync on. `0` paces with XeLL and the CPU pacer only |
 | `[XeFG] InvertedDepth` / `JitteredMotion` | not set | Manual convention overrides for unusual games. Normally learned automatically (see below) |
 | `[Adapters] FidelityFX` | `1` | `0` stops XeMFG from taking over FSR 3.1 frame generation |
 | `[Adapters] DlssSr` | `0` | `1` enables the experimental DLSS-SR input (see below) |
@@ -529,6 +546,7 @@ XeMFG chooses its input from what the game actually calls.
 | The game's own XeSS frame generation | The game's XeFG context is kept and uses the panel multiplier | Supported |
 | FidelityFX FSR 3.1 frame generation | The FSR swapchain becomes the XeMFG output and FSR's prepare data feeds XeFG. The addon synthesizes latency markers, because FSR provides none | Supported; disable with `[Adapters] FidelityFX=0` |
 | DLSS Super Resolution only (no frame generation) | DLSS-SR evaluations provide depth and motion vectors | Experimental, off by default (`[Adapters] DlssSr=1`). NGX has no camera data, so a default projection is assumed and the HUD is interpolated |
+| Vulkan: DLSS Super Resolution or Ray Reconstruction | The game's DLSS evaluations provide depth and motion vectors, copied at the frame's present | Experimental, on by default (`[XeFG] Vulkan`). A default projection is assumed and the HUD is interpolated |
 
 **Motion vectors and HDR:** games whose motion vectors include camera jitter
 (such as Death Stranding 2) are corrected on the GPU before XeFG. HDR10
@@ -1192,7 +1210,7 @@ Written to your `ReShade.ini` under `[RenoDX.MFGUnlock]`:
 | `DynamicMFG` | `0` | Requests native NVIDIA Dynamic MFG only on the supported 310.9.1/310.9.16 + 2.14.1/2.14.16 D3D12 runtimes after the provider reports support; takes priority over `ForceMultiplier` while active |
 | `DynamicTargetFPS` | `0` | Dynamic output target; `0` follows display refresh. With VSync active, Streamline ignores a nonzero value and follows refresh instead |
 | `ReflexSourceFpsCap` | `0` | Compatibility key for **Output FPS Cap (Reflex)**. Despite the historical key name, the number is the final/output FPS ceiling; `120` targets up to approximately 120 displayed FPS |
-| `ReflexModeOverride` | `0` | `0` preserves the game setting; `1` uses FG-safe Off by keeping Streamline at Low Latency and bypassing only `slReflexSleep`; `2` forces On; `3` forces On + Boost |
+| `ReflexModeOverride` | `0` | `0` preserves the game setting; `1` uses FG-safe Off by keeping Streamline at Low Latency and bypassing only `slReflexSleep` (the NVIDIA overlay still shows Reflex On); `2` forces On; `3` forces On + Boost. With Frame Generation on, DLSS-G paces its own queue, so these usually measure the same latency; Boost helps only when the CPU is the bottleneck. A change in the panel applies on the game's next Reflex sleep |
 | `ReflexPacingMethod` | `0` | `0` uses native `slReflexSleep`; `1` requests the experimental DXGI Waitable path after its 120-token safety probe |
 | `ReflexVrrHeadroomEnabled` | `0` | Enables the final/output Reflex cap derived from verified VRR refresh and the configured headroom |
 | `ReflexVrrHeadroomBasisPoints` | `100` | VRR headroom from `50` to `300` basis points (0.5%-3.0%); invalid values normalize to 1.0% |
@@ -1205,6 +1223,11 @@ Written to your `ReShade.ini` under `[RenoDX.MFGUnlock]`:
 | `DlssSuperResolutionPreset` | `0` | DLSS Super Resolution preset applied during play: `0` keeps the game's presets; `10`-`13` select J, K, L or M. Streamline games apply it at once; games that create DLSS through NGX use it when they recreate DLSS. An NVIDIA App preset override takes precedence |
 | `DlssRayReconstructionPreset` | `0` | DLSS Ray Reconstruction preset applied during play: `0` keeps the game's presets; `4`-`6` select D, E or F (F is the DLSS 4.5 model). Only games that pass Ray Reconstruction presets to Streamline |
 | `DepthEdgeGuardLevel` | `0` | Optional depth-edge tuning: `0` keeps the game value; `1`-`4` select progressively lower separation thresholds |
+| `Rtx50QualityFixes` | `0` | RTX 50 only, experimental: `1` applies the validated warp blend (the thin-geometry and HUD-edge quality fix) to the provider's sm_120 kernel. RTX 50 cards otherwise leave the DLSS-G provider untouched, because the other quality fixes target Ada kernels the RTX 50 does not run. Restart required |
+
+`[DLSSG] ForceBorderless=1` in `MFGAdaUnlock.ini` beside the game still serves
+the DLSS-G backend's window as borderless. Since 1.7 it is no longer in the
+panel; it is read once when the game starts.
 
 The full geometry V3 ptxas payload is larger than the provider's original Ada
 cubin slot. Builds that deliberately include this research payload never write
@@ -1437,21 +1460,30 @@ cadence.
 
 ## RTX 30-series support
 
-RTX 30-series support is now available through
+RTX 30-series (and, since its 0.4 releases, RTX 20-series) support for NVIDIA's
+own DLSS-G is available through
 [sdli1995's separate `dlssg_for_sm86` project](https://github.com/sdli1995/dlssg_for_sm86).
-It provides a dedicated SM86 backend and proxy runtime instead of relying on the
+It is a proxy DLL that keeps NVIDIA's runtime and replaces its inference
+kernels with its own CUDA kernels for SM86/SM75, instead of relying on the
 Ada/Blackwell kernels shipped in the standard DLSS-G runtime.
 
-The project's first milestone documents validation on an RTX 3080 Ti with
-Direct3D 12, including native 2x/4x operation in Black Myth: Wukong and
-Cyberpunk 2077. Follow that repository's installation, compatibility, and
-runtime-version instructions for RTX 30-series use.
+Its documentation lists Direct3D 12 only (Vulkan is not supported) and a
+recent NVIDIA driver (R580 or newer). Because it presents through NVIDIA's own
+DLSS-G path, it is not limited to borderless or windowed display modes. Follow
+that repository's installation, compatibility, and runtime-version
+instructions.
 
-`dlssg_for_sm86` is an independent implementation and is not bundled with or
-maintained by this fork. The DLSS-G backend of MFG Unlock remains targeted at
-RTX 40-series GPUs. On RTX 20 and 30-series cards, the
-[XeMFG backend](#xemfg-backend) provides multi-frame generation through Intel
-XeSS-FG instead.
+When to use which on RTX 20/30:
+
+- **`dlssg_for_sm86`** in Direct3D 12 games that ship DLSS Frame Generation,
+  for NVIDIA's frame-generation model and exclusive fullscreen.
+- **The [XeMFG backend](#xemfg-backend)** in games without DLSS Frame
+  Generation (it also reads FSR 3.1 and DLSS Super Resolution inputs), or when
+  `dlssg_for_sm86` does not support the game.
+
+`dlssg_for_sm86` is an independent implementation (GPLv3) and is not bundled
+with or maintained by this fork. The DLSS-G backend of MFG Unlock remains
+targeted at RTX 40-series GPUs.
 
 ## Building
 
@@ -1518,6 +1550,15 @@ as `renodx-mfgunlock.addon64`). Configure `tests/CMakeLists.txt` with:
 
 The motion-vector dejitter and scRGB passes are compiled with `fxc` from the
 Windows SDK during the build.
+
+The Vulkan path (1.7) is built in only when two local inputs exist:
+`XEMFG_VULKAN_HEADERS`, the Khronos Vulkan-Headers include directory (1.3 or
+later; `vulkan-sdk-1.4.350.1` was used), and `XEMFG_XVK_PROGRAMS`, the folder
+written by `python -I tools/extract_xvk_programs.py <MFGUnlocker.dll> <folder>`
+from your own copy of dashdogy's MFG Unlocker 1.7.0 release DLL (its SHA-256 is
+checked; the DLL is read, never loaded). The SPIR-V it extracts derives from
+Intel's programs and is never committed. Without them the addon builds without
+the Vulkan path.
 
 The gate is `ctest -C Release`. It runs:
 

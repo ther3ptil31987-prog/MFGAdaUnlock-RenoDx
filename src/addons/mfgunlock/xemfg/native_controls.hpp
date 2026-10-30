@@ -17,6 +17,9 @@ struct ControlSettings {
   // 1.5.8: an exclusive fullscreen request on the XeMFG output is served as
   // borderless (off by default).
   bool exclusiveAsBorderless{};
+  // 1.7 (plan E.2): without HUD-less color from the game, compose unchanged
+  // back-buffer pixels as UI (off by default).
+  bool uiStabilization{};
 };
 struct ControlStatus {
   uint32_t version{5};
@@ -29,6 +32,7 @@ struct ControlStatus {
   bool uiCompositionAvailable{}, uiCompositionApplied{}, uiCompositionKnown{};
   int uiCompositionResult{};
   uint64_t uiCompositionUpdates{};
+  bool uiStabilized{};
   bool modelPort{}, modelInitialized{}, modelUpdating{}, cudaUpdating{}, settingsSaved{true},invalidConfiguration{};
   uint32_t cudaState{}, cudaLayers{};
   int cudaMajor{}, cudaMinor{};

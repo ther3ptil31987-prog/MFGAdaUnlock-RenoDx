@@ -3,6 +3,9 @@
 #include "backend_api.hpp"
 #include "dependency_manager.hpp"
 #include "native_ngx.hpp"
+#ifdef MFGUNLOCK_XEMFG_VULKAN
+#include "native_vulkan.hpp"
+#endif
 #include "../panel_ui.hpp"
 #include <sstream>
 namespace mfgunlock::xemfg::native {
@@ -32,6 +35,27 @@ void Draw() {
   const bool generating=status.enabled && status.sdkResult>=0 && status.submitted>1;
   const bool paused=status.output && s.nativeOff && !s.requested;
   const auto multiplier=std::to_string(s.multiplier.load())+"x";
+  bool vulkanGame=false; // 1.7 (plan F): the DX12 input notices below do not apply
+#ifdef MFGUNLOCK_XEMFG_VULKAN
+  // 1.7 (plan F): a Vulkan game runs through the Vulkan host, not the DX12 output.
+  if(const auto vk=vulkan::Status();vk.game) {
+    vulkanGame=true;
+    const bool vkGenerating=vk.active && vk.frames>1;
+    const char* waiting=unavailable?"XeMFG unavailable":vk.active?"Frame generation is off in the game"
+        :vk.reason=="no_dlss_inputs"?"Waiting for DLSS (turn DLSS on in the game)"
+        :vk.reason=="game_frame_generation"?"Waiting for the game's frame generation switch":"Waiting for the game";
+    ui::Hero(multiplier.c_str(),"XeMFG","Vulkan",vkGenerating?"Generating frames":waiting,vkGenerating);
+    if(vk.active && vk.baseFpsMilli && vk.outputFpsMilli) {
+      char line[96];
+      snprintf(line,sizeof(line),"%.0f base fps -> %.0f fps output",vk.baseFpsMilli/1000.0,vk.outputFpsMilli/1000.0);
+      ui::Description(line);
+    }
+    if(!vk.active && !vk.reason.empty() && vk.reason!="no_dlss_inputs" && vk.reason!="active") {
+      const auto text="Vulkan host: "+vk.reason;
+      ui::Description(text.c_str());
+    }
+  } else
+#endif
   ui::Hero(multiplier.c_str(),"XeMFG","DX12",generating?"Generating frames":
       unavailable?"XeMFG unavailable":paused?"Game has paused frame generation":status.output?"Waiting for compatible frame inputs":"Waiting for the game",generating);
   const auto ref=reframework::Snapshot();
@@ -74,6 +98,7 @@ void Draw() {
       ui::Notice("Another frame-generation loader is active. Use this addon with ReShade directly, then restart the game.");
     else ui::Notice("XeMFG could not initialize. Open Diagnostics and copy the report to see the reason.");
   }
+  else if(vulkanGame) {}
   else if(!status.output && ngx::Saved()==1) ui::Notice("DLSS-SR input saved. Restart the game to apply it.",ui::Accent);
   else if(!status.output && DlssSrSuggested()) {
     ui::Notice("This game has no frame generation XeMFG can use, but it runs DLSS Super Resolution. "
@@ -135,7 +160,7 @@ void Draw() {
   }
   DrawControls(page);
   if(page==PanelPage::Diagnostics || (page==PanelPage::General && unavailable)) dependencies::Draw();
-  ui::Footer("MFG Unlock | 1.6.0");
+  ui::Footer("MFG Unlock | 1.7.0");
 }
 }
 extern "C" __declspec(dllexport) uint64_t MFGAXePanelDraws() {

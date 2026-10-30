@@ -16,6 +16,9 @@
 #include <algorithm>
 #include <psapi.h>
 #include <intrin.h>
+#ifdef MFGUNLOCK_XEMFG_VULKAN
+#include "native_vulkan.hpp"
+#endif
 
 namespace mfgunlock::xemfg::native {
 namespace {
@@ -319,7 +322,15 @@ void RejectUpstreamInput(const InputLease& lease,uint32_t id,uint32_t viewport,s
         +"\",\"id\":"+std::to_string(id)+",\"result\":"+std::to_string(uint32_t(result)));
   }
 }
+// 1.7 (plan F): a Vulkan game has no D3D12 output to feed; its Streamline
+// inputs pass on untouched (the Vulkan host reads DLSS-SR's from NGX).
+#ifdef MFGUNLOCK_XEMFG_VULKAN
+#define MFG_VULKAN_PASS(call) if(vulkan::InstanceSeen()) return call;
+#else
+#define MFG_VULKAN_PASS(call)
+#endif
 sl::Result TagHook(const sl::ViewportHandle& v,const sl::ResourceTag* t,uint32_t n,sl::CommandBuffer* c) {
+  MFG_VULKAN_PASS(setTag(v,t,n,c))
   const InputLease lease;
   const auto id=State().recording.load();
   TraceInput("slSetTag",id,uint32_t(v));
@@ -331,6 +342,7 @@ sl::Result TagHook(const sl::ViewportHandle& v,const sl::ResourceTag* t,uint32_t
 }
 sl::Result TagFrameHook(const sl::FrameToken& f,const sl::ViewportHandle& v,
     const sl::ResourceTag* t,uint32_t n,sl::CommandBuffer* c) {
+  MFG_VULKAN_PASS(setTagFrame(f,v,t,n,c))
   const InputLease lease;
   TraceInput("slSetTagForFrame",FrameId(uint32_t(f)),uint32_t(v));
   const auto id=FrameId(uint32_t(f)); const auto r=setTagFrame(f,v,t,n,c);
@@ -340,6 +352,7 @@ sl::Result TagFrameHook(const sl::FrameToken& f,const sl::ViewportHandle& v,
   return r;
 }
 sl::Result ConstantsHook(const sl::Constants& c,const sl::FrameToken& f,const sl::ViewportHandle& v) {
+  MFG_VULKAN_PASS(setConstants(c,f,v))
   const InputLease lease;
   TraceInput("slSetConstants",FrameId(uint32_t(f)),uint32_t(v));
   const auto r=setConstants(c,f,v); const auto id=FrameId(uint32_t(f));
@@ -399,6 +412,9 @@ sl::Result OptionsHook(const sl::ViewportHandle& v,const sl::DLSSGOptions& opts)
   if(!SelectedViewport(uint32_t(v))) return r;
   s.nativeOff=r==sl::Result::eOk;
   s.requested=logicalLoaded && opts.mode!=sl::DLSSGMode::eOff;
+#ifdef MFGUNLOCK_XEMFG_VULKAN
+  vulkan::SetGameFrameGeneration(opts.mode!=sl::DLSSGMode::eOff); // the Vulkan host follows the game's switch
+#endif
   s.streamlineGeneration=s.requested.load();
   static std::atomic<uint64_t> previous{UINT64_MAX};
   const uint64_t signature=uint64_t(uint32_t(opts.mode))|(uint64_t(uint32_t(r))<<32);
@@ -465,6 +481,7 @@ sl::Result ReflexOptionsHook(const sl::ReflexOptions& opts) {
 }
 sl::Result AssociateSourceSleep(const std::shared_ptr<Output>& o,uint32_t source);
 sl::Result SleepHook(const sl::FrameToken& f) {
+  MFG_VULKAN_PASS(reflexSleep(f))
   const auto source=FrameId(uint32_t(f));
   TraceInput("slReflexSleep",source);
   auto o=Active(); if(!o) return reflexSleep(f);
@@ -520,6 +537,7 @@ sl::Result AssociateSourceSleep(const std::shared_ptr<Output>& o,uint32_t source
   return SleepSourceFrame(o,target,nullptr,nullptr,epoch);
 }
 void CaptureMarker(sl::PCLMarker marker,const sl::FrameToken& f) {
+  MFG_VULKAN_PASS(void())
   TraceInput("latency_marker",FrameId(uint32_t(f)),UINT32_MAX,int(marker));
   const auto id=FrameId(uint32_t(f)); auto& s=State(); const auto value=uint32_t(marker);
   s.streamlineMarkerTick=GetTickCount64();
@@ -581,6 +599,7 @@ sl::Result LegacyMarkerHook(uint32_t marker,const sl::FrameToken& frame) {
 }
 sl::Result EvaluateHook(sl::Feature feature,const sl::FrameToken& f,const sl::BaseStructure** inputs,
     uint32_t count,sl::CommandBuffer* command) {
+  MFG_VULKAN_PASS(evaluate(feature,f,inputs,count,command))
   if(inputs && count<=16 && (feature==sl::kFeatureReflex || feature==sl::kFeaturePCL)) {
     for(uint32_t i=0;i<count;++i) {
       const auto* in=inputs[i]; if(!in || in->structVersion!=1) continue;
@@ -843,7 +862,11 @@ void BeforePresent(const std::shared_ptr<Output>& o) {
   s.lastHudFiltered=frame?frame->hudFiltered:0; s.lastHudCopied=frame?frame->hudCopied:0;
   const bool hudless=frame && !frame->failed
       && (frame->resources&(1u<<XEFG_SWAPCHAIN_RES_HUDLESS_COLOR));
-  const bool compositionReady=ApplyUiComposition(*o,hudless);
+  // 1.7 (plan E.2): with HUD stabilization on, the game's HUD tags were held
+  // back (SubmitResource), so `hudless` is false and the addon's inputs apply.
+  const bool stabilized=!hudless && frame && !frame->failed && ControlsSettings().uiStabilization
+      && StabilizeHud(*o,*frame,id);
+  const bool compositionReady=ApplyUiComposition(*o,hudless || stabilized,stabilized);
   constexpr uint32_t required=(1u<<XEFG_SWAPCHAIN_RES_DEPTH)|(1u<<XEFG_SWAPCHAIN_RES_MOTION_VECTOR);
   const bool nativeReflex=s.latencyOutput.load()==LatencyOutput::Reflex;
   const bool latencyReady=s.reflexOptionsReady && (nativeReflex?s.gameReflexMode!=0:s.reflexOff.load());

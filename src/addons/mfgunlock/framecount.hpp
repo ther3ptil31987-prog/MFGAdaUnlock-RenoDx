@@ -1106,6 +1106,17 @@ inline sl::Result HookedReflexSetOptions(const sl::ReflexOptions& options) {
 inline sl::Result HookedReflexSleep(const sl::FrameToken& frame) {
   const auto real = g_real_reflex_sleep.load(std::memory_order_acquire);
   if (real == nullptr) return sl::Result::eErrorNotInitialized;
+  // 1.7: a panel change only reaches Streamline when the thread that owns the
+  // game's Reflex options replays them. Games that set options once and
+  // present from another thread never gave Present that chance, so the
+  // game's own per-frame sleep on the owner thread replays it as well.
+  if (g_latency_guard_refresh_pending.load(std::memory_order_acquire) &&
+      g_reflex_owner_thread.load(std::memory_order_relaxed) ==
+          GetCurrentThreadId() &&
+      g_latency_guard_refresh_pending.exchange(false,
+                                               std::memory_order_acq_rel)) {
+    RefreshReflexTarget();
+  }
   // The default steady-state path is one dispatch load and a direct call.
   switch (reflexpacing::g_sleep_dispatch.load(std::memory_order_relaxed)) {
     case reflexpacing::SleepDispatch::kBypass:

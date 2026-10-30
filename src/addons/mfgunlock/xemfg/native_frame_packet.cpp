@@ -244,6 +244,32 @@ void SubmitResource(Output& o,Frame& frame,uint32_t id,const Resource& t) {
     }
     data.validity=XEFG_SWAPCHAIN_RV_ONLY_NOW;
   } else { rejection="lifecycle"; reject(HudMetadata); return; }
+  // 1.7 (plan E.2): HUD stabilization supplies its own HUD-less and UI
+  // inputs at the source Present, so the static HUD stays put while moving
+  // HUD is still interpolated at the output rate. XeFG keeps only the first
+  // tag of a type per frame, so the game's own HUD tags are held back here.
+  // The game's HUD-less is kept for the mask: a volatile one is copied now.
+  if(optional && ControlsSettings().uiStabilization) {
+    if(type==XEFG_SWAPCHAIN_RES_HUDLESS_COLOR && !encodeScrgb) {
+      const DejitterRegion region{uint32_t(data.resourceBase.x),uint32_t(data.resourceBase.y),data.resourceSize.x,data.resourceSize.y};
+      if(data.validity==XEFG_SWAPCHAIN_RV_ONLY_NOW) {
+        if(!o.hudCopy) {
+          auto copy=std::make_unique<HudCopy>();
+          if(copy->Initialize(o.device.Get())) o.hudCopy=std::move(copy);
+        }
+        ComPtr<ID3D12GraphicsCommandList> graphics;
+        ID3D12Resource* copy=o.hudCopy && list && SUCCEEDED(list.As(&graphics))
+            ?o.hudCopy->Record(graphics.Get(),resource.Get(),data.incomingState,region,o.format,0,id):nullptr;
+        if(copy) frame.heldHudless={copy,D3D12_RESOURCE_STATE_COMMON,{0,0,region.width,region.height},type,false};
+      } else frame.heldHudless={resource,data.incomingState,region,type,false};
+    }
+    receipt.accepted=false; receipt.rejection="hud_stabilization";
+    static std::atomic<uint32_t> heldLogBudget{};
+    if(heldLogBudget.fetch_add(1)<2)
+      xess_mod::WriteLog("native_hud_held","\"id\":"+std::to_string(id)+",\"type\":"+std::to_string(type)
+          +",\"reference\":"+(frame.heldHudless.source?"true":"false"));
+    return;
+  }
   // A second tag of an accepted type in the same frame (games that tag for
   // DLSS-SR and DLSS-G separately): XeFG keeps the first and refuses the
   // rest, so the first is kept here too and the frame is not failed.

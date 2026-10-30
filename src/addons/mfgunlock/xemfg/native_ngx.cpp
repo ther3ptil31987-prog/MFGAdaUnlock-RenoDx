@@ -8,6 +8,9 @@
 #include <DirectXMath.h>
 #include <map>
 #include <mutex>
+#ifdef MFGUNLOCK_XEMFG_VULKAN
+#include "native_vulkan.hpp"
+#endif
 
 namespace mfgunlock::xemfg::native::ngx {
 namespace {
@@ -153,6 +156,9 @@ void OutputCreated(const std::shared_ptr<Output>& o) {
   if(Armed() && !synthetic::Owner()) synthetic::Begin(o,synthetic::kDlssSr);
 }
 void Discover() {
+#ifdef MFGUNLOCK_XEMFG_VULKAN
+  vulkan::DiscoverNgx();
+#endif
   if(!Enabled()) return;
   static std::mutex once; std::lock_guard guard(once);
   HMODULE module=GetModuleHandleW(L"_nvngx.dll");

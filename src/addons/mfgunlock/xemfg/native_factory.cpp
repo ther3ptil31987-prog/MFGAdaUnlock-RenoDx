@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Own public COM adapter: independent of a particular factory detour entry.
 #include "native_factory.hpp"
+#include "backend_api.hpp"
+#include "vendor/xess_mod.h"
 #include <atomic>
+#include <string>
 namespace mfgunlock::xemfg::native {
 using Microsoft::WRL::ComPtr;
 namespace {
@@ -22,6 +25,20 @@ public:
   ULONG STDMETHODCALLTYPE Release() override {const auto n=--references;if(!n)delete this;return n;}
   HRESULT STDMETHODCALLTYPE CreateSwapChainForHwnd(IUnknown* queue,HWND window,const DXGI_SWAP_CHAIN_DESC1* desc,
       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* full,IDXGIOutput* restrictOutput,IDXGISwapChain1** out) override {
+    // 1.7 (plan J): the flip queue holds as many outputs as XeFG's native swap
+    // chain has back buffers, and XeFG creates it with the game's count. As
+    // upstream's NativeBuffersScope does, ask for the queue's count and fall
+    // back to the game's descriptor if that creation fails. XeFG's proxy keeps
+    // reporting the game's count, and a later resize returns to it.
+    const uint32_t raise=FlipQueueNativeBuffers();
+    if(desc && raise>desc->BufferCount) {
+      auto raised=*desc; raised.BufferCount=raise;
+      const HRESULT hr=CreateFinalNativeOutput(original.Get(),queue,window,&raised,full,restrictOutput,out);
+      static std::atomic<unsigned> logs{};
+      if(logs.fetch_add(1)<4) xess_mod::WriteLog("native_buffers","\"game\":"+std::to_string(desc->BufferCount)
+          +",\"requested\":"+std::to_string(raise)+",\"result\":"+std::to_string(hr));
+      if(SUCCEEDED(hr)) return hr;
+    }
     return CreateFinalNativeOutput(original.Get(),queue,window,desc,full,restrictOutput,out);
   }
 #define HR(name,args,call) HRESULT STDMETHODCALLTYPE name args override {return original->name call;}

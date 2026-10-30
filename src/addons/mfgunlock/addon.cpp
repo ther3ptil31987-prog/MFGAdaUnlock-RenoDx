@@ -156,6 +156,7 @@
 #include "./thin_geometry.hpp"
 #include "./validation_status.hpp"
 #include "./blackwell.hpp"
+#include "./gpu_arch.hpp"
 
 // The addon_*.inl fragments below are parts of this file (plan 6.2-6.6).
 #define MFGUNLOCK_ADDON_FRAGMENTS
@@ -218,6 +219,9 @@ std::atomic_bool g_configured_blackwell_framework_kernels{true};
 // The two complementary thin-geometry mechanisms are the experimental quality
 // default. Persisted user choices still take precedence over these defaults.
 std::atomic_bool g_thin_geometry_validated_warp_blend{true};
+// 1.7 (plan C.4): apply the validated warp blend on RTX 50 by rewriting the
+// provider's sm_120 PTX. Off until RTX 50 field testing confirms it.
+std::atomic_bool g_rtx50_quality_fixes{false};
 std::atomic_bool g_configured_thin_geometry_validated_warp_blend{true};
 std::atomic_bool g_thin_geometry_previous_scatter{false};
 std::atomic_bool g_configured_thin_geometry_previous_scatter{false};
@@ -898,6 +902,10 @@ void LoadConfig() {
   g_configured_thin_geometry_validated_warp_blend.store(
       g_thin_geometry_validated_warp_blend.load(std::memory_order_relaxed),
       std::memory_order_relaxed);
+  if (reshade::get_config_value(nullptr, kConfigSection, "Rtx50QualityFixes",
+                                value)) {
+    g_rtx50_quality_fixes.store(value != 0, std::memory_order_relaxed);
+  }
   if (reshade::get_config_value(nullptr, kConfigSection,
                                 "ThinGeometryPreviousScatter", value)) {
     g_thin_geometry_previous_scatter.store(value != 0,
@@ -1158,7 +1166,7 @@ void LoadConfig() {
 extern "C" __declspec(dllexport) constexpr const char* NAME = "MFG Unlock";
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
-    "MFG Unlock 1.6.0 - DLSS-G and XeMFG backends";
+    "MFG Unlock 1.7.0 - DLSS-G and XeMFG backends";
 #elif defined(MFGUNLOCK_DUAL_BACKEND)
     "Dual Backend Preview X1 - official 1.4.5 base; DLSS-G and XeMFG via OptiScaler; gameplay validation pending";
 #elif defined(MFGUNLOCK_RELEASE_1_4_5)
