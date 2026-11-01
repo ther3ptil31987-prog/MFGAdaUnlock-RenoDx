@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "native_vulkan.hpp"
 #include "vendor/xvkhost/vk_host.h"
+#include "vulkan_policy.hpp"
+#include "display_cap.hpp"
 #include "vendor/xvk/single_module.h"
 #include "vendor/xess_mod.h"
 #include "vendor/third_party/minhook/include/MinHook.h"
@@ -16,7 +18,10 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mfgunlock::xemfg::native { bool Hook(void* entry,void* replacement,void** trampoline); }
+namespace mfgunlock::xemfg::native {
+bool Hook(void* entry,void* replacement,void** trampoline);
+uint32_t DisplayCapIntervalForWindow(HWND window) noexcept;
+}
 
 // The xvk layer's log and program module (vendor/xvk/single_module.h).
 namespace single_module {
@@ -49,14 +54,34 @@ struct Internal { Internal() { ++internalDepth; } ~Internal() { --internalDepth;
 // Calls from this module (the host and the xvk layer) pass straight on: they
 // reach these hooks through the loader's exports, never to be taken over.
 bool FromSelf(const void* caller) noexcept {
-  MEMORY_BASIC_INFORMATION m{};
-  return caller && VirtualQuery(caller,&m,sizeof(m))==sizeof(m) && m.AllocationBase==xess_mod::Self();
+  static std::atomic<uintptr_t> selfBase{},selfEnd{};
+  auto base=selfBase.load(std::memory_order_acquire);
+  if(!base) {
+    const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(xess_mod::Self());
+    if(!dos) return false;
+    const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const char*>(dos)+dos->e_lfanew);
+    selfEnd.store(reinterpret_cast<uintptr_t>(dos)+nt->OptionalHeader.SizeOfImage,std::memory_order_release);
+    base=reinterpret_cast<uintptr_t>(dos);
+    selfBase.store(base,std::memory_order_release);
+  }
+  const auto address=reinterpret_cast<uintptr_t>(caller);
+  return address>=base && address<selfEnd.load(std::memory_order_acquire);
 }
 bool Passed(const void* caller) noexcept { return internalDepth>0 || FromSelf(caller); }
 std::atomic<bool> takeoverSeen{};
 std::atomic<uint64_t> presentsDone{}; // the game's presents through this hook (hang watch)
-std::atomic<VkDevice> inputDevice{}; // the host's device, for the input copy's own views
+std::atomic<VkDevice> inputDevice{}; // the newest host device, for an input image created before the hooks
+std::atomic<VkInstance> gameInstance{}; // for the surface's present modes
 std::atomic<bool> exclusiveExtension{}; // the game's device enabled VK_EXT_full_screen_exclusive
+// 1.7.1 (plan B.3): the game's Reflex limit and the display cap, as on D3D12: the
+// longer interval wins, and XeLL holds it for every presented frame.
+std::atomic<uint32_t> gameLimitUs{};
+std::atomic<HWND> gameWindow{};
+std::atomic<uint64_t> limitTick{};
+void ApplyFpsLimit() noexcept {
+  const auto cap=DisplayCapIntervalForWindow(gameWindow.load());
+  xess_vulkan::SetStandaloneFpsLimit(policy::LimitFps(CombinedIntervalUs(gameLimitUs.load(),cap)));
+}
 void FlushLog();
 
 #define MFG_VK_EXPORTS(X) \
@@ -78,7 +103,8 @@ struct Extensions {
 #define MFG_FIELD(name) PFN_##name name{};
   MFG_VK_EXTENSIONS(MFG_FIELD)
 #undef MFG_FIELD
-  PFN_vkSignalSemaphore vkSignalSemaphore{};
+  PFN_vkSignalSemaphore vkSignalSemaphore{}; // set only on a device the host prepared
+  VkPhysicalDevice physical{};
 };
 std::mutex extensionLock;
 std::unordered_map<VkDevice,Extensions> deviceExtensions;
@@ -88,6 +114,27 @@ template<class F> F Extension(VkDevice device,F Extensions::*member) {
   const auto found=deviceExtensions.find(device);
   if(found!=deviceExtensions.end() && found->second.*member) return found->second.*member;
   return instanceExtensions.*member;
+}
+
+// A device the host prepared: its chains can be taken over. Any other device
+// stays native and keeps what the game asked for.
+bool HostPrepared(VkDevice device) {
+  std::lock_guard guard(extensionLock);
+  const auto found=deviceExtensions.find(device);
+  return found!=deviceExtensions.end() && found->second.vkSignalSemaphore;
+}
+VkPresentModeKHR SwapchainPresentMode(VkDevice device,const VkSwapchainCreateInfoKHR& info) {
+  if(info.presentMode!=VK_PRESENT_MODE_MAILBOX_KHR) return info.presentMode;
+  VkPhysicalDevice physical{};
+  {
+    std::lock_guard guard(extensionLock);
+    if(const auto found=deviceExtensions.find(device);found!=deviceExtensions.end()) physical=found->second.physical;
+  }
+  const auto query=reinterpret_cast<PFN_vkGetPhysicalDeviceSurfacePresentModesKHR>(
+      original_vkGetInstanceProcAddr(gameInstance.load(),"vkGetPhysicalDeviceSurfacePresentModesKHR"));
+  VkPresentModeKHR modes[16]{}; uint32_t count=16;
+  if(!physical || !query || query(physical,info.surface,&count,modes)<0) count=0;
+  return policy::HostPresentMode(info.presentMode,modes,count);
 }
 
 // The host's own resolvers: the loader's originals, never these hooks.
@@ -106,6 +153,7 @@ std::mutex instanceLock;
 std::map<VkInstance,bool> instances;
 void SeeInstance(VkInstance instance) {
   if(!instance) return;
+  gameInstance=instance;
   {
     std::lock_guard guard(instanceLock);
     if(!instances.emplace(instance,true).second) return;
@@ -160,16 +208,21 @@ __declspec(noinline) VkResult VKAPI_CALL Hook_vkCreateDevice(VkPhysicalDevice ph
       std::lock_guard guard(extensionLock);
       auto& e=deviceExtensions[*output];
       e.vkSignalSemaphore=reinterpret_cast<PFN_vkSignalSemaphore>(original_vkGetDeviceProcAddr(*output,"vkSignalSemaphore"));
+      e.physical=physical;
     }
     xess_vulkan::DeviceCreated(std::move(edit),*output);
     inputDevice=*output;
   }
   return result;
 }
+void ForgetDeviceImages(VkDevice device);
 __declspec(noinline) void VKAPI_CALL Hook_vkDestroyDevice(VkDevice device,const VkAllocationCallbacks* allocator) {
   if(!Passed(_ReturnAddress())) {
     Internal internal;
     xess_vulkan::DeviceDestroying(device);
+    ForgetDeviceImages(device);
+    VkDevice expected=device;
+    inputDevice.compare_exchange_strong(expected,VK_NULL_HANDLE);
     std::lock_guard guard(extensionLock);
     deviceExtensions.erase(device);
   }
@@ -189,6 +242,7 @@ __declspec(noinline) VkResult VKAPI_CALL Hook_vkCreateWin32SurfaceKHR(VkInstance
   const auto result=original_vkCreateWin32SurfaceKHR(instance,info,allocator,output);
   if(!Passed(_ReturnAddress()) && result==VK_SUCCESS && info && output) {
     SeeInstance(instance);
+    gameWindow=info->hwnd;
     xess_vulkan::SurfaceCreated(instance,*output,info->hwnd);
   }
   return result;
@@ -201,9 +255,10 @@ __declspec(noinline) void VKAPI_CALL Hook_vkDestroyInstance(VkInstance instance,
   if(!Passed(_ReturnAddress())) { xess_vulkan::InstanceDestroyed(instance); ForgetInstance(instance); }
   original_vkDestroyInstance(instance,allocator);
 }
+void ForgetPrivateData(VkSwapchainKHR swapchain);
 __declspec(noinline) VkResult VKAPI_CALL Hook_vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateInfoKHR* info,
     const VkAllocationCallbacks* allocator,VkSwapchainKHR* output) {
-  if(Passed(_ReturnAddress())) return original_vkCreateSwapchainKHR(device,info,allocator,output);
+  if(Passed(_ReturnAddress()) || !HostPrepared(device)) return original_vkCreateSwapchainKHR(device,info,allocator,output);
   Internal internal;
   // Full-screen exclusive is disallowed on every chain of the game while the
   // host is on: an exclusive native chain kept the display after the takeover
@@ -241,9 +296,11 @@ __declspec(noinline) VkResult VKAPI_CALL Hook_vkCreateSwapchainKHR(VkDevice devi
   // mode kept an old picture on screen while the game had the focus (RDR2).
   VkSwapchainCreateInfoKHR immediate{};
   if(info && info->presentMode==VK_PRESENT_MODE_MAILBOX_KHR) {
-    immediate=*used; immediate.presentMode=VK_PRESENT_MODE_IMMEDIATE_KHR; used=&immediate;
+    const auto mode=SwapchainPresentMode(device,*info);
+    if(mode!=info->presentMode) { immediate=*used; immediate.presentMode=mode; used=&immediate; }
     static std::atomic<bool> logged{};
-    if(!logged.exchange(true)) xess_mod::WriteLog("vk_swapchain_present_mode","\"requested\":\"mailbox\",\"used\":\"immediate\"");
+    if(!logged.exchange(true)) xess_mod::WriteLog("vk_swapchain_present_mode",std::string("\"requested\":\"mailbox\",\"used\":\"")
+        +(mode==VK_PRESENT_MODE_IMMEDIATE_KHR?"immediate":"mailbox")+"\"");
   }
   VkResult result=VK_SUCCESS;
   if(xess_vulkan::CreateSwapchain(device,used,allocator,output,original_vkCreateSwapchainKHR,result)) {
@@ -255,6 +312,7 @@ __declspec(noinline) VkResult VKAPI_CALL Hook_vkCreateSwapchainKHR(VkDevice devi
 __declspec(noinline) void VKAPI_CALL Hook_vkDestroySwapchainKHR(VkDevice device,VkSwapchainKHR swapchain,const VkAllocationCallbacks* allocator) {
   if(!Passed(_ReturnAddress())) {
     Internal internal;
+    ForgetPrivateData(swapchain);
     if(xess_vulkan::DestroySwapchain(device,swapchain)) return;
   }
   original_vkDestroySwapchainKHR(device,swapchain,allocator);
@@ -285,6 +343,11 @@ __declspec(noinline) VkResult VKAPI_CALL Hook_vkQueuePresentKHR(VkQueue queue,co
   if(Passed(_ReturnAddress())) return original_vkQueuePresentKHR(queue,info);
   Internal internal;
   struct Count { ~Count() { presentsDone.fetch_add(1,std::memory_order_relaxed); } } count;
+  // The display's refresh and the panel's display cap, as on D3D12, every 2 s.
+  if(const auto tick=GetTickCount64();tick-limitTick.load(std::memory_order_relaxed)>=2000) {
+    limitTick.store(tick,std::memory_order_relaxed);
+    ApplyFpsLimit();
+  }
   VkResult result=VK_SUCCESS;
   if(xess_vulkan::QueuePresent(queue,info,result)) return result;
   result=original_vkQueuePresentKHR(queue,info);
@@ -298,7 +361,7 @@ __declspec(noinline) VkResult VKAPI_CALL Hook_vkDeviceWaitIdle(VkDevice device) 
 
 // The game's images (usage, format, flags): the DLSS input copy samples them,
 // which needs VK_IMAGE_USAGE_SAMPLED_BIT.
-struct ImageInfo { VkImageUsageFlags usage{}; VkFormat format{}; VkImageCreateFlags flags{}; VkSampleCountFlagBits samples{}; };
+struct ImageInfo { VkImageUsageFlags usage{}; VkFormat format{}; VkImageCreateFlags flags{}; VkSampleCountFlagBits samples{}; VkDevice device{}; };
 std::mutex imageLock;
 std::unordered_map<VkImage,ImageInfo> images;
 __declspec(noinline) VkResult VKAPI_CALL Hook_vkCreateImage(VkDevice device,const VkImageCreateInfo* info,
@@ -306,53 +369,77 @@ __declspec(noinline) VkResult VKAPI_CALL Hook_vkCreateImage(VkDevice device,cons
   const auto result=original_vkCreateImage(device,info,allocator,output);
   if(result==VK_SUCCESS && info && output && *output && !FromSelf(_ReturnAddress())) {
     std::lock_guard guard(imageLock);
-    if(images.size()<200000) images[*output]={info->usage,info->format,info->flags,info->samples};
+    if(images.size()<200000) images[*output]={info->usage,info->format,info->flags,info->samples,device};
+    else {
+      // The inputs of a later image are refused: frame generation stops, so it is said once.
+      static std::atomic<bool> logged{};
+      if(!logged.exchange(true)) xess_mod::WriteLog("vk_image_table_full","\"images\":"+std::to_string(images.size()));
+    }
   }
   return result;
 }
 // Single-aspect views of the DLSS input images for the copy, per image.
-std::unordered_map<VkImage,VkImageView> inputViews;
-PFN_vkCreateImageView createView{}; PFN_vkDestroyImageView destroyView{};
-VkImageView InputView(VkImage image,VkFormat format,bool depth) noexcept {
-  const VkDevice device=inputDevice.load();
-  if(!image || !device) return VK_NULL_HANDLE;
-  std::lock_guard guard(imageLock);
-  if(const auto found=inputViews.find(image);found!=inputViews.end()) return found->second;
-  if(!createView) {
-    createView=reinterpret_cast<PFN_vkCreateImageView>(original_vkGetDeviceProcAddr(device,"vkCreateImageView"));
-    destroyView=reinterpret_cast<PFN_vkDestroyImageView>(original_vkGetDeviceProcAddr(device,"vkDestroyImageView"));
+// A view lives until its image or device goes, so the table is bounded by the
+// live input images. Function pointers belong to one device (a game may recreate it).
+struct OwnedView { VkImageView view{}; VkDevice device{}; };
+std::unordered_map<VkImage,OwnedView> inputViews;
+struct ViewFunctions { PFN_vkCreateImageView create{}; PFN_vkDestroyImageView destroy{}; };
+std::unordered_map<VkDevice,ViewFunctions> viewFunctions;
+const ViewFunctions& FunctionsFor(VkDevice device) {
+  auto& functions=viewFunctions[device];
+  if(!functions.create) {
+    functions.create=reinterpret_cast<PFN_vkCreateImageView>(original_vkGetDeviceProcAddr(device,"vkCreateImageView"));
+    functions.destroy=reinterpret_cast<PFN_vkDestroyImageView>(original_vkGetDeviceProcAddr(device,"vkDestroyImageView"));
   }
-  if(!createView || !destroyView) return VK_NULL_HANDLE;
-  // The image's own format (NGX's view may name another), and the aspect it has.
+  return functions;
+}
+VkImageView InputView(VkImage image,VkFormat format,bool depth) noexcept {
+  if(!image) return VK_NULL_HANDLE;
+  std::lock_guard guard(imageLock);
+  if(const auto found=inputViews.find(image);found!=inputViews.end()) return found->second.view;
   const auto known=images.find(image);
+  const VkDevice device=known!=images.end()?known->second.device:inputDevice.load();
+  if(!device) return VK_NULL_HANDLE;
+  const auto& functions=FunctionsFor(device);
+  if(!functions.create || !functions.destroy) return VK_NULL_HANDLE;
+  // The image's own format (NGX's view may name another), and the aspect it has.
   const VkFormat imageFormat=known!=images.end()?known->second.format:format;
-  const bool depthFormat=imageFormat==VK_FORMAT_D16_UNORM || imageFormat==VK_FORMAT_X8_D24_UNORM_PACK32
-      || imageFormat==VK_FORMAT_D32_SFLOAT || imageFormat==VK_FORMAT_D16_UNORM_S8_UINT
-      || imageFormat==VK_FORMAT_D24_UNORM_S8_UINT || imageFormat==VK_FORMAT_D32_SFLOAT_S8_UINT;
-  const bool mutableFormat=known!=images.end() && (known->second.flags&VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT);
-  const VkFormat viewFormat=depthFormat || !mutableFormat?imageFormat:format;
+  const auto choice=policy::ChooseInputView(known!=images.end(),imageFormat,known!=images.end()?known->second.flags:0,format);
+  const bool depthFormat=policy::DepthFormat(imageFormat);
+  const VkFormat viewFormat=choice.format;
   VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   info.image=image; info.viewType=VK_IMAGE_VIEW_TYPE_2D; info.format=viewFormat;
-  info.subresourceRange={VkImageAspectFlags(depthFormat?VK_IMAGE_ASPECT_DEPTH_BIT:VK_IMAGE_ASPECT_COLOR_BIT),0,1,0,1};
+  info.subresourceRange={choice.aspect,0,1,0,1};
   // Only sampled: the image may carry usages a plain view could not support.
   VkImageViewUsageCreateInfo usage{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,nullptr,VK_IMAGE_USAGE_SAMPLED_BIT};
   info.pNext=&usage;
   VkImageView view{};
-  const auto result=createView(device,&info,nullptr,&view);
+  const auto result=functions.create(device,&info,nullptr,&view);
   xess_mod::WriteLog("vk_input_view","\"input\":\""+std::string(depth?"depth":"motion")+"\",\"ngx_format\":"+std::to_string(int(format))
       +",\"image_known\":"+(known!=images.end()?"true":"false")+",\"image_format\":"+std::to_string(int(imageFormat))
       +",\"view_format\":"+std::to_string(int(viewFormat))+",\"depth_aspect\":"+(depthFormat?"true":"false")
       +",\"result\":"+std::to_string(int(result)));
   if(result!=VK_SUCCESS) return VK_NULL_HANDLE;
-  if(inputViews.size()<64) inputViews[image]=view;
+  inputViews[image]={view,device};
   return view;
+}
+// The device is going: its views go first, and no later device inherits its tables.
+void ForgetDeviceImages(VkDevice device) {
+  std::lock_guard guard(imageLock);
+  for(auto i=inputViews.begin();i!=inputViews.end();) {
+    if(i->second.device!=device) { ++i; continue; }
+    if(const auto destroy=FunctionsFor(device).destroy) destroy(device,i->second.view,nullptr);
+    i=inputViews.erase(i);
+  }
+  std::erase_if(images,[&](const auto& entry) { return entry.second.device==device; });
+  viewFunctions.erase(device);
 }
 __declspec(noinline) void VKAPI_CALL Hook_vkDestroyImage(VkDevice device,VkImage image,const VkAllocationCallbacks* allocator) {
   {
     std::lock_guard guard(imageLock);
     images.erase(image);
     if(const auto found=inputViews.find(image);found!=inputViews.end()) {
-      if(destroyView) destroyView(device,found->second,nullptr);
+      if(const auto destroy=FunctionsFor(found->second.device).destroy) destroy(found->second.device,found->second.view,nullptr);
       inputViews.erase(found);
     }
   }
@@ -378,12 +465,14 @@ void VKAPI_CALL Hook_vkSetHdrMetadataEXT(VkDevice device,uint32_t count,const Vk
   if(!native.empty() && original) original(device,uint32_t(native.size()),native.data(),nativeMetadata.data());
 }
 VkResult VKAPI_CALL Hook_vkSetLatencySleepModeNV(VkDevice device,VkSwapchainKHR swapchain,const VkLatencySleepModeInfoNV* info) {
+  if(info && gameLimitUs.exchange(info->minimumIntervalUs)!=info->minimumIntervalUs) ApplyFpsLimit();
   if(xess_vulkan::OwnsSwapchain(swapchain)) return VK_SUCCESS;
   const auto original=Extension(device,&Extensions::vkSetLatencySleepModeNV);
   return original?original(device,swapchain,info):VK_ERROR_INITIALIZATION_FAILED;
 }
 VkResult VKAPI_CALL Hook_vkLatencySleepNV(VkDevice device,VkSwapchainKHR swapchain,const VkLatencySleepInfoNV* info) {
   if(xess_vulkan::OwnsSwapchain(swapchain)) {
+    { Internal internal; xess_vulkan::GameLatencySleep(swapchain); }
     const auto signal=Extension(device,&Extensions::vkSignalSemaphore);
     if(!info || !signal) return VK_SUCCESS;
     VkSemaphoreSignalInfo value{VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,nullptr,info->signalSemaphore,info->value};
@@ -393,7 +482,10 @@ VkResult VKAPI_CALL Hook_vkLatencySleepNV(VkDevice device,VkSwapchainKHR swapcha
   return original?original(device,swapchain,info):VK_ERROR_INITIALIZATION_FAILED;
 }
 void VKAPI_CALL Hook_vkSetLatencyMarkerNV(VkDevice device,VkSwapchainKHR swapchain,const VkSetLatencyMarkerInfoNV* info) {
-  if(xess_vulkan::OwnsSwapchain(swapchain)) return;
+  if(xess_vulkan::OwnsSwapchain(swapchain)) {
+    if(info) { Internal internal; xess_vulkan::GameLatencyMarker(swapchain,uint32_t(info->marker)); }
+    return;
+  }
   if(const auto original=Extension(device,&Extensions::vkSetLatencyMarkerNV)) original(device,swapchain,info);
 }
 void VKAPI_CALL Hook_vkGetLatencyTimingsNV(VkDevice device,VkSwapchainKHR swapchain,VkGetLatencyMarkerInfoNV* info) {
@@ -409,12 +501,12 @@ VkResult VKAPI_CALL Hook_vkWaitForPresentKHR(VkDevice device,VkSwapchainKHR swap
 // Full-screen exclusive: XeFG presents its own chain borderless, so the
 // game's requests on the host's chain succeed without a mode change.
 VkResult VKAPI_CALL Hook_vkAcquireFullScreenExclusiveModeEXT(VkDevice device,VkSwapchainKHR swapchain) {
-  if(xess_vulkan::OwnsSwapchain(swapchain) || Enabled()) return VK_SUCCESS;   // chains are created disallowed (above)
+  if(xess_vulkan::OwnsSwapchain(swapchain) || HostPrepared(device)) return VK_SUCCESS;   // chains are created disallowed (above)
   const auto original=Extension(device,&Extensions::vkAcquireFullScreenExclusiveModeEXT);
   return original?original(device,swapchain):VK_ERROR_INITIALIZATION_FAILED;
 }
 VkResult VKAPI_CALL Hook_vkReleaseFullScreenExclusiveModeEXT(VkDevice device,VkSwapchainKHR swapchain) {
-  if(xess_vulkan::OwnsSwapchain(swapchain) || Enabled()) return VK_SUCCESS;
+  if(xess_vulkan::OwnsSwapchain(swapchain) || HostPrepared(device)) return VK_SUCCESS;
   const auto original=Extension(device,&Extensions::vkReleaseFullScreenExclusiveModeEXT);
   return original?original(device,swapchain):VK_ERROR_INITIALIZATION_FAILED;
 }
@@ -423,22 +515,25 @@ VkResult VKAPI_CALL Hook_vkReleaseFullScreenExclusiveModeEXT(VkDevice device,VkS
 // (vkSetPrivateData with VK_OBJECT_TYPE_SWAPCHAIN_KHR) and names objects for
 // debugging. The driver never saw the host's handle: its data is kept here.
 std::mutex privateLock;
-std::map<std::pair<uint64_t,uint64_t>,uint64_t> privateData; // (slot, swap chain) -> value
+policy::PrivateDataStore privateData;
+void ForgetPrivateData(VkSwapchainKHR swapchain) {
+  std::lock_guard guard(privateLock);
+  privateData.Forget(reinterpret_cast<uint64_t>(swapchain));
+}
 bool HostObject(VkObjectType type,uint64_t handle) {
   return type==VK_OBJECT_TYPE_SWAPCHAIN_KHR && xess_vulkan::OwnsSwapchain(reinterpret_cast<VkSwapchainKHR>(handle));
 }
 VkResult SetPrivate(uint64_t handle,VkPrivateDataSlot slot,uint64_t data) {
   std::lock_guard guard(privateLock);
-  if(privateData.size()<4096) privateData[{uint64_t(slot),handle}]=data;
+  const bool stored=privateData.Set(handle,uint64_t(slot),data);
   static std::atomic<bool> logged{};
   if(!logged.exchange(true)) xess_mod::WriteLog("vk_private_data","\"object\":\"swapchain\",\"emulated\":true");
-  return VK_SUCCESS;
+  return stored?VK_SUCCESS:VK_ERROR_OUT_OF_HOST_MEMORY;
 }
 void GetPrivate(uint64_t handle,VkPrivateDataSlot slot,uint64_t* data) {
   if(!data) return;
   std::lock_guard guard(privateLock);
-  const auto found=privateData.find({uint64_t(slot),handle});
-  *data=found==privateData.end()?0:found->second;
+  *data=privateData.Get(handle,uint64_t(slot));
 }
 VkResult VKAPI_CALL Hook_vkSetPrivateData(VkDevice device,VkObjectType type,uint64_t handle,VkPrivateDataSlot slot,uint64_t data) {
   if(HostObject(type,handle)) return SetPrivate(handle,slot,data);
@@ -653,7 +748,7 @@ std::string ThreadStack(HANDLE thread) {
   if(!GetThreadContext(thread,&context)) return {};
   std::string frames="\"rip:"+ModuleOffset(context.Rip)+"\"";
   const auto* stack=reinterpret_cast<const uint64_t*>(context.Rsp);
-  for(unsigned i=0,found=0;i<512 && found<16;++i) {
+  for(unsigned i=0,found=0;i<8192 && found<160;++i) {
     uint64_t value{};
     if(!ReadProcessMemory(GetCurrentProcess(),stack+i,&value,sizeof(value),nullptr)) break;
     const auto name=ModuleOffset(value);
@@ -677,7 +772,7 @@ DWORD WINAPI HangWatch(void*) {
     if(threads==INVALID_HANDLE_VALUE) continue;
     THREADENTRY32 entry{sizeof(entry)};
     unsigned logged=0;
-    for(BOOL ok=Thread32First(threads,&entry);ok && logged<64;ok=Thread32Next(threads,&entry)) {
+    for(BOOL ok=Thread32First(threads,&entry);ok && logged<256;ok=Thread32Next(threads,&entry)) {
       if(entry.th32OwnerProcessID!=GetCurrentProcessId() || entry.th32ThreadID==self) continue;
       const HANDLE thread=OpenThread(THREAD_SUSPEND_RESUME|THREAD_GET_CONTEXT|THREAD_QUERY_INFORMATION,FALSE,entry.th32ThreadID);
       if(!thread) continue;
@@ -728,6 +823,15 @@ bool BeforeInstance(uint32_t& apiVersion) noexcept {
     const bool metering=GetPrivateProfileIntW(L"XeFG",L"VulkanPresentMetering",1,ini.c_str())!=0;
     xess_vulkan::SetPresentMetering(metering);
     xess_mod::WriteLog("vk_present_metering_config","\"enabled\":"+std::string(metering?"true":"false"));
+    // 1.7.1 (plans B.2, B.4): both off by default until measured in a game.
+    const bool gameLatency=GetPrivateProfileIntW(L"XeFG",L"VulkanGameLatency",0,ini.c_str())!=0;
+    xess_vulkan::SetGameLatency(gameLatency);
+    if(gameLatency) xess_mod::WriteLog("vk_game_latency_config","\"enabled\":true");
+    xess_vulkan::SetStandaloneDynamic(GetPrivateProfileIntW(L"XeFG",L"VulkanDynamicMFG",0,ini.c_str())!=0,
+        GetPrivateProfileIntW(L"XeFG",L"VulkanDynamicTargetFps",0,ini.c_str()),
+        int(GetPrivateProfileIntW(L"XeFG",L"VulkanDynamicRounding",1,ini.c_str())),
+        GetPrivateProfileIntW(L"XeFG",L"VulkanDynamicAllow1x",1,ini.c_str())!=0,
+        GetPrivateProfileIntW(L"XeFG",L"VulkanDynamicTargetAsCap",0,ini.c_str())!=0);
     if(!generate) xess_mod::WriteLog("vk_generate","\"enabled\":false");
     static std::atomic<bool> logged{};
     if(!copy && !logged.exchange(true)) xess_mod::WriteLog("vk_input_copy","\"enabled\":false");
@@ -735,9 +839,7 @@ bool BeforeInstance(uint32_t& apiVersion) noexcept {
   Install();
   // ReShade's create_device writes Vulkan versions as major<<12 | minor<<8
   // (1.3 = 0x1300), not VK_MAKE_API_VERSION.
-  const uint32_t requested=apiVersion?apiVersion:0x1000;
-  const uint32_t major=(requested>>12)&0xF,minor=(requested>>8)&0xF;
-  const bool raised=major==1 && minor<3;
+  const auto [major,minor,raised]=policy::ReadInstanceVersion(apiVersion);
   if(raised) apiVersion=0x1300;
   instanceApi=VK_MAKE_API_VERSION(0,raised?1:major,raised?3:minor,0);
   xess_mod::WriteLog("vk_instance_version","\"requested\":\""+std::to_string(major)+"."+std::to_string(minor)
@@ -757,6 +859,8 @@ PanelStatus Status() noexcept {
     const bool fresh=snapshot.fpsAgeMs<3000;
     out.baseFpsMilli=fresh?snapshot.baseFpsMilli:0; out.outputFpsMilli=fresh?snapshot.outputFpsMilli:0;
     out.inputFrames=snapshot.inputFrames; out.reason=snapshot.reason;
+    out.dynamic=snapshot.dynamic; out.dynamicTargetMilli=snapshot.dynamicTargetMilli;
+    out.fpsLimit=snapshot.fpsLimit; out.gameLatency=snapshot.gameLatency;
   } catch(...) {}
   return out;
 }

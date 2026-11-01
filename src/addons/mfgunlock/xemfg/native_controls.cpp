@@ -21,6 +21,7 @@ std::atomic<bool> settingsSaved{true};
 std::atomic<bool> invalidConfiguration{};
 std::atomic<bool> forceVSyncOff{};
 std::atomic<bool> exclusiveAsBorderless{};
+std::atomic<bool> uiStabilization{};
 auto Ini() { return backend::Directory()/L"MFGAdaUnlock.ini"; }
 bool ReadChoice(const wchar_t* section,const wchar_t* key,const wchar_t* choice) {
   wchar_t value[64]{};
@@ -50,6 +51,8 @@ void LoadControls() {
   settings.forceBorderless=false;
   settings.uiComposition=ReadBool(L"XeFG",L"UIComposition",false);
   settings.uiStabilization=ReadBool(L"XeFG",L"UIStabilization",false);
+  uiStabilization=settings.uiStabilization;
+  sdk_pacing::RequestNativeLatency(GetPrivateProfileIntW(L"XeFG",L"XeFGNativeLatency",0,Ini().c_str()));
   settings.sdkDeadlines=ReadBool(L"XeFG",L"SdkDeadlines",false);
   sdk_pacing::RequestSdkDeadlines(settings.sdkDeadlines);
   settings.forceVSyncOff=ReadBool(L"XeFG",L"ForceVSyncOff",false);
@@ -90,6 +93,7 @@ bool ConfigureControls(const ControlSettings& incoming) {
   forceVSyncOff=value.forceVSyncOff;
   State().displayCap=value.displayCap;
   exclusiveAsBorderless=value.exclusiveAsBorderless;
+  uiStabilization=value.uiStabilization;
   if(old.exclusiveAsBorderless!=value.exclusiveAsBorderless)
     if(auto output=Active(); output && output->window) output->window->BlockAltEnter(value.exclusiveAsBorderless);
   sdk_pacing::RequestQueueAhead(value.queueAhead);
@@ -107,6 +111,7 @@ bool ConfigureControls(const ControlSettings& incoming) {
 ControlSettings ControlsSettings() { std::lock_guard guard(settingsLock); return settings; }
 bool ForceVSyncOff() noexcept { return forceVSyncOff.load(std::memory_order_relaxed); }
 bool ExclusiveAsBorderless() noexcept { return exclusiveAsBorderless.load(std::memory_order_relaxed); }
+bool UiStabilization() noexcept { return uiStabilization.load(std::memory_order_relaxed); }
 ControlStatus ControlsSnapshot() {
   ControlStatus result;
   result.settings=ControlsSettings();
@@ -360,7 +365,7 @@ void DrawControls(PanelPage page) {
     if(reports("Copy detailed counters","Copies technical status, error codes and accumulated counters for support. These counters are not displayed FPS or physical input latency.")) {
       mfgunlock::xemfg::Status model;
       const bool modelAvailable=TryModelStatus(model);
-      std::ostringstream report; report<<"MFG Unlock 1.7.0\nstartup_failed="<<ModelStartupFailed()
+      std::ostringstream report; report<<"MFG Unlock 1.7.1\nstartup_failed="<<ModelStartupFailed()
           <<" model_status_available="<<modelAvailable<<" model_detail="<<(modelAvailable?model.detail:"busy")
           <<"\nmodel="<<status.modelPort<<" initialized="<<status.modelInitialized
           <<"\nCUDA="<<status.cudaState<<" compute="<<status.cudaMajor<<'.'<<status.cudaMinor<<" layers="<<status.cudaLayers
