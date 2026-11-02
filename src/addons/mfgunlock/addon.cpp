@@ -139,6 +139,8 @@
 #include <dxgi1_4.h>
 
 #include <nvsdk_ngx.h>
+#include "xmx_hook.hpp"
+#include "advanced_settings.hpp"
 
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
@@ -997,8 +999,12 @@ void LoadConfig() {
   legacy_fixed_output_cap_present = reshade::get_config_value(
       nullptr, kConfigSection, "FixedOutputFpsCap",
       legacy_fixed_output_cap);
+  mfgunlock::framecount::g_game_dynamic_blocked.store(mfgunlock::xmx::generator::Enabled(),
+                                                       std::memory_order_relaxed);
   if (reshade::get_config_value(nullptr, kConfigSection, "DynamicMFG", value)) {
-    mfgunlock::framecount::g_dynamic_mfg_enabled.store(value != 0,
+    // 1.8: not validated with XMX, where NVIDIA's module no longer generates. The
+    // saved preference stays, for when DLSS-G is selected again.
+    mfgunlock::framecount::g_dynamic_mfg_enabled.store(value != 0 && !mfgunlock::xmx::generator::Enabled(),
                                                         std::memory_order_relaxed);
   }
   if (reshade::get_config_value(nullptr, kConfigSection, "DynamicTargetFPS", value)) {
@@ -1166,7 +1172,7 @@ void LoadConfig() {
 extern "C" __declspec(dllexport) constexpr const char* NAME = "MFG Unlock";
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
-    "MFG Unlock 1.7.1 - DLSS-G and XeMFG backends";
+    "MFG Unlock 1.8.0 - DLSS-G and XeMFG backends";
 #elif defined(MFGUNLOCK_DUAL_BACKEND)
     "Dual Backend Preview X1 - official 1.4.5 base; DLSS-G and XeMFG via OptiScaler; gameplay validation pending";
 #elif defined(MFGUNLOCK_RELEASE_1_4_5)

@@ -187,12 +187,14 @@ HRESULT CreateOutput(IDXGIFactory2* factory,IUnknown* source,HWND hwnd,
   { RuntimeCall trace("sdk_lifecycle_lock");lifecycle.lock(); }
   if(State().retirementFailed) {Report("XeMFG context retirement failed; restart the game before creating another output");return E_FAIL;}
   if(Active()) return E_NOINTERFACE; // One selected Streamline viewport/output in this implementation.
-  if(!OwnsPresentationHooks()) {
-    Report("XeMFG needs early Streamline initialization to own presentation; restart with the addon loaded before slInit");
-    return E_NOINTERFACE;
-  }
+  // 1.7.2: a D3D11 chain (Dying Light 2's 2x2 probe at startup) is not refused
+  // for ownership: only a D3D12 queue can become an output.
   ComPtr<ID3D12CommandQueue> queue;
   if(!source || FAILED(source->QueryInterface(IID_PPV_ARGS(&queue)))) return E_NOINTERFACE;
+  if(!OwnsPresentationHooks()) {
+    Report(PresentationNotOwned());
+    return E_NOINTERFACE;
+  }
   ComPtr<ID3D12CommandQueue> transportQueue;
   ComPtr<IDXGIFactory2> transportFactory;
   // The public unwrapping contracts identify the same underlying queue and
@@ -276,7 +278,10 @@ HRESULT CreateOutput(IDXGIFactory2* factory,IUnknown* source,HWND hwnd,
   xess_mod::WriteLog("native_latency_binding",std::string("\"output\":\"")+(nativeReflex?"Reflex":"XeLL")+
       "\",\"external_profile\":"+(nativeReflex?"true":"false")+",\"result\":"+std::to_string(latencyResult));
   xefg_swapchain_d3d12_init_params_t init{};
-  init.maxInterpolatedFrames=5;
+  // Intel's own model refuses more than one generated frame (XeFGStock2xModel).
+  xemfg::Status model{};
+  const bool stock2x=s.multiplier.load()==2 && TryModelStatus(model) && model.model==0;
+  init.maxInterpolatedFrames=stock2x?1:5;
   init.initFlags=(o->invert?XEFG_SWAPCHAIN_INIT_FLAG_INVERTED_DEPTH:0)
       |(o->jitter && !o->dejitter?XEFG_SWAPCHAIN_INIT_FLAG_JITTERED_MV:0);
   init.uiMode=XEFG_SWAPCHAIN_UI_MODE_AUTO;

@@ -189,6 +189,10 @@ void Prepare(ID3D12Device* device) {
   s.publishing=true;
   struct PublicationScope { bool& flag; ~PublicationScope() { flag=false; } } publication{s.publishing};
   try {
+    // 1.8 (plan A.6): comparison of Intel's own 2x model with the t=1/2 frame of the
+    // ported model. Off by default; it runs the existing native 2x route.
+    if (GetPrivateProfileIntW(L"XeFG",L"XeFGStock2xModel",0,(ModulePath(host).parent_path()/L"MFGAdaUnlock.ini").c_str())==1)
+      throw std::runtime_error("stock_2x_model_requested");
     if (Vendor(device)!=0x10de) throw std::runtime_error("first_build_targets_nvidia_only");
     if (!xess_layout::Pair(fg,ll)) throw std::runtime_error("provider_layout_rejected");
     auto fatbin=xess_payload::Read(self,xefg_cuda::embedded::fatbin);
@@ -806,6 +810,18 @@ void SetGameMultiplier(uint32_t multiplier) noexcept {
 bool GameContextInitializing() noexcept { return gameInitializing || gameInits.load()>0; }
 bool GameOwnsFrameGeneration() noexcept { return GameContextInitializing() || gameContexts.load()>0; }
 uint32_t FlipQueueNativeBuffers() noexcept { return ConfigureFlipQueue().buffers; }
+// 1.8 (plan D.2): the XMX mode publishes the same ported model and count unlock as
+// the swap chain route, for XeFG's own context. Once per process, before its Init.
+bool PublishMultiFrameModel(HMODULE fg,HMODULE ll,HMODULE payload,std::string& error) noexcept {
+  try {
+    static auto shaders=std::make_unique<ShaderPort>(fg,payload);
+    static auto model=std::make_unique<ModelPort>(fg,true,true);
+    static auto unlock=std::make_unique<xess_host_unlock::Unlock>(fg,ll,5,false);
+    return shaders && model && unlock;
+  } catch(const std::exception& e) { error=e.what(); }
+  catch(...) { error="unknown"; }
+  return false;
+}
 void AttachModel(HMODULE module) {
   self=module;
   InitializeASI();

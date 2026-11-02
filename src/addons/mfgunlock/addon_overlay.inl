@@ -52,6 +52,40 @@ void StatusRow(const char* label, const char* value, const ImVec4& color) {
   ImGui::PopStyleColor();
 }
 
+// 1.8: a live table whose height never changes. Values refresh a few times per
+// second on one line each; wrapped text changing every frame moved the controls
+// above it and could toggle the window's scrollbar. Clipped text is in a tooltip.
+struct StableStatusRows {
+  struct Row { std::string label, value; ImVec4 color; };
+  std::vector<Row> rows;
+  ULONGLONG next{};
+  bool Due() {
+    const auto now = GetTickCount64();
+    if (now < next) return false;
+    next = now + 250;
+    rows.clear();
+    return true;
+  }
+  void Add(const char* label, const char* value, const ImVec4& color) {
+    rows.push_back({label, value, color});
+  }
+  void Draw() const {
+    for (const auto& row : rows) {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextDisabled("%s", row.label.c_str());
+      ImGui::TableNextColumn();
+      ImGui::PushStyleColor(ImGuiCol_Text, row.color);
+      ImGui::TextUnformatted(row.value.c_str());
+      ImGui::PopStyleColor();
+      if (ImGui::IsItemHovered() &&
+          ImGui::CalcTextSize(row.value.c_str()).x >
+              ImGui::GetColumnWidth())
+        ImGui::SetTooltip("%s", row.value.c_str());
+    }
+  }
+};
+
 void StatusSectionRow(const char* label) {
   ImGui::TableNextRow();
   ImGui::TableNextColumn();
@@ -1137,20 +1171,15 @@ void DrawReflexPacingLabControl(reshade::api::effect_runtime* runtime) {
   HelpMarker(
       "Uses Reflex's final/output limiter and preserves every stricter game, user or Latency Guard cap. It activates only while NVAPI reports VRR/G-SYNC.");
 
-  const auto state = reflexpacing::g_waitable_state.load(
-      std::memory_order_acquire);
-  const auto reason = reflexpacing::g_fallback_reason.load(
-      std::memory_order_relaxed);
-  const auto sleep_intervals = reflexpacing::g_sleep_intervals.Stats();
-  const auto sleep_durations = reflexpacing::g_sleep_durations.Stats();
-  const auto present_intervals = reflexpacing::g_present_intervals.Stats();
-  ImGui::Spacing();
-  if (ImGui::BeginTable("##reflex_pacing_lab_status", 2,
-                        ImGuiTableFlags_SizingStretchProp |
-                            ImGuiTableFlags_RowBg)) {
-    ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_WidthStretch, 0.45f);
-    ImGui::TableSetupColumn("Effective", ImGuiTableColumnFlags_WidthStretch,
-                            0.55f);
+  static StableStatusRows rows;
+  if (rows.Due()) {
+    const auto state = reflexpacing::g_waitable_state.load(
+        std::memory_order_acquire);
+    const auto reason = reflexpacing::g_fallback_reason.load(
+        std::memory_order_relaxed);
+    const auto sleep_intervals = reflexpacing::g_sleep_intervals.Stats();
+    const auto sleep_durations = reflexpacing::g_sleep_durations.Stats();
+    const auto present_intervals = reflexpacing::g_present_intervals.Stats();
     const bool fg_safe_off =
         pacing::NormalizeReflexModeOverride(
             reflexpacing::g_mode_override.load(std::memory_order_relaxed)) ==
@@ -1167,7 +1196,7 @@ void DrawReflexPacingLabControl(reshade::api::effect_runtime* runtime) {
                 state == reflexpacing::WaitableState::kFallback)) {
       pacing_status += "; FG-safe bypass while waitable unavailable";
     }
-    StatusRow("Pacing", pacing_status.c_str(),
+    rows.Add("Pacing", pacing_status.c_str(),
               state == reflexpacing::WaitableState::kActive
                   ? kUiPositive
                   : (sleep_dispatch == reflexpacing::SleepDispatch::kBypass
@@ -1188,7 +1217,7 @@ void DrawReflexPacingLabControl(reshade::api::effect_runtime* runtime) {
               (reflexpacing::g_mode_rejected.load(std::memory_order_relaxed)
                    ? " (override rejected)"
                    : "");
-    StatusRow("Reflex game -> effective", reflex_mode.c_str(),
+    rows.Add("Reflex game -> effective", reflex_mode.c_str(),
               reflexpacing::g_mode_rejected.load(std::memory_order_relaxed)
                   ? kUiWarning
                   : (reflexpacing::g_mode_applied.load(
@@ -1205,24 +1234,27 @@ void DrawReflexPacingLabControl(reshade::api::effect_runtime* runtime) {
                           : "Low latency Off") +
           (nvapi_status.sleep.game_sleep != 0 ? "; game sleeps"
                                               : "; no game sleep");
-      StatusRow("Driver Reflex", driver_reflex.c_str(), kUiMuted);
+      rows.Add("Driver Reflex", driver_reflex.c_str(), kUiMuted);
     } else {
-      StatusRow("Driver Reflex", "Not reported", kUiMuted);
+      rows.Add("Driver Reflex", "Not reported", kUiMuted);
     }
-    if (state == reflexpacing::WaitableState::kFallback)
-      StatusRow("Fallback reason", ReflexWaitableFallbackText(reason),
-                kUiWarning);
+    rows.Add("Fallback reason",
+             state == reflexpacing::WaitableState::kFallback
+                 ? ReflexWaitableFallbackText(reason)
+                 : "None",
+             state == reflexpacing::WaitableState::kFallback ? kUiWarning
+                                                             : kUiMuted);
     const std::string probe = std::to_string(
         reflexpacing::g_probe_samples.load(std::memory_order_relaxed)) +
         "/120";
-    StatusRow("Waitable probe", probe.c_str(), kUiMuted);
+    rows.Add("Waitable probe", probe.c_str(), kUiMuted);
     const std::string dxgi_latency = std::to_string(
         reflexpacing::g_native_maximum_latency.load(
             std::memory_order_relaxed)) +
         " -> " + std::to_string(
             reflexpacing::g_effective_maximum_latency.load(
                 std::memory_order_relaxed));
-    StatusRow("DXGI MaximumFrameLatency", dxgi_latency.c_str(), kUiMuted);
+    rows.Add("DXGI MaximumFrameLatency", dxgi_latency.c_str(), kUiMuted);
     const std::string wait_health =
         std::string(reflexpacing::g_waitable_handle.load(
                         std::memory_order_acquire) != nullptr
@@ -1234,7 +1266,7 @@ void DrawReflexPacingLabControl(reshade::api::effect_runtime* runtime) {
         "; failures=" +
         std::to_string(reflexpacing::g_wait_failure_count.load(
             std::memory_order_relaxed));
-    StatusRow("Waitable health", wait_health.c_str(), kUiMuted);
+    rows.Add("Waitable health", wait_health.c_str(), kUiMuted);
     const uint32_t refresh = reflexpacing::g_refresh_millihz.load(
         std::memory_order_relaxed);
     std::ostringstream display;
@@ -1243,7 +1275,7 @@ void DrawReflexPacingLabControl(reshade::api::effect_runtime* runtime) {
             << (reflexpacing::g_vrr_active.load(std::memory_order_relaxed)
                     ? "active"
                     : "inactive/unavailable");
-    StatusRow("Display", display.str().c_str(), kUiMuted);
+    rows.Add("Display", display.str().c_str(), kUiMuted);
     const uint32_t headroom_limit = reflexpacing::g_headroom_limit_us.load(
         std::memory_order_relaxed);
     const std::string cap = headroom_limit == 0
@@ -1251,7 +1283,7 @@ void DrawReflexPacingLabControl(reshade::api::effect_runtime* runtime) {
         : std::to_string(headroom_limit) + " us (" +
               std::to_string(pacing::FrameLimitUsToFps(headroom_limit)) +
               " FPS approx.)";
-    StatusRow("VRR headroom", cap.c_str(),
+    rows.Add("VRR headroom", cap.c_str(),
               headroom_limit != 0 ? kUiPositive : kUiMuted);
     auto cadence_text = [](const reflexpacing::SampleStats& stats) {
       if (stats.count == 0) return std::string("No samples");
@@ -1264,12 +1296,21 @@ void DrawReflexPacingLabControl(reshade::api::effect_runtime* runtime) {
     const auto sleep_interval_text = cadence_text(sleep_intervals);
     const auto sleep_duration_text = cadence_text(sleep_durations);
     const auto present_interval_text = cadence_text(present_intervals);
-    StatusRow("Sleep interval med/p95/p99", sleep_interval_text.c_str(),
+    rows.Add("Sleep interval med/p95/p99", sleep_interval_text.c_str(),
               kUiMuted);
-    StatusRow("Sleep duration med/p95/p99", sleep_duration_text.c_str(),
+    rows.Add("Sleep duration med/p95/p99", sleep_duration_text.c_str(),
               kUiMuted);
-    StatusRow("App Present med/p95/p99", present_interval_text.c_str(),
+    rows.Add("App Present med/p95/p99", present_interval_text.c_str(),
               kUiMuted);
+  }
+  ImGui::Spacing();
+  if (ImGui::BeginTable("##reflex_pacing_lab_status", 2,
+                        ImGuiTableFlags_SizingStretchProp |
+                            ImGuiTableFlags_RowBg)) {
+    ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_WidthStretch, 0.45f);
+    ImGui::TableSetupColumn("Effective", ImGuiTableColumnFlags_WidthStretch,
+                            0.55f);
+    rows.Draw();
     ImGui::EndTable();
   }
   ImGui::TextDisabled(
@@ -1822,6 +1863,7 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
   ImGui::Separator();
   bool dynamic_mfg =
       mfgunlock::framecount::g_dynamic_mfg_enabled.load(std::memory_order_relaxed);
+  ImGui::BeginDisabled(mfgunlock::xmx::generator::Enabled());
   if (ImGui::Checkbox("Use NVIDIA Dynamic MFG", &dynamic_mfg)) {
     mfgunlock::framecount::g_dynamic_mfg_enabled.store(dynamic_mfg,
                                                         std::memory_order_relaxed);
@@ -1829,6 +1871,7 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
     reshade::set_config_value(nullptr, kConfigSection, "DynamicMFG",
                               dynamic_mfg ? 1 : 0);
   }
+  ImGui::EndDisabled();
   int dynamic_target = static_cast<int>(
       mfgunlock::framecount::g_dynamic_target_fps.load(std::memory_order_relaxed));
   if (ImGui::InputInt("Dynamic output target FPS", &dynamic_target, 1, 10)) {
@@ -2565,7 +2608,34 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
       effective_seen?std::to_string(effective_multiplier)+"x":game_request_seen?std::to_string(game_multiplier)+"x":"Waiting";
   const char* player_state=runtime_error?"Compatibility issue":!enabled?"Disabled this session":mfg_confirmed?"Generating frames":
       mfg_live?"Driver reports MFG active":mfg_request_accepted?"Multiplier requested":provider_ready?"Ready - enable FG in the game":"Waiting for frame generation";
-  mfgunlock::ui::Hero(multiplier_text.c_str(),"DLSS-G",RenderApiName(render_api),player_state,mfg_live);
+  // 1.8: DLSS-G's presentation, but Intel's model generates; the panel must say so.
+  const bool xmx_selected=mfgunlock::xmx::generator::Enabled();
+  const auto xmx_report=xmx_selected?mfgunlock::xmx::generator::Snapshot():mfgunlock::xmx::generator::Report{};
+  // The hook only covers Direct3D 12; elsewhere NVIDIA's generator keeps running.
+  const bool xmx_d3d12=strcmp(RenderApiName(render_api),"Direct3D 12")==0;
+  const bool xmx_running=xmx_selected && xmx_report.hooked && xmx_d3d12;
+  const bool xmx_failed=xmx_running && !xmx_report.generating && !xmx_report.failure.empty();
+  mfgunlock::ui::Hero(multiplier_text.c_str(),xmx_running?"XMX":"DLSS-G",RenderApiName(render_api),
+      xmx_failed?"Frame generation stopped":xmx_running && !xmx_report.generating?"Waiting for frames":player_state,
+      xmx_running?xmx_report.generating:mfg_live);
+  if(xmx_selected) {
+    mfgunlock::ui::Readout("##xmx_generator","Generator",!xmx_running?"NVIDIA DLSS-G (XMX not started)":xmx_failed?"None (XMX failed)":xmx_report.generating?"Intel XeFG model, in DLSS-G's presentation":"Intel XeFG model - waiting for frames",
+        "The XMX mode replaces NVIDIA's generator with Intel's model. Presentation and the game's settings remain DLSS-G's.",xmx_report.generating?mfgunlock::ui::Accent:mfgunlock::ui::Muted);
+    if(mfgunlock::framecount::g_game_dynamic_replaced.load(std::memory_order_relaxed))
+      mfgunlock::ui::Description("The game asked for Dynamic MFG, which XMX does not support; a fixed multiplier is used.");
+    if(!xmx_d3d12) mfgunlock::ui::Notice("XMX only runs in Direct3D 12 games, so NVIDIA's generator is producing the frames.");
+    else if(!xmx_report.hooked && !xmx_report.failure.empty()) {
+      mfgunlock::ui::Notice(("XMX could not start, so NVIDIA's generator is producing the frames: "+xmx_report.failure).c_str());
+#if defined(MFGUNLOCK_NATIVE_XEMFG)
+      mfgunlock::ui::ButtonRow actions(1);
+      if(actions("Install / update files","Opens the external helper with the list of files it will change. Nothing changes until you confirm; it then waits for the game to exit and keeps backups."))
+        mfgunlock::dependencies::Repair();
+      const auto repair=mfgunlock::dependencies::Snapshot();
+      if(repair.helperRunning || !repair.message.empty()) mfgunlock::ui::Description(repair.message.c_str());
+#endif
+    }
+    else if(xmx_failed) mfgunlock::ui::Notice(("XMX failed, so no frames are being generated until the game restarts. Select another method if this repeats: "+xmx_report.failure).c_str());
+  }
   if(dynamic_applied) mfgunlock::ui::Description("Dynamic MFG is choosing the multiplier automatically.");
   if(sleep_status_available && (driver_vsync_active || gsync_active))
     mfgunlock::ui::Description(driver_vsync_active && gsync_active?"Driver VSync + G-SYNC active":driver_vsync_active?"Driver VSync active":"G-SYNC active");
@@ -2851,7 +2921,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
         "Lets NVIDIA's native scheduler choose the generated-frame count. Requires D3D12, driver 595.41 or newer, DLSS-G 310.9.1/310.9.16 and Streamline 2.14.1/2.14.16. Star Wars Outlaws is kept on fixed/game-controlled MFG because its integration breaks on the Dynamic path. Toggle Frame Generation off/on after changing it.");
     ImGui::TableNextColumn();
     const bool block_dynamic_enable =
-        dynamic_game_blocked || (dynamic_hard_unavailable && !dynamic_mfg);
+        xmx_selected || dynamic_game_blocked || (dynamic_hard_unavailable && !dynamic_mfg);
     if (block_dynamic_enable) ImGui::BeginDisabled();
     if (ImGui::Checkbox("##dynamic_mfg", &dynamic_mfg)) {
       mfgunlock::framecount::g_dynamic_mfg_enabled.store(
@@ -2861,6 +2931,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
                                 dynamic_mfg ? 1 : 0);
     }
     if (block_dynamic_enable) ImGui::EndDisabled();
+    if (xmx_selected) ImGui::TextDisabled("Not available with XMX.");
 
     if (dynamic_mfg) {
       int dynamic_target = static_cast<int>(
@@ -3288,6 +3359,10 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
   }
 
   } // Latency details
+  // 1.8: these change NVIDIA's generator, which does not run under XMX. DLSS
+  // presets stay: they belong to the upscaler.
+  if (page == UiPage::Quality && xmx_selected)
+    mfgunlock::ui::Description("XMX selected: settings for NVIDIA's generator are locked. The DLSS presets still apply.");
   if (page == UiPage::Quality) {
     mfgunlock::ui::Section("Image quality","Choose a stable quality profile. Changes marked for restart are saved for the next launch.");
     mfgunlock::ui::Card quality_card("##dlssg_quality_card");
@@ -3418,6 +3493,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
                                 "HDRCompatibilityMode", hdr_mode);
     }
 
+    ImGui::BeginDisabled(xmx_selected);
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     SettingLabel(
@@ -3479,6 +3555,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
         ImGui::TextDisabled("Saved for next launch; restart the game.");
       }
     }
+    ImGui::EndDisabled();
     ImGui::EndTable();
   }
   if (page == UiPage::Quality &&
@@ -3520,6 +3597,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     HelpMarker(
         "Controls the maximum generated-frame count advertised to the game. Toggle Frame Generation off/on if the game's selector does not refresh.");
 
+    ImGui::BeginDisabled(xmx_selected);
     bool temporal =
         g_configured_temporal_fix.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Temporal midpoint fix", &temporal)) {
@@ -3544,6 +3622,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     HelpMarker(
         "Uses the full validated motion-vector/inpaint framework path when an exact provider match exists. Otherwise the addon fails closed to its compatible fallback. Requires restart.");
 
+    ImGui::EndDisabled();
     bool flip_off =
         g_configured_force_flip_meter_off.load(std::memory_order_relaxed);
     if (ImGui::Checkbox("Legacy software flip pacing", &flip_off)) {
@@ -3574,11 +3653,32 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
 
     ImGui::Spacing();
     ImGui::TextDisabled("IMAGE QUALITY COMPATIBILITY");
+    ImGui::BeginDisabled(xmx_selected);
     DrawAdvancedQualityControls(
         g_configured_adaptive_quality.load(std::memory_order_relaxed));
+    ImGui::EndDisabled();
   }
   }
 
+  if (page == UiPage::Support && mfgunlock::ui::Expander("All settings (advanced)")) {
+    mfgunlock::ui::Description("Applies after a game restart. Change these only to test or to diagnose a problem.");
+    mfgunlock::ui::advanced::Draw(mfgunlock::ui::advanced::kDlssG);
+    mfgunlock::ui::advanced::Result();
+    bool raise_ceiling=g_raise_ceiling.load(std::memory_order_relaxed);
+    if (ImGui::Checkbox("Raise frame ceiling",&raise_ceiling)) {
+      g_raise_ceiling.store(raise_ceiling,std::memory_order_relaxed);
+      reshade::set_config_value(nullptr, kConfigSection, "RaiseFrameCeiling", raise_ceiling ? 1 : 0);
+    }
+    mfgunlock::ui::Tooltip("Lets an old plugin's frame limit be raised. Off by default.");
+    bool rtx50=g_rtx50_quality_fixes.load(std::memory_order_relaxed);
+    ImGui::BeginDisabled(xmx_selected);
+    if (ImGui::Checkbox("RTX 50 quality fixes",&rtx50)) {
+      g_rtx50_quality_fixes.store(rtx50,std::memory_order_relaxed);
+      reshade::set_config_value(nullptr, kConfigSection, "Rtx50QualityFixes", rtx50 ? 1 : 0);
+    }
+    ImGui::EndDisabled();
+    mfgunlock::ui::Tooltip("Applies the validated quality fixes on RTX 50 cards too. Off by default.");
+  }
   if (page == UiPage::Support) {
     ImGui::Spacing();
     ImGui::TextDisabled("SUPPORT DIAGNOSTICS");
@@ -4628,7 +4728,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
 
   }
 
-  mfgunlock::ui::Footer("MFG Unlock | 1.7.1");
+  mfgunlock::ui::Footer("MFG Unlock | 1.8.0");
   ImGui::TextDisabled(
       "Changes marked for restart keep the current session unchanged.");
 }

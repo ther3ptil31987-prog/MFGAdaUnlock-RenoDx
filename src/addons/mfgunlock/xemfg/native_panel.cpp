@@ -7,6 +7,7 @@
 #include "native_vulkan.hpp"
 #endif
 #include "../panel_ui.hpp"
+#include "../advanced_settings.hpp"
 #include <sstream>
 namespace mfgunlock::xemfg::native {
 static std::atomic<uint64_t> panelDraws{};
@@ -35,6 +36,12 @@ void Draw() {
   const bool generating=status.enabled && status.sdkResult>=0 && status.submitted>1;
   const bool paused=status.output && s.nativeOff && !s.requested;
   const auto multiplier=std::to_string(s.multiplier.load())+"x";
+  // 1.8: what is actually generating. The status locks are only tried, so a busy
+  // frame keeps the last answer instead of making the label flicker.
+  static const char* generator="XeMFG";
+  if(const auto controls=ControlsSnapshot();!controls.modelUpdating && !controls.cudaUpdating && controls.modelInitialized)
+    generator=!controls.modelPort?"XeFG 2x (stock)":controls.cudaState==1 && controls.cudaLaunches?"XeMFG (CUDA)":
+        generating?"XeMFG (shaders)":"XeMFG";
   bool vulkanGame=false; // 1.7 (plan F): the DX12 input notices below do not apply
 #ifdef MFGUNLOCK_XEMFG_VULKAN
   // 1.7 (plan F): a Vulkan game runs through the Vulkan host, not the DX12 output.
@@ -66,7 +73,7 @@ void Draw() {
     }
   } else
 #endif
-  ui::Hero(multiplier.c_str(),"XeMFG","DX12",generating?"Generating frames":
+  ui::Hero(multiplier.c_str(),generator,"DX12",generating?"Generating frames":
       unavailable?"XeMFG unavailable":paused?"Game has paused frame generation":status.output?"Waiting for compatible frame inputs":"Waiting for the game",generating);
   const auto ref=reframework::Snapshot();
   if(ref.knownMonitorIssue) ui::Notice("This REFramework build has an observed XeFG hook-monitor conflict. Update REFramework to a version with the XeFG monitor fix.");
@@ -169,8 +176,23 @@ void Draw() {
     }
   }
   DrawControls(page);
+  if(page==PanelPage::Diagnostics && ui::Expander("All settings (advanced)")) {
+    ui::Description("Applies after a game restart. Change these only to test or to diagnose a problem.");
+    ui::advanced::Draw(ui::advanced::kXeMfg);
+    bool dlssSr=ngx::Saved()>=0?ngx::Saved()==1:ngx::Configured();
+    static bool dlssSrFailed{};
+    ui::Setting("##xe_all_dlss_sr","DLSS-SR input (experimental)","For games without frame generation that use DLSS Super Resolution. The camera is assumed and the HUD is interpolated with the scene.",[&] {
+      if(ImGui::Checkbox("##xe_all_dlss_sr_value",&dlssSr)) dlssSrFailed=!ngx::Save(dlssSr);
+    });
+    DlssSrSaveFailed(dlssSrFailed);
+    ImGui::Separator(); ui::Description("Vulkan");
+    ui::advanced::Draw(ui::advanced::kVulkan);
+    ImGui::Separator(); ui::Description("Diagnostics");
+    ui::advanced::Draw(ui::advanced::kDiagnostics);
+    ui::advanced::Result();
+  }
   if(page==PanelPage::Diagnostics || (page==PanelPage::General && unavailable)) dependencies::Draw();
-  ui::Footer("MFG Unlock | 1.7.1");
+  ui::Footer("MFG Unlock | 1.8.0");
 }
 }
 extern "C" __declspec(dllexport) uint64_t MFGAXePanelDraws() {
