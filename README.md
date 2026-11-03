@@ -1,5 +1,12 @@
 # MFG Unlock
 
+> [!NOTE]
+> ### New in 1.8.2: more games with XMX
+>
+> XMX now works in Dying Light 2, Alan Wake 2 and Phantom Blade Zero, and the panel says
+> when NVIDIA's generator is still doing the work. See the
+> [1.8.2 release notes](docs/releases/1.8.2.md).
+
 > [!TIP]
 > ### New in 1.8: use XMX whenever the game has frame generation
 >
@@ -13,7 +20,7 @@
 > could be felt on the input.
 >
 > The game's multiplier menu and the Reflex FPS cap work, and so does Alt+Tab. It is
-> still experimental, so **please send your reports**. Select **XeMFG via DLSS-G (XMX)**
+> still experimental, so **please send your reports**. Select **XMX**
 > in the panel and restart the game: [how to use it, and the measurements](#xmx-mode).
 
 > **New in 1.5.0: the XeMFG backend.** One `.addon64` now contains two
@@ -263,6 +270,7 @@ necessarily been tested with the other.
 
 | Game | Status |
 |---|---|
+| May work with every game | |
 | S.T.A.L.K.E.R. 2: Heart of Chornobyl | Working |
 | God of War Ragnarök | Working |
 | Death Stranding 2: On the Beach | Working |
@@ -306,6 +314,7 @@ necessarily been tested with the other.
 | The Sinking City 2 | Working |
 | Control Resonant | Working |
 | Phantom Blade Zero | Working |
+| Call of Duty Modern Warfare 4 | Working |
 
 These are the games personally tested with this fork; this is not a claim of
 universal compatibility. Results may vary with the game version, DLSS and
@@ -319,35 +328,41 @@ artifact on a HUD/UI element, switch back to **Native**.
 
 | Game | API | XeMFG CUDA | XMX | Notes |
 |---|---|---|---|---|
-| Resident Evil Requiem | DX12 | Working | Maybe |  |
-| Monster Hunter Wilds | DX12 | Working | Maybe |  |
-| Dragon's Dogma 2 | DX12 | Working | Maybe |  |
-| Onimusha: Way of the Sword | DX12 | Working | Maybe |  |
-| PRAGMATA | DX12 | Working | Maybe |  |
-| Control Resonant | DX12 | Working | Maybe |  |
+| Resident Evil Requiem | DX12 | Working | Working |  |
+| Monster Hunter Wilds | DX12 | Working | Working |  |
+| Dragon's Dogma 2 | DX12 | Working | Working |  |
+| Onimusha: Way of the Sword | DX12 | Working | Working |  |
+| PRAGMATA | DX12 | Working | Working |  |
+| Control Resonant | DX12 | Working | Working |  |
 | Assassin's Creed IV: Black Flag Resynced | DX12 | Working | Maybe | A built-in profile turns off native-output retention for this game |
 | Cyberpunk 2077 | DX12 | Working | Working | After a game update, run **Install / update files** again (see [below](#the-panel-says-intel-files-are-missing-or-a-different-version)) |
-| The Witcher 3: Wild Hunt (next-gen) | DX12 | Working | Maybe | Turn off the game's **VSync** for correct frame pacing. Fixed in 1.5.3: changing path tracing or other graphics settings with frame generation on no longer loses the graphics device |
-| Alan Wake 2 | DX12 | Working | Maybe |  |
+| The Witcher 3: Wild Hunt (next-gen) | DX12 | Working | Working | Turn off the game's **VSync** for correct frame pacing on CUDA. Fixed in 1.5.3: changing path tracing or other graphics settings with frame generation on no longer loses the graphics device |
+| Alan Wake 2 | DX12 | Working | Working | XMX since 1.8.2 |
 | The Last of Us Part II Remastered | DX12 | Working | Maybe |  |
 | Mafia: The Old Country | DX12 | Working | Maybe |  |
-| Resonance: A Plague Tale Legacy | DX12 | Working | Maybe |  |
+| Resonance: A Plague Tale Legacy | DX12 | Working | Working |  |
 | Death Stranding 2: On the Beach | DX12 | Working | Maybe | Its jittered motion vectors are corrected automatically |
-| Ghostrunner 2 | DX12 | Working | Maybe |  |
+| Ghostrunner 2 | DX12 | Working | Working |  |
 | S.T.A.L.K.E.R. 2: Heart of Chornobyl | DX12 | Working | Maybe | Set the display mode to **Borderless / Windowed Fullscreen** |
-| Warhammer 40,000: Darktide | DX12 | Working | Maybe | Fixed in 1.5.1; on 1.5.0, add `[Adapters] FidelityFX=0` to `MFGAdaUnlock.ini` |
-| Black Myth: Wukong | DX12 | Working | Maybe |  |
-| Kingdom Come: Deliverance II | DX12 | Working | Maybe | With the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) XMX is not expected to work here: it needs DLSS-G in DX12. |
-| Red Dead Redemption 2 | DX12, Vulkan | Working | Maybe | DX12: working with the DLSS-SR input (user report; the game has no native frame generation): turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)). Vulkan (experimental, 1.7): working with DLSS on, in fullscreen, borderless or windowed; no setting needed XMX is not expected to work here: it needs DLSS-G in DX12. |
-| Elden Ring | DX12 | Working | Maybe | With the DLSS-SR input and the EldenRingDLSS addon, offline with Easy Anti-Cheat off; turn on **Force game VSync off** in the panel for correct frame pacing (see [Elden Ring](#elden-ring)) XMX is not expected to work here: it needs DLSS-G in DX12. |
-| Metro Exodus Enhanced Edition | DX12 | Working | Maybe | With the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) XMX is not expected to work here: it needs DLSS-G in DX12. |
-| Indiana Jones and the Great Circle | Vulkan | Working | Maybe | Experimental (1.7): turn DLSS on (Super Resolution or Ray Reconstruction); the game's Frame Generation switch turns XeMFG on and off. Launch with `+r_allowBlackListedLayers 1` so ReShade can load XMX is not expected to work here: it needs DLSS-G in DX12. |
+| Warhammer 40,000: Darktide | DX12 | Working | Working | Fixed in 1.5.1; on 1.5.0, add `[Adapters] FidelityFX=0` to `MFGAdaUnlock.ini` |
+| Black Myth: Wukong | DX12 | Working | Working |  |
+| Kingdom Come: Deliverance II | DX12 | Working | DLSS-SR not supported on XMX | With the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) XMX is not expected to work here: it needs DLSS-G in DX12. |
+| Red Dead Redemption 2 | DX12, Vulkan | Working | DLSS-SR not supported on XMX | DX12: working with the DLSS-SR input (user report; the game has no native frame generation): turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)). Vulkan (experimental, 1.7): working with DLSS on, in fullscreen, borderless or windowed; no setting needed XMX is not expected to work here: it needs DLSS-G in DX12. |
+| Elden Ring | DX12 | Working | DLSS-SR not supported on XMX | With the DLSS-SR input and the EldenRingDLSS addon, offline with Easy Anti-Cheat off; turn on **Force game VSync off** in the panel for correct frame pacing (see [Elden Ring](#elden-ring)) XMX is not expected to work here: it needs DLSS-G in DX12. |
+| Metro Exodus Enhanced Edition | DX12 | Working | DLSS-SR not supported on XMX | With the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) XMX is not expected to work here: it needs DLSS-G in DX12. |
+| Indiana Jones and the Great Circle | Vulkan | Working | Vulkan not supported on XMX | Experimental (1.7): turn DLSS on (Super Resolution or Ray Reconstruction); the game's Frame Generation switch turns XeMFG on and off. Launch with `+r_allowBlackListedLayers 1` so ReShade can load XMX is not expected to work here: it needs DLSS-G in DX12. |
 | Crimson Desert | DX12 | Working | Working |  |
-| Phantom Blade Zero | DX12 | Maybe | Maybe |  |
+| Phantom Blade Zero | DX12 | Not Working | Working | XMX since 1.8.2 |
+| Dying Light 2 | DX12 | Working | Working | XMX since 1.8.2 |
+| Grand Theft Auto 5 Enhanced | DX12 | Maybe | Working |  |
+| Titans of The Tide | DX12 | Working | Maybe |  |
+| Hogwarts Legacy | DX12 | Maybe | Working |  |
+| STAR WARS: Galactic Racer | DX12 | Maybe | Working |  |
+| Call of Duty Modern Warfare 4 | DX12 | Maybe | Working |  |
 
-**XeMFG CUDA** shows the games tested with the XeMFG backend. **XMX** was tested
-in Crimson Desert and Cyberpunk 2077: **Maybe** means it has not been tested in that
-game yet, so [your report](#try-it-and-report) helps. These results are not a
+**XeMFG CUDA** shows the games tested with the XeMFG backend. In the **XMX** column,
+**Maybe** means it has not been tested in that game yet, so
+[your report](#try-it-and-report) helps. These results are not a
 claim of universal compatibility. The XeMFG backend needs a game that
 provides frame-generation inputs (see [Supported inputs](#supported-xemfg-inputs)).
 
@@ -540,7 +555,7 @@ Tested Vulkan games are marked **Vulkan** in the
    [latest release](../../releases/latest) in the ReShade addon location for the
    game (usually the folder with the game executable).
 3. Launch the game, open the ReShade overlay (**Home**), open the **MFG Unlock**
-   panel and set **General → Frame generation method** to **Intel XeMFG (CUDA)**.
+   panel and set **General → Frame generation method** to **XeMFG**.
    Close the game completely and launch it again.
 4. If the panel says the Intel files are missing or a different version, open
    **Diagnostics → Intel runtime files** and select **Install / update files**.
@@ -562,7 +577,7 @@ effective multiplier and whether the model and Tensor acceleration are in use.
 A first launch after installing or updating may compile shaders and stutter;
 restart once before judging smoothness or image quality.
 
-**Removing or switching back:** select **NVIDIA DLSS-G** in the panel and
+**Removing or switching back:** select **DLSS-G** in the panel and
 restart. To remove the Intel files, use the rollback offered by the installer
 helper.
 
@@ -770,7 +785,13 @@ or remove REFramework to confirm.
 
 ### Reporting an XeMFG problem
 
-Attach these files from the game folder:
+Since 1.8.1, the quickest way is **Save support files**. It appears on the card
+when XMX or XeMFG stops, and after a session that may have closed unexpectedly. It
+copies the logs, your settings and a report into a new `MFG-Support-<date>` folder
+beside the game and opens it. Logs may include folder names from your PC, so check
+them before posting publicly.
+
+To attach the files by hand, take these from the game folder:
 
 - `MFGAdaUnlock-XeMFG.log` contains the session header, the input route and
   the reason frame generation was or was not admitted;
@@ -781,6 +802,13 @@ Attach these files from the game folder:
 
 Also mention the game version, GPU and driver, and whether the problem
 appears with the **NVIDIA DLSS-G** backend too.
+
+### The panel's font
+
+ReShade allows one font for its whole interface. Since 1.8.1, on the first launch in each
+game, if ReShade has no custom font and Windows includes Cascadia Mono, the addon sets it
+as ReShade's font for that game. A font you already chose is kept. To go back, clear
+**Font** in ReShade's **Settings** tab; the addon will not set it again.
 
 ## XMX mode
 
@@ -824,11 +852,32 @@ Tested in Crimson Desert and Cyberpunk 2077, on an RTX 4070 SUPER:
 | **Install / update files** from the XMX notice | Works: it replaced a `libxess_fg.dll` of the wrong version in Cyberpunk 2077 |
 | Falling back when Intel's files are wrong | Works: NVIDIA's generator keeps running and the panel says why |
 
+### HDR
+
+| Output | XMX |
+|---|---|
+| SDR (`R8G8B8A8`) | Works |
+| HDR10 (`R10G10B10A2`) | Works |
+| scRGB (`R16G16B16A16_FLOAT`) | **Not tested.** XMX has no conversion for it like the XeMFG backend does |
+
+The **System** card on the **General** page shows which output the game is using. If XMX
+cannot start on scRGB, the panel suggests turning HDR off or using XeMFG. Please report
+any scRGB game you try.
+
+### What the status means
+
+| Status | Meaning |
+|---|---|
+| **Generating frames** | XMX generated a frame in the last 2 seconds |
+| **NVIDIA is generating** | XMX is hooked but never called, and frames are being generated, so NVIDIA's generator is doing the work |
+| **Waiting for frames** | DLSS-G is calling XMX, but no frame came out; the panel gives the reason |
+| **Paused or off in the game** | DLSS-G is not calling XMX. Games do this in menus and cutscenes, and it is normal if generation returns afterwards |
+| **Frame generation stopped** | XMX failed; a card gives the reason and no frames are generated until the game restarts |
+
 ### Try it and report
 
 1. Install the addon as usual. **Keep DLSS Frame Generation available in the game**.
-2. In the panel, set **General → Frame generation method** to **XeMFG via DLSS-G
-   (XMX)**, and restart the game.
+2. In the panel, set **General → Frame generation method** to **XMX**, and restart the game.
 3. If Intel's files are missing, the panel says so and offers **Install / update
    files**. It installs `libxess_fg.dll` 1.3.1.78, the only version XMX accepts, and
    `libxell.dll`. Restart the game afterwards.
@@ -843,9 +892,10 @@ Tested in Crimson Desert and Cyberpunk 2077, on an RTX 4070 SUPER:
 > worked in Cyberpunk 2077. If the game's selector does nothing, is missing or gets stuck
 > in your game, [please open an issue](../../issues).
 
-Please report the game, the multiplier, your GPU and driver, what the **Backend**
-card showed, and attach `ReShade.log` from the game folder. Reports of games that
-work are as useful as reports of problems.
+Please report the game, the multiplier, your GPU and driver, and what the **Backend**
+card showed. Attach `ReShade.log` from the game folder, or use **Copy report** or **Save
+support files** when the panel offers them. Reports of games that work are as useful as
+reports of problems.
 
 ### Measurements
 
@@ -853,9 +903,18 @@ Crimson Desert, RTX 4070 SUPER, driver 621.01, DLSS Quality. Each row is one 30-
 PresentMon capture of the same route, walked by hand. Base FPS and displayed FPS for
 XMX and DLSS-G come from PresentMon's estimate.
 
+> [!WARNING]
+> **The latency column is not input latency.** It is PresentMon's `DisplayLatency`,
+> averaged over every displayed frame, because these captures have no PC latency
+> (`MsPCLatency`) column. With XMX and DLSS-G, PresentMon labels generated frames as
+> the game's own, so they lower the average. With XeMFG, it labels them as XeSS-FG
+> frames and counts them differently. Do not compare this column between routes, and
+> do not read it as the delay between input and the screen. Frame generation adds
+> latency: about one base frame, plus pacing. Use PC latency to compare.
+
 **1440p**
 
-| Mode | Displayed FPS | Base FPS | Average latency | p99 frame interval | Large intervals |
+| Mode | Displayed FPS | Base FPS | DisplayLatency (not input latency) | p99 frame interval | Large intervals |
 |---|---|---|---|---|---|
 | Generation off | 44 | 44 | 45 ms | not recorded | 0 |
 | XeMFG 2x, Intel's model 18 | 78 | 39 | 47 ms | 17.8 ms | 3 |
@@ -869,7 +928,7 @@ XMX and DLSS-G come from PresentMon's estimate.
 
 **4K with DLDSR**
 
-| Mode | Displayed FPS | Base FPS | Average latency | p99 frame interval | Large intervals |
+| Mode | Displayed FPS | Base FPS | DisplayLatency (not input latency) | p99 frame interval | Large intervals |
 |---|---|---|---|---|---|
 | Generation off | 23 | 23 | 91 ms | 48.3 ms | 0 |
 | DLSS-G 4x | 73 | 18 | 80 ms | 17.8 ms | 8 |
@@ -892,8 +951,9 @@ How to read these numbers:
 - It is one game and one capture per mode. Nothing here is a general result.
 - **XeMFG is ahead of XMX in FPS and pacing at 2x and 4x.** XMX is ahead in FPS at 6x,
   where it had more large intervals (18 against 4).
-- The latency gap looks large, and it was felt at 6x, but PresentMon may not measure
-  latency the same way on routes with different presentation.
+- **The latency column does not show input latency** (see the warning above). The
+  tester felt better input with XMX at 6x, but these captures cannot confirm it. PC
+  latency captures are needed to compare the routes.
 - The model 18 capture ran in a different presentation mode, so that comparison needs
   repeating.
 
@@ -1462,6 +1522,9 @@ the effective downstream request separately.
 - Confirm that ReShade was installed with full addon support.
 - Confirm that the `.addon64` file is in the addon location used by that game.
 - Check the ReShade log for an addon loading or API-version error.
+- If the log shows error **1114** when loading the addon, open `ReShade.ini` and remove
+  the addon's name from `DisabledAddons` in the `[ADDON]` section. ReShade refuses to
+  start an addon listed there, and that is the usual cause of this error.
 
 ### Only Automatic or 2x appears
 

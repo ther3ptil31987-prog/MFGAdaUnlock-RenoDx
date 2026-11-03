@@ -23,13 +23,22 @@ int main(int argc,char** argv) {
     Require(policy.retainNativeOutput.value_or(false) && Contains(policy.observerModules,L"gameoverlayrenderer64.dll"),"overlay rule not matched case-insensitively");
     // Observed conventions moved from code (plan 3.4); unknown games rely on learning.
     Require(Resolve(embedded,Context{L"tlou-ii.exe",{}}).depthInverted==false && Resolve(embedded,Context{L"TLOU-II-L.EXE",{}}).depthInverted==false
-        && Resolve(embedded,Context{L"AlanWake2.exe",{}}).depthInverted==false,"observed conventional depth profiles");
+        && Resolve(embedded,Context{L"AlanWake2.exe",{}}).depthInverted==false
+        && Resolve(embedded,Context{L"Darktide.exe",{}}).depthInverted==false,"observed conventional depth profiles");
     Require(Resolve(embedded,Context{L"DS2.exe",{}}).motionJittered==true,"observed jitter profile");
     // AC Black Flag Resynced loses the device on the first Present of a reused
     // retained output; the executable rule wins over the overlay rule.
     Require(!Resolve(embedded,Context{L"ACBlackFlag.exe",{L"gameoverlayrenderer64.dll"}}).retainNativeOutput.value_or(true),
         "AC Black Flag kept native output retention under the Steam overlay");
     Require(!Resolve(embedded,Context{L"re9.exe",{}}).depthInverted && !Resolve(embedded,Context{L"re9.exe",{}}).motionJittered,"unobserved game received a convention");
+    // A missing DLSS-G plugin is accepted for the one game with evidence, not by default.
+    Require(Resolve(embedded,Context{L"Ghost-Win64-Shipping.exe",{}}).acceptMissingDlssgPlugin==true,"Titans of the Tide lost its profile");
+    Require(!Resolve(embedded,Context{L"Game.exe",{L"GameOverlayRenderer64.dll"}}).acceptMissingDlssgPlugin.value_or(false),"another game accepts a missing DLSS-G plugin");
+    Require(AcceptMissingDlssgPlugin(true,true,true,false),"the evidenced case was refused");
+    Require(!AcceptMissingDlssgPlugin(false,true,true,false),"accepted without a profile");
+    Require(!AcceptMissingDlssgPlugin(true,false,true,false),"accepted with a DLSS-G plugin present");
+    Require(!AcceptMissingDlssgPlugin(true,true,false,false),"accepted before the plugins loaded");
+    Require(!AcceptMissingDlssgPlugin(true,true,true,true),"took presentation from the game's own XeFG");
     // The game-folder file overrides scalar fields and extends lists.
     Rules local;
     Require(Parse(R"({"schema":1,"profiles":[{"id":"local","match":{"executable":"game.exe"},"evidence":"user",
