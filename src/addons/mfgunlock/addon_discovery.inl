@@ -45,6 +45,10 @@ bool DiscoveryRequirementsMet() {
 
 void RunBoundedDiscoveryWorker() {
   g_discovery_worker_running.store(true, std::memory_order_release);
+  // This worker starts after the first real Present, past ReShade's temporary
+  // addon probes (onenowy, 1.8.2 regression). The present callback has made the
+  // addon resident by now, and provider maintenance hands every provider to
+  // XMX after its gates are patched.
   unsigned int quiet_ready_passes = 0;
   for (unsigned int pass = 1; pass <= kDiscoveryRetryLimit; ++pass) {
     Sleep(kDiscoveryRetryIntervalMs);

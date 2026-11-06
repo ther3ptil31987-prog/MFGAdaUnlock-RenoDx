@@ -140,6 +140,7 @@
 
 #include <nvsdk_ngx.h>
 #include "xmx_hook.hpp"
+#include "preada_admission.hpp"
 #include "advanced_settings.hpp"
 
 #include <deps/imgui/imgui.h>
@@ -518,6 +519,50 @@ void RestoreParameterVTable() { mfgunlock::ngxparam::Restore(g_vtable_patch); }
 // instance alive and makes its eventual worker exit unregister the instance
 // ReShade adopted. The first real Present happens after that probe cycle. It
 // only launches the worker; discovery and patching remain on the worker thread.
+std::atomic_bool g_real_present_seen{false};
+std::atomic_bool g_resident{false};
+
+// 1.8.3: hooks that cannot be undone (XMX, the NGX preset) are installed only
+// by a copy that stays loaded: pinned, and only after a real Present, so
+// ReShade's temporary startup copies never install one. False before that.
+bool PinResident(const char* when);
+bool EnsureResident() {
+  if (g_resident.load(std::memory_order_acquire)) return true;
+  if (!g_real_present_seen.load(std::memory_order_acquire)) return false;
+  return PinResident("after first Present");
+}
+
+// 1.8.3: also when the game turns DLSS-G on through Streamline, which ReShade's
+// startup copies never see. Ghost of Tsushima does it before its first Present:
+// with XMX hooked only at that Present, Streamline 2.4 had already created
+// frame generation on NVIDIA's unhooked generator and then presented the real
+// frames alone (62 presents per second against 144 in 1.8.2, which hooked at load).
+void BeforeFrameGeneration() {
+  if (!mfgunlock::xmx::generator::Enabled()) return;
+  if (!g_resident.load(std::memory_order_acquire) && !PinResident("when the game turned DLSS-G on")) return;
+  mfgunlock::xmx::Release(true);
+}
+
+bool PinResident(const char* when) {
+  HMODULE held = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                          reinterpret_cast<LPCWSTR>(&EnsureResident), &held)) {
+    static std::atomic_bool warned{false};
+    if (!warned.exchange(true, std::memory_order_relaxed))
+      reshade::log::message(reshade::log::level::warning,
+          "mfgunlock: could not keep the add-on loaded; XMX and the DLSS preset hook stay off.");
+    return false;
+  }
+  if (!g_resident.exchange(true, std::memory_order_acq_rel))
+    reshade::log::message(reshade::log::level::info,
+#if defined(MFGUNLOCK_ENGINEERING_EXPERIMENTAL)
+        (std::string("mfgunlock: engineering session is process-resident ") + when + "; restart required, hot reload disabled.").c_str());
+#else
+        (std::string("mfgunlock: process-resident ") + when + "; restart required, hot reload disabled.").c_str());
+#endif
+  return true;
+}
+
 void OnPresentStartDiscovery(reshade::api::command_queue* /*queue*/,
                              reshade::api::swapchain* swapchain,
                              const reshade::api::rect* /*source_rect*/,
@@ -527,19 +572,14 @@ void OnPresentStartDiscovery(reshade::api::command_queue* /*queue*/,
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
   if(swapchain==g_primary_swapchain.load(std::memory_order_acquire)) mfgunlock::dlssgdisplay::Observe(swapchain);
 #endif
+  if (swapchain != nullptr && !g_resident.load(std::memory_order_acquire)) {
+    g_real_present_seen.store(true, std::memory_order_release);
 #if defined(MFGUNLOCK_ENGINEERING_EXPERIMENTAL)
-  // Do not pin ReShade's temporary addon/device probes during startup. Once a
-  // real Present is observed, hot unload cannot establish CUDA quiescence.
-  static std::atomic_bool pin_attempted{false};
-  if (swapchain != nullptr && !pin_attempted.exchange(true, std::memory_order_acq_rel)) {
-    HMODULE held = nullptr;
-    const bool resident = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-        reinterpret_cast<LPCWSTR>(&OnPresentStartDiscovery), &held) != FALSE;
-    if (!resident) pin_attempted.store(false, std::memory_order_release);
-    if (resident) reshade::log::message(reshade::log::level::info,
-        "mfgunlock: engineering session is process-resident after first Present; restart required, hot reload disabled.");
-  }
+    // Once a real Present is observed, hot unload cannot establish CUDA quiescence.
+    EnsureResident();
 #endif
+    if (mfgunlock::xmx::generator::Enabled() && EnsureResident()) mfgunlock::xmx::Release();
+  }
   // A primary swapchain can disappear while an already-existing secondary
   // survives (resize, launcher/video swapchain, device recreation). Promote
   // the next presenting swapchain once instead of leaving HDR/API state stale.
@@ -976,7 +1016,10 @@ void LoadConfig() {
       mfgunlock::framecount::g_runtime_selection_mode.load(
           std::memory_order_relaxed),
       std::memory_order_relaxed);
-  if (reshade::get_config_value(nullptr, kConfigSection, "ForceMultiplier", value)) {
+  // 1.8.3: safe mode starts once without the forced multiplier and the DLSS
+  // presets; the saved values stay for the next start.
+  const bool safe_mode = mfgunlock::support::g_safe_mode.load(std::memory_order_relaxed);
+  if (!safe_mode && reshade::get_config_value(nullptr, kConfigSection, "ForceMultiplier", value)) {
     if (value != 0 && (value < 2 || value > 6)) value = 0;
     mfgunlock::framecount::g_force_multiplier.store(static_cast<unsigned int>(value),
                                                     std::memory_order_relaxed);
@@ -989,24 +1032,21 @@ void LoadConfig() {
         std::memory_order_relaxed);
   }
   // 1.6 (plan B): 0 = the game's presets, else an sl::DLSSPreset value (J-M).
-  if (reshade::get_config_value(nullptr, kConfigSection, "DlssSuperResolutionPreset", value) &&
+  if (!safe_mode && reshade::get_config_value(nullptr, kConfigSection, "DlssSuperResolutionPreset", value) &&
       value >= 0 && mfgunlock::dlsspreset::IsSelectable(static_cast<uint32_t>(value)))
     mfgunlock::dlsspreset::g_selected.store(static_cast<uint32_t>(value), std::memory_order_relaxed);
   // 1.6 (plan B.6): 0 = the game's presets, else an sl::DLSSDPreset value (D, E).
-  if (reshade::get_config_value(nullptr, kConfigSection, "DlssRayReconstructionPreset", value) &&
+  if (!safe_mode && reshade::get_config_value(nullptr, kConfigSection, "DlssRayReconstructionPreset", value) &&
       value >= 0 && mfgunlock::dlsspreset::IsSelectableRr(static_cast<uint32_t>(value)))
     mfgunlock::dlsspreset::g_rr_selected.store(static_cast<uint32_t>(value), std::memory_order_relaxed);
   legacy_fixed_output_cap_present = reshade::get_config_value(
       nullptr, kConfigSection, "FixedOutputFpsCap",
       legacy_fixed_output_cap);
-  mfgunlock::framecount::g_game_dynamic_blocked.store(mfgunlock::xmx::generator::Enabled(),
-                                                       std::memory_order_relaxed);
-  if (reshade::get_config_value(nullptr, kConfigSection, "DynamicMFG", value)) {
-    // 1.8: not validated with XMX, where NVIDIA's module no longer generates. The
-    // saved preference stays, for when DLSS-G is selected again.
-    mfgunlock::framecount::g_dynamic_mfg_enabled.store(value != 0 && !mfgunlock::xmx::generator::Enabled(),
-                                                        std::memory_order_relaxed);
-  }
+  // 1.8.3: Dynamic MFG is open with XMX for testing on RTX 40 (1.8 blocked it as
+  // unvalidated). NVIDIA's runtime picks the count and XMX reads it per call, as
+  // on RTX 50; g_game_dynamic_blocked stays available but is no longer set.
+  if (reshade::get_config_value(nullptr, kConfigSection, "DynamicMFG", value))
+    mfgunlock::framecount::g_dynamic_mfg_enabled.store(value != 0, std::memory_order_relaxed);
   if (reshade::get_config_value(nullptr, kConfigSection, "DynamicTargetFPS", value)) {
     if (value < 0 || value > 1000) value = 0;
     mfgunlock::framecount::g_dynamic_target_fps.store(
@@ -1172,7 +1212,7 @@ void LoadConfig() {
 extern "C" __declspec(dllexport) constexpr const char* NAME = "MFG Unlock";
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
-    "MFG Unlock 1.8.2 - DLSS-G and XeMFG backends";
+    "MFG Unlock 1.8.4 - DLSS-G and XeMFG backends";
 #elif defined(MFGUNLOCK_DUAL_BACKEND)
     "Dual Backend Preview X1 - official 1.4.5 base; DLSS-G and XeMFG via OptiScaler; gameplay validation pending";
 #elif defined(MFGUNLOCK_RELEASE_1_4_5)
@@ -1199,6 +1239,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       g_self_module = h_module;
       if (!reshade::register_addon(h_module)) return FALSE;
       mfgunlock::support::BeginSession(mfgunlock::backend::Directory());
+      if (mfgunlock::support::ConsumeSafeMode(mfgunlock::backend::Directory()))
+        reshade::log::message(reshade::log::level::warning,
+            "mfgunlock: safe mode for this start: no DLSS preset, XMX or forced multiplier; the settings are kept.");
       {
         // Read by ReShade when it builds its fonts, after add-ons have loaded.
         int font_offered = 0;
@@ -1293,10 +1336,17 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // Install load-time discovery before the bootstrap scan. Already mapped
       // providers are found by that one shared scan; anything mapped later is
       // patched directly here without enumerating modules from Present.
-      mfgunlock::loadhook::g_on_interposer_loaded = []() { mfgunlock::framecount::TryInstall(); };
+      mfgunlock::loadhook::g_on_interposer_loaded = []() {
+        mfgunlock::framecount::TryInstall();
+        mfgunlock::xmx::preada::TryInstallStreamline();
+      };
       mfgunlock::loadhook::g_on_dlssg_loaded = ProcessLoadedDlssgModule;
+      mfgunlock::framecount::internal::g_before_frame_generation.store(BeforeFrameGeneration, std::memory_order_release);
       mfgunlock::loadhook::g_on_dlssg_plugin_loaded = ProcessLoadedStreamlineDlssgPlugin;
-      mfgunlock::loadhook::g_on_ngx_loaded = []() { TryInstallPresetHook(); };
+      mfgunlock::loadhook::g_on_ngx_loaded = []() {
+        TryInstallPresetHook();
+        mfgunlock::xmx::preada::TryInstallRequirements();
+      };
       mfgunlock::loadhook::TryInstall();
       RunProviderMaintenance();
       TryPatchFrameCountCeiling();
@@ -1313,7 +1363,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       break;
     }
     case DLL_PROCESS_DETACH:
-      mfgunlock::support::EndSession(mfgunlock::backend::Directory());
+      // Only the game's exit ends the session: ReShade unloading a startup
+      // copy is not one, and the marker's count must survive it.
+      if (lpv_reserved != nullptr) mfgunlock::support::EndSession(mfgunlock::backend::Directory());
       // During process termination Windows is already reclaiming every mapped
       // image. Avoid detour transactions and stale provider-memory restores
       // under the loader lock; explicit addon unload still performs cleanup.
@@ -1342,6 +1394,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 #endif
       mfgunlock::loadhook::Uninstall();
       mfgunlock::framecount::Uninstall();
+      mfgunlock::xmx::Uninstall();
+      UninstallPresetHook();
+      mfgunlock::xmx::preada::Uninstall();
       RestoreThinGeometry();
       RestoreMidpoint();
       RestoreDlssgArchGate();

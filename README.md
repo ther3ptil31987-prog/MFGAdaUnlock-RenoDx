@@ -1,11 +1,14 @@
 # MFG Unlock
 
 > [!NOTE]
-> ### New in 1.8.2: more games with XMX
+> ### New in 1.8.4: MFG on DLSS-G versions with no profile yet
 >
-> XMX now works in Dying Light 2, Alan Wake 2 and Phantom Blade Zero, and the panel says
-> when NVIDIA's generator is still doing the work. See the
-> [1.8.2 release notes](docs/releases/1.8.2.md).
+> MFG now unlocks on a DLSS frame generation file the addon has no exact profile for,
+> when it has the same gate as every reviewed version. This fixes Assassin's Creed IV
+> Black Flag Resynced, which ships its own build, and keeps MFG working after NVIDIA's
+> next update. See the [1.8.4 release notes](docs/releases/1.8.4.md). 1.8.3 brought the
+> XMX multipliers back and NVIDIA Dynamic MFG with XMX: see the
+> [1.8.3 release notes](docs/releases/1.8.3.md).
 
 > [!TIP]
 > ### New in 1.8: use XMX whenever the game has frame generation
@@ -334,11 +337,14 @@ artifact on a HUD/UI element, switch back to **Native**.
 | Onimusha: Way of the Sword | DX12 | Working | Working |  |
 | PRAGMATA | DX12 | Working | Working |  |
 | Control Resonant | DX12 | Working | Working |  |
-| Assassin's Creed IV: Black Flag Resynced | DX12 | Working | Maybe | A built-in profile turns off native-output retention for this game |
+| Assassin's Creed IV: Black Flag Resynced | DX12 | Working | Working | A built-in profile turns off native-output retention for this game. MFG with XMX and DLSS-G since 1.8.4 |
 | Cyberpunk 2077 | DX12 | Working | Working | After a game update, run **Install / update files** again (see [below](#the-panel-says-intel-files-are-missing-or-a-different-version)) |
 | The Witcher 3: Wild Hunt (next-gen) | DX12 | Working | Working | Turn off the game's **VSync** for correct frame pacing on CUDA. Fixed in 1.5.3: changing path tracing or other graphics settings with frame generation on no longer loses the graphics device |
 | Alan Wake 2 | DX12 | Working | Working | XMX since 1.8.2 |
-| The Last of Us Part II Remastered | DX12 | Working | Maybe |  |
+| Stellar Blade | DX12 | Not tested | Working | XMX since 1.8.3 |
+| Ghost of Tsushima | DX12 | Not tested | Working | XMX since 1.8.3. Its Streamline (2.4) has no multi-frame generation: 2x only, and a forced 3x or more is not applied |
+| Horizon Zero Dawn Remastered | DX12 | Not tested | Working | XMX since 1.8.3, with Intel's 2x model (the game sends jittered motion vectors). Its Streamline (2.2.1) offers 2x only |
+| The Last of Us Part II Remastered | DX12 | Working | Working | XMX since 1.8.3; in 1.8.2 a saved DLSS preset crashed the game at start |
 | Mafia: The Old Country | DX12 | Working | Maybe |  |
 | Resonance: A Plague Tale Legacy | DX12 | Working | Working |  |
 | Death Stranding 2: On the Beach | DX12 | Working | Maybe | Its jittered motion vectors are corrected automatically |
@@ -347,7 +353,7 @@ artifact on a HUD/UI element, switch back to **Native**.
 | Warhammer 40,000: Darktide | DX12 | Working | Working | Fixed in 1.5.1; on 1.5.0, add `[Adapters] FidelityFX=0` to `MFGAdaUnlock.ini` |
 | Black Myth: Wukong | DX12 | Working | Working |  |
 | Kingdom Come: Deliverance II | DX12 | Working | DLSS-SR not supported on XMX | With the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) XMX is not expected to work here: it needs DLSS-G in DX12. |
-| Red Dead Redemption 2 | DX12, Vulkan | Working | DLSS-SR not supported on XMX | DX12: working with the DLSS-SR input (user report; the game has no native frame generation): turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)). Vulkan (experimental, 1.7): working with DLSS on, in fullscreen, borderless or windowed; no setting needed XMX is not expected to work here: it needs DLSS-G in DX12. |
+| Red Dead Redemption 2 | DX12, Vulkan | Working | DLSS-SR not supported on XMX | DX12: working with the DLSS-SR input (user report; the game has no native frame generation): turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)). Vulkan (experimental, 1.7): generates with DLSS on, but pacing is poor; use DX12 (see [Red Dead Redemption 2: use DX12](#red-dead-redemption-2-use-dx12)). XMX is not expected to work here: it needs DLSS-G in DX12. |
 | Elden Ring | DX12 | Working | DLSS-SR not supported on XMX | With the DLSS-SR input and the EldenRingDLSS addon, offline with Easy Anti-Cheat off; turn on **Force game VSync off** in the panel for correct frame pacing (see [Elden Ring](#elden-ring)) XMX is not expected to work here: it needs DLSS-G in DX12. |
 | Metro Exodus Enhanced Edition | DX12 | Working | DLSS-SR not supported on XMX | With the DLSS-SR input: turn it on in the panel (see [Enabling the DLSS-SR input](#enabling-the-dlss-sr-input)) XMX is not expected to work here: it needs DLSS-G in DX12. |
 | Indiana Jones and the Great Circle | Vulkan | Working | Vulkan not supported on XMX | Experimental (1.7): turn DLSS on (Super Resolution or Ray Reconstruction); the game's Frame Generation switch turns XeMFG on and off. Launch with `+r_allowBlackListedLayers 1` so ReShade can load XMX is not expected to work here: it needs DLSS-G in DX12. |
@@ -774,6 +780,30 @@ files listed below. As a temporary test, add `[Compatibility]
 RetainNativeOutput=0` to `MFGAdaUnlock.ini`. This setting fixed AC Black Flag
 Resynced, which now has a built-in rule.
 
+#### The game crashes every time it starts
+
+Since 1.8.3, after three sessions in a row without a clean exit, the notice at the
+top of the panel offers **Safe mode next start**. The next start runs without the
+DLSS presets, XMX and the forced multiplier, and keeps your settings for the start
+after that. If the game closes before you can open the panel, set
+`DlssSuperResolutionPreset=0` and `ForceMultiplier=0` under `[RenoDX.MFGUnlock]` in
+`ReShade.ini`. In 1.8.2, a saved DLSS preset crashed The Last of Us Part II at every
+start; 1.8.3 fixes that.
+
+#### Red Dead Redemption 2: use DX12
+
+With XeMFG, Red Dead Redemption 2 runs much better in DX12 than in Vulkan. At 4K
+on an RTX 4070 SUPER with 2x, DX12 showed 111 fps with one frame every 8.7 ms,
+give or take 1 ms. Vulkan showed 86 fps, with frames arriving in pairs, 3 to 5 ms
+apart, then a 13 to 17 ms gap, and stalls up to 166 ms. On screen the image seems
+to step back, and motion does not look smooth despite the higher count. A user
+with an RTX 4090 reported the same. **Queue metered frames early** does not change it.
+
+In Vulkan, XeMFG's work and copies share the GPU with the game's frame and wait
+behind it when the GPU is saturated. The game also gives no latency markers in
+Vulkan, so XeLL cannot time its frames. Attempts to fix this in 1.8.3 did not make
+Vulkan smooth, so switch the game to DX12 for frame generation.
+
 #### HUD elements smear or ghost
 
 Enable **Quality → UI Composition** if the game provides a HUD-less image.
@@ -968,15 +998,39 @@ How to read these numbers:
 - **Only `libxess_fg.dll` 1.3.1.78.** With another version or a missing file, XMX does
   not start, NVIDIA's generator keeps running, and the panel says why.
 - **Tested on an RTX 4070 SUPER only.** Other cards are unknown.
+- **RTX 20 and 30 GPUs are experimental** (1.8.3). NVIDIA's DLSS-G runtime refuses these
+  cards on its own, so with XMX the addon admits them: the game offers DLSS Frame
+  Generation and its menu offers 3x-6x, as on RTX 40. Nothing changes on RTX 40 or 50.
+  Not yet confirmed on a real RTX 20/30. If NVIDIA's runtime still cannot create frame
+  generation on the card, the panel says why and offers **Use XeMFG**, which runs on
+  RTX 20 and 30.
+- **No more than 2x when the game's Streamline is older than 2.7** (Ghost of Tsushima,
+  Horizon Zero Dawn Remastered). Forcing more crashed inside Streamline, so the panel's
+  **Frame Multiplier** is not applied above 2x there, and the panel says why.
+- **Horizon Zero Dawn Remastered** uses Intel's own 2x model, because the ported
+  multi-frame model refuses its jittered motion vectors.
 - **Only Crimson Desert was measured.** Cyberpunk 2077 was tested by playing it, without
   captures.
-- **NVIDIA Dynamic MFG is not available with XMX**, because it was not validated on
-  this route. If a game asks for it, a fixed multiplier is used and the panel says so.
-  A saved Dynamic MFG setting applies again when you select DLSS-G.
+- **NVIDIA Dynamic MFG with XMX is experimental** (since 1.8.3). NVIDIA's runtime
+  chooses the count and XMX generates it; tested on an RTX 4070 SUPER. It needs the
+  same Streamline and DLSS-G versions as with NVIDIA's generator.
 - **Settings for NVIDIA's generator are locked with XMX**, such as Adaptive Quality,
   the temporal fix and the Blackwell kernels. DLSS presets, Reflex and pacing remain.
 - If XMX fails during play, no frames are generated until the game restarts: the real
-  frame is shown again, and the panel says why. Select another mode if this repeats.
+  frame is shown again, and the panel says why. Select another mode if this repeats. A
+  start Intel's model refuses is tried again when the game changes resolution or HDR.
+- On a compute command list (Streamline 2.14), XMX copies the game's render-target and
+  depth inputs as non-pixel shader resources, the state Streamline hands NGX. The D3D12
+  debug layer still reports a few barriers in the first frames.
+- **A DLSS-G file with no exact profile** (a game's own build, or a newer NVIDIA
+  download) is unlocked when it has exactly the gate every reviewed version has; the
+  log then says `generic gate`. Turn it off with **Generic provider gate** in the
+  panel's advanced settings, or `[DLSSG] GenericGate=0` in `MFGAdaUnlock.ini`, and
+  restart the game. A file with another gate is still refused.
+- **Once Human:** its `nvngx_dlssg.dll` has the timestamp of the 310.3 build, whose gate
+  has four compares instead of two, so XMX likely stays at 2x there.
+- **Elden Ring with ERSS:** if ERSS generates frames without NVIDIA's DLSS frame
+  generation, XMX has nothing to replace. Use XeMFG.
 - A newer `nvngx_dlssg.dll` might change how the module reacts to XMX's hook. It ran
   with 310.9.1 in Cyberpunk 2077 and 310.9.16 in the Streamline Sample.
 
@@ -1908,6 +1962,14 @@ execution plan and record are in [`docs/plan/`](docs/plan/).
   of that project that this fork studied. Both are GPLv3 and this project is MIT, so they
   were used as a reference only: no code is included, and this fork's implementation and
   the addresses it uses were written and verified independently against `libxess_fg.dll`.
+- [nefh/MFGAmpereUnlock-RenoDx](https://github.com/nefh/MFGAmpereUnlock-RenoDx) (MIT, a
+  fork of this project) showed how NVIDIA's DLSS-G runtime admits RTX 20 and 30 GPUs. The
+  1.8.3 RTX 20/30 path for XMX adapts its Streamline and NGX admission, its scoped NVAPI
+  architecture answer and its provider minimum (`src/addons/mfgunlock/preada_admission.hpp`).
+  Its PTX retargeting is not used: XMX never runs NVIDIA's generation kernels.
+- [sdli1995/dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) documents where the
+  NGX core refuses frame generation on RTX 20 and the D3D12 states Streamline hands NGX.
+  Its source is GPLv3, so it was used as a reference only: no code is included.
 - [OptiScaler](https://github.com/optiscaler/OptiScaler) was studied as an
   API, ownership and architecture reference for the XeFG bridge. No GPL
   OptiScaler code is included (see

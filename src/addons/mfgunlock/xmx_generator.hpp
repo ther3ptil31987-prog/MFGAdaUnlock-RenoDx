@@ -20,7 +20,10 @@
 #include <string>
 #include <vector>
 #include "backend_selection.hpp"
+#include "support_files.hpp"
+#include "tag_states.hpp"
 #include "xmx_policy.hpp"
+#include "xmx_preada.hpp"
 
 namespace mfgunlock::xmx::generator {
 using Microsoft::WRL::ComPtr;
@@ -74,8 +77,9 @@ static_assert(offsetof(ExecuteParams, outputCount) == 0x240 && offsetof(ExecuteP
 static_assert(offsetof(ExecuteParams, firstFrame) == 0x258 && sizeof(ExecuteParams) == 0x260);
 constexpr uint32_t kMaxFrames = 5;
 
+// Safe mode (1.8.3) is decided before the first call, at the start of DllMain.
 inline bool Enabled() {
-  static const bool value = backend::ReadMode() == backend::Mode::Xmx;
+  static const bool value = backend::ReadMode() == backend::Mode::Xmx && !support::g_safe_mode.load();
   return value;
 }
 
@@ -103,6 +107,9 @@ struct State {
   D3D12_RESOURCE_DESC outputDesc{};
   bool published{};
   bool failed{};
+  // The last shape XeFG's Init refused, retried only once the shape changes.
+  bool refused{};
+  policy::ContextShape refusedShape{};
   uint32_t logs{};
 };
 inline State& Get() {
@@ -121,12 +128,29 @@ inline void Fail(const std::string& reason) {
   { std::lock_guard guard(g_failure_lock); g_failure = reason; }
   Log("failed: " + reason);
 }
+inline void ClearFailure() {
+  std::lock_guard guard(g_failure_lock);
+  g_failure.clear();
+}
 inline std::atomic_bool g_preflight_passed{false};
 inline std::atomic<int> g_hooks_installed{0}, g_hooks_failed{0};
 inline std::atomic<uint64_t> g_last_evaluate_tick{0};
 inline std::atomic<int> g_idle{0};
 inline std::atomic<uint32_t> g_idle_logged{0};
 inline std::atomic<uint32_t> g_frames_limit{0};  // the model's limit once a game asks for more
+// 1.8.3: what the generator saw over the last 10 s, outside Log's cap of 48 lines
+// (Ghost of Tsushima: the first evaluates had 1x1 depth and motion and a reset,
+// and the 2x did not look interpolated; the start alone cannot tell why).
+struct Summary {
+  uint64_t since{}, evaluates{}, generated{};
+  std::array<uint64_t, static_cast<int>(policy::Idle::Count)> idle{};
+  std::string inputs;
+  uint32_t lines{};
+};
+inline Summary& Summarized() {
+  static auto* summary = new Summary;
+  return *summary;
+}
 // One log line per reason, however often the state flips.
 inline void NoteIdle(policy::Idle idle) {
   g_idle.store(static_cast<int>(idle), std::memory_order_relaxed);
@@ -229,6 +253,13 @@ inline bool LoadContext(ID3D12Device* device) {
     state.published = true;
     auto ll = GetModuleHandleW(L"libxell.dll");
     if (ll == nullptr) ll = LoadLibraryExW((backend::Directory() / L"libxell.dll").c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    // 1.8.3: a copy the game loaded wins over ours (TLOU Part II ships libxell 1.3.0.5).
+    const auto path = [](HMODULE module) {
+      wchar_t text[MAX_PATH]{};
+      return module != nullptr && GetModuleFileNameW(module, text, MAX_PATH) ? std::filesystem::path(text).string()
+                                                                              : std::string("not loaded");
+    };
+    Log("runtime " + path(state.fg) + " and " + path(ll));
     HMODULE self = nullptr;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                        reinterpret_cast<LPCWSTR>(&LoadContext), &self);
@@ -320,7 +351,18 @@ inline bool Capture(ID3D12Device* device, ID3D12GraphicsCommandList* list, ComPt
     copy = Texture(device, desc, kXefgInputState, D3D12_RESOURCE_FLAG_NONE);
     if (!copy) return false;
   }
-  Copy(list, copy.Get(), kXefgInputState, source, sourceState);
+  // 1.8.3: the game's own tagged resource arrives in its tagged state, which a
+  // direct list can leave and restore. Streamline 2.14 evaluates on a compute
+  // list, where graphics states (render target, depth) cannot be named, and
+  // hands NGX its inputs as non-pixel shader resources (captured in Cyberpunk
+  // and Wukong by dlssg_for_sm86; in the Streamline Sample this cut the debug
+  // layer's errors from 15,356 to 171, with generation intact).
+  auto from = static_cast<D3D12_RESOURCE_STATES>(tagstates::StateOf(source, sourceState));
+  constexpr auto kGraphicsOnly = D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_WRITE |
+                                 D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+  if (list->GetType() == D3D12_COMMAND_LIST_TYPE_COMPUTE && (from & kGraphicsOnly) != 0)
+    from = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+  Copy(list, copy.Get(), kXefgInputState, source, from);
   return true;
 }
 inline Input Describe(ID3D12Resource* copy) {
@@ -372,8 +414,12 @@ inline bool Prepare(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Parameter* 
   if (state.context != nullptr &&
       wanted == policy::ContextShape{state.device.Get(), state.width, state.height, static_cast<uint32_t>(state.format), state.flags})
     return true;
+  // 1.8.3: a shape XeFG refused is not retried every frame, but another
+  // shape (a resolution or HDR change) is.
+  if (state.refused && wanted == state.refusedShape) return false;
   if (state.contexts >= policy::kMaxContexts) {
     Fail("the game changed its output size too many times; restart the game");
+    state.failed = true;
     return false;
   }
   if (state.context != nullptr) {
@@ -394,7 +440,10 @@ inline bool Prepare(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Parameter* 
   }
   state.device = device;
   ++state.contexts;
-  if (!LoadContext(state.device.Get())) return false;
+  if (!LoadContext(state.device.Get())) {
+    state.failed = true;
+    return false;
+  }
   InitParams init{};
   init.width = width;
   init.height = output.Height;
@@ -403,16 +452,42 @@ inline bool Prepare(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Parameter* 
   init.maxFrames = state.maxFrames;
   init.creationMask = 1;
   init.visibleMask = 1;
-  const auto result = Guarded(reinterpret_cast<unsigned char*>(state.fg) + kInitRva, state.context, &init, nullptr);
-  Log("init " + std::to_string(width) + "x" + std::to_string(output.Height) + " format " +
-      std::to_string(static_cast<int>(output.Format)) + " flags " + std::to_string(flags) + " result " + std::to_string(result));
+  const auto initialize = [&] {
+    const auto result = Guarded(reinterpret_cast<unsigned char*>(state.fg) + kInitRva, state.context, &init, nullptr);
+    Log("init " + std::to_string(width) + "x" + std::to_string(output.Height) + " format " +
+        std::to_string(static_cast<int>(output.Format)) + " flags " + std::to_string(flags) + " frames " +
+        std::to_string(init.maxFrames) + " result " + std::to_string(result));
+    return result;
+  };
+  auto result = initialize();
+  // 1.8.3: the ported multi-frame model throws inside Init (-1000) on inputs
+  // Intel's own 2x model takes: HZD Remastered's jittered motion vectors
+  // (flags 17). Intel's model on a fresh context still generates 2x.
+  if (result != 0 && init.maxFrames > 1 && state.contexts < policy::kMaxContexts) {
+    ++state.contexts;
+    if (LoadContext(state.device.Get())) {
+      init.maxFrames = 1;
+      result = initialize();
+      if (result == 0) {
+        state.maxFrames = 1;
+        Log("the multi-frame model refused these inputs; Intel's 2x model runs instead");
+      }
+    }
+  }
   if (result != 0) {
     // Found out only here: the hook goes in when the module loads, long before the
     // game's output format exists, so NVIDIA's generator is already gone.
     Fail(output.Format == DXGI_FORMAT_R16G16B16A16_FLOAT
              ? "XMX cannot use this game's scRGB HDR output (result " + std::to_string(result) + "); turn HDR off or use XeMFG"
              : "XeFG initialization returned " + std::to_string(result));
+    state.context = nullptr;
+    state.refused = true;
+    state.refusedShape = wanted;
     return false;
+  }
+  if (state.refused) {
+    state.refused = false;
+    ClearFailure();
   }
   state.outputDesc = output;
   state.width = width;
@@ -420,6 +495,37 @@ inline bool Prepare(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Parameter* 
   state.format = output.Format;
   state.flags = flags;
   return true;
+}
+inline std::string Shape(const NVSDK_NGX_Parameter* params, const char* name) {
+  auto* resource = Resource(params, name);
+  if (resource == nullptr) return "none";
+  const auto desc = resource->GetDesc();
+  return std::to_string(desc.Width) + "x" + std::to_string(desc.Height) + "/" + std::to_string(static_cast<int>(desc.Format));
+}
+inline void Summarize(const NVSDK_NGX_Parameter* params, bool generated, policy::Idle idle) {
+  auto& summary = Summarized();
+  const auto now = GetTickCount64();
+  if (summary.since == 0) summary.since = now;
+  ++summary.evaluates;
+  if (generated) ++summary.generated;
+  ++summary.idle[static_cast<int>(idle)];
+  if (now - summary.since < 10000) return;
+  // The inputs of this evaluate, as NGX names them.
+  std::string text = "summary 10 s: evaluates " + std::to_string(summary.evaluates) + ", generated " +
+                     std::to_string(summary.generated);
+  for (int i = 1; i < static_cast<int>(policy::Idle::Count); ++i)
+    if (summary.idle[i] != 0)
+      text += ", " + std::string(policy::IdleText(static_cast<policy::Idle>(i))) + " " + std::to_string(summary.idle[i]);
+  text += "; depth " + Shape(params, "DLSSG.Depth") + " motion " + Shape(params, "DLSSG.MVecs") + " hudless " +
+          Shape(params, "DLSSG.HUDLess") + " backbuffer " + Shape(params, "DLSSG.Backbuffer") + "; mv scale " +
+          std::to_string(Value<float>(params, "DLSSG.MvecScaleX", 0.f)) + "," + std::to_string(Value<float>(params, "DLSSG.MvecScaleY", 0.f)) +
+          " reset " + std::to_string(Value<unsigned int>(params, "DLSSG.Reset", 0)) + " frames " +
+          std::to_string(Value<unsigned int>(params, "DLSSG.MultiFrameCount", 0));
+  if (summary.lines++ < 60) reshade::log::message(reshade::log::level::info, ("mfgunlock: xmx " + text).c_str());
+  const auto lines = summary.lines;
+  summary = {};
+  summary.lines = lines;
+  summary.since = now;
 }
 // True when this call produced what NGX expects.
 inline bool Generate(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Parameter* params) {
@@ -432,14 +538,13 @@ inline bool Generate(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Parameter*
   auto* motion = Resource(params, "DLSSG.MVecs");
   if (backbuffer == nullptr || interpolated == nullptr || depth == nullptr || motion == nullptr) {
     NoteIdle(policy::Idle::MissingInputs);
+    Summarize(params, false, policy::Idle::MissingInputs);
     return false;
   }
   const auto requested = (std::max)(Value<unsigned int>(params, "DLSSG.MultiFrameCount", 1), 1u);
   const auto requestedIndex = std::clamp(Value<unsigned int>(params, "DLSSG.MultiFrameIndex", 1), 1u, requested);
-  if (!Prepare(list, params, interpolated->GetDesc())) {
-    state.failed = true;
-    return false;
-  }
+  // Prepare sets `failed` itself when retrying cannot help.
+  if (!Prepare(list, params, interpolated->GetDesc())) return false;
   const auto plan = policy::PlanFrames(requested, requestedIndex, state.maxFrames);
   const auto frameCount = plan.count, frameIndex = plan.index;
   if (plan.limited && g_frames_limit.exchange(state.maxFrames) == 0)
@@ -535,6 +640,7 @@ inline bool Generate(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Parameter*
   }
   state.lastGenerated = generated;
   NoteIdle(idle);
+  Summarize(params, generated, idle);
   if (generated) Copy(list, interpolated, kOutputState, state.outputs[frameIndex - 1].Get(), kOutputState);
   else Copy(list, interpolated, kOutputState, backbuffer, kBackbufferState);
   return true;

@@ -65,6 +65,7 @@
 #include "./quality_guard.hpp"
 #include "./stability_policy.hpp"
 #include "./runtime_version.hpp"
+#include "./tag_states.hpp"
 
 namespace mfgunlock::framecount {
 
@@ -1873,10 +1874,19 @@ inline sl::Result FilterHudSeparationTags(const sl::ViewportHandle& viewport,
   return submit(forwarded);
 }
 
+// 1.8.3: each tagged resource's state, for XMX's copies (see tag_states.hpp).
+inline void RecordTagStates(const sl::ResourceTag* tags, uint32_t count) {
+  if (tags == nullptr) return;
+  for (uint32_t i = 0; i < count && i < 64; ++i)
+    if (tags[i].resource != nullptr && tags[i].resource->native != nullptr)
+      tagstates::Record(tags[i].resource->native, tags[i].resource->state);
+}
+
 inline sl::Result HookedSetTag(const sl::ViewportHandle& viewport,
                                const sl::ResourceTag* tags, uint32_t count,
                                sl::CommandBuffer* command_buffer) {
   if (g_real_set_tag == nullptr) return sl::Result::eErrorNotInitialized;
+  RecordTagStates(tags, count);
   inputdiag::ObserveTags(static_cast<uint32_t>(viewport), tags, count, false, 0,
                          static_cast<uint32_t>(g_format_api.load(
                              std::memory_order_relaxed)));
@@ -1890,6 +1900,7 @@ inline sl::Result HookedSetTagForFrame(const sl::FrameToken& frame,
                                        const sl::ResourceTag* tags, uint32_t count,
                                        sl::CommandBuffer* command_buffer) {
   if (g_real_set_tag_for_frame == nullptr) return sl::Result::eErrorNotInitialized;
+  RecordTagStates(tags, count);
   inputdiag::ObserveTags(static_cast<uint32_t>(viewport), tags, count, true,
                          static_cast<uint32_t>(frame),
                          static_cast<uint32_t>(g_format_api.load(
@@ -2016,11 +2027,17 @@ inline sl::Result HookedInit(const sl::Preferences& pref, uint64_t sdk_version) 
   return result;
 }
 
+// 1.8.3: run before the game turns DLSS-G on, ahead of Streamline creating the
+// frame generation feature (addon.cpp: XMX's hooks go in there).
+inline std::atomic<void (*)()> g_before_frame_generation{nullptr};
+
 inline sl::Result HookedSetOptions(const sl::ViewportHandle& viewport,
                                    const sl::DLSSGOptions& options) {
   const auto real = g_real_set_options.load(std::memory_order_acquire);
   if (real == nullptr)
     return sl::Result::eErrorNotInitialized;
+  if (options.mode != sl::DLSSGMode::eOff)
+    if (const auto before = g_before_frame_generation.load(std::memory_order_acquire)) before();
   if (options.mode == sl::DLSSGMode::eDynamic &&
       g_game_dynamic_blocked.load(std::memory_order_relaxed)) {
     // eDynamic exists only in the current struct version, so this copy is complete.
@@ -2165,6 +2182,30 @@ inline sl::Result HookedSetOptions(const sl::ViewportHandle& viewport,
         std::memory_order_release);
     g_declined_no_pacing.store(false, std::memory_order_relaxed);
     g_force_failed_for.store(0, std::memory_order_relaxed);
+    return result;
+  }
+
+  if (forcepolicy::StreamlineBlocksMultiFrame(
+          g_active_streamline_version.load(std::memory_order_acquire), desired)) {
+    static std::atomic_bool warned{false};
+    if (!warned.exchange(true, std::memory_order_relaxed)) {
+      reshade::log::message(
+          reshade::log::level::warning,
+          "mfgunlock: this game's Streamline DLSS-G is older than 2.7 and has no multi-frame "
+          "generation; not forcing more than 2x, forwarding the game's request unchanged.");
+    }
+    const sl::Result result = CallSetOptions(viewport, options);
+    g_last_result.store(static_cast<unsigned int>(result), std::memory_order_relaxed);
+    g_last_forced.store(0, std::memory_order_relaxed);
+    if (result == sl::Result::eOk) {
+      g_last_effective_generated.store(requested, std::memory_order_relaxed);
+      g_effective_request_seen.store(true, std::memory_order_release);
+    } else {
+      g_effective_request_seen.store(false, std::memory_order_release);
+    }
+    g_fixed_override_status.store(
+        static_cast<unsigned int>(forcepolicy::FixedOverrideStatus::kStreamlineBefore27),
+        std::memory_order_release);
     return result;
   }
 

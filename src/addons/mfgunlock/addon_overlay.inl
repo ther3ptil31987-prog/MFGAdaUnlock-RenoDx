@@ -2055,6 +2055,15 @@ void DrawLegacyOverlay(reshade::api::effect_runtime* /*runtime*/) {
       ImGui::TextDisabled(
           "Addon override unsupported by the game's DLSSGOptions ABI.");
       break;
+    case mfgunlock::forcepolicy::FixedOverrideStatus::kStreamlineBefore27:
+      if (effective_seen) {
+        ImGui::Text("Effective downstream request: %ux (game request).",
+                    effective_multiplier);
+      }
+      ImGui::TextColored(kUiWarning,
+          "This game's Streamline is older than 2.7 and cannot generate more than 2x; "
+          "the multiplier is not forced.");
+      break;
     case mfgunlock::forcepolicy::FixedOverrideStatus::kDynamicPriority:
       ImGui::TextDisabled(
           "Effective multiplier: Dynamic MFG/provider-controlled; fixed request is not applied.");
@@ -2640,7 +2649,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
   }
   const char* xmx_waiting=xmx_bypassed?"NVIDIA is generating":xmx_report.evaluating?"Waiting for frames":"Paused or off in the game";
   const auto xmx_support_report=[&] {
-    std::string report="MFG Unlock 1.8.2\nmethod=";
+    std::string report="MFG Unlock 1.8.4\nmethod=";
     report+=xmx_selected?"XMX":"DLSS-G";
     report+=std::string("\nrenderer=")+RenderApiName(render_api)+"\nstatus="+player_state;
     if(xmx_selected) {
@@ -2659,7 +2668,27 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
         "The XMX mode replaces NVIDIA's generator with Intel's model. Presentation and the game's settings remain DLSS-G's.",xmx_report.generating?mfgunlock::ui::Accent:mfgunlock::ui::Muted);
     if(mfgunlock::framecount::g_game_dynamic_replaced.load(std::memory_order_relaxed))
       mfgunlock::ui::Description("The game asked for Dynamic MFG, which XMX does not support; a fixed multiplier is used.");
+    if(mfgunlock::xmx::preada::Engaged())
+      mfgunlock::ui::Description("RTX 20/30, experimental: NVIDIA's runtime is admitted on this GPU so the game offers DLSS Frame Generation. Choose the multiplier in the game's menu.");
     if(!xmx_d3d12) mfgunlock::ui::Notice("XMX only runs in Direct3D 12 games, so NVIDIA's generator is producing the frames.");
+#if defined(MFGUNLOCK_NATIVE_XEMFG)
+    // 1.8.3: RTX 20 and 30. NVIDIA's runtime is admitted on this GPU so the
+    // game offers DLSS Frame Generation; if it still cannot create the
+    // feature here, XeMFG is the way to generate on it.
+    else if(mfgunlock::xmx::preada::Engaged() && mfgunlock::xmx::preada::g_create_result.load()>=0 &&
+            NVSDK_NGX_FAILED(static_cast<NVSDK_NGX_Result>(mfgunlock::xmx::preada::g_create_result.load()))) {
+      mfgunlock::ui::ProblemCard problem("##xmx_pre_ada","XMX could not start on this GPU",mfgunlock::ui::Warning);
+      ImGui::TextWrapped("On RTX 20 and 30 GPUs, XMX needs NVIDIA's DLSS-G runtime to create frame generation, and it refused: %s. "
+          "XeMFG brings its own presentation and runs on RTX 20 and 30 GPUs.",xmx_report.failure.c_str());
+      mfgunlock::ui::SupportActions(xmx_support_report);
+      static bool switch_failed=false;
+      mfgunlock::ui::ButtonRow actions(1);
+      if(actions("Use XeMFG","Saves XeMFG as the frame generation method. It applies after a game restart."))
+        switch_failed=!mfgunlock::backend::SelectMode(mfgunlock::backend::Mode::XeMfg);
+      if(switch_failed) mfgunlock::ui::Description("The change was not saved. Check write access to the game folder.");
+      else if(mfgunlock::backend::ReadMode()==mfgunlock::backend::Mode::XeMfg) mfgunlock::ui::Description("Saved. Restart the game to use XeMFG.");
+    }
+#endif
     else if(!xmx_report.hooked && !xmx_report.failure.empty()) {
       mfgunlock::ui::Notice(("XMX could not start, so NVIDIA's generator is producing the frames: "+xmx_report.failure).c_str());
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
@@ -2689,6 +2718,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     if(xmx_report.framesLimit!=0) mfgunlock::ui::Notice(("This XMX model produces "+std::to_string(xmx_report.framesLimit)+" generated frame(s) per real frame; higher multipliers repeat it.").c_str());
   }
   mfgunlock::ui::SessionNotice(xmx_support_report);
+  mfgunlock::ui::SafeModeNotice();
   if(dynamic_applied) mfgunlock::ui::Description("Dynamic MFG is choosing the multiplier automatically.");
   if(sleep_status_available && (driver_vsync_active || gsync_active))
     mfgunlock::ui::Description(driver_vsync_active && gsync_active?"Driver VSync + G-SYNC active":driver_vsync_active?"Driver VSync active":"G-SYNC active");
@@ -2958,6 +2988,13 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
       reshade::set_config_value(nullptr, kConfigSection, "ForceMultiplier",
                                 force);
     }
+    if (mfgunlock::forcepolicy::StreamlineBlocksMultiFrame(
+            mfgunlock::framecount::g_active_streamline_version.load(std::memory_order_acquire), 2)) {
+      ImGui::PushTextWrapPos();
+      ImGui::TextColored(kUiWarning,
+          "This game's Streamline is older than 2.7: 3x to 6x are not applied, to avoid a crash.");
+      ImGui::PopTextWrapPos();
+    }
 
     bool dynamic_mfg = dynamic_enabled && !dynamic_game_blocked;
 
@@ -2974,20 +3011,20 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
         "Lets NVIDIA's native scheduler choose the generated-frame count. Requires D3D12, driver 595.41 or newer, DLSS-G 310.9.1/310.9.16 and Streamline 2.14.1/2.14.16. Star Wars Outlaws is kept on fixed/game-controlled MFG because its integration breaks on the Dynamic path. Toggle Frame Generation off/on after changing it.");
     ImGui::TableNextColumn();
     const bool block_dynamic_enable =
-        xmx_selected || dynamic_game_blocked || (dynamic_hard_unavailable && !dynamic_mfg);
-    if (xmx_selected) {
-      ImGui::AlignTextToFramePadding();
-      ImGui::TextDisabled("Not available with XMX.");
-    } else {
-      if (block_dynamic_enable) ImGui::BeginDisabled();
-      if (ImGui::Checkbox("##dynamic_mfg", &dynamic_mfg)) {
-        mfgunlock::framecount::g_dynamic_mfg_enabled.store(
-            dynamic_mfg, std::memory_order_relaxed);
-        mfgunlock::framecount::NotifyDynamicModeChanged();
-        reshade::set_config_value(nullptr, kConfigSection, "DynamicMFG",
-                                  dynamic_mfg ? 1 : 0);
-      }
-      if (block_dynamic_enable) ImGui::EndDisabled();
+        dynamic_game_blocked || (dynamic_hard_unavailable && !dynamic_mfg);
+    if (block_dynamic_enable) ImGui::BeginDisabled();
+    if (ImGui::Checkbox("##dynamic_mfg", &dynamic_mfg)) {
+      mfgunlock::framecount::g_dynamic_mfg_enabled.store(
+          dynamic_mfg, std::memory_order_relaxed);
+      mfgunlock::framecount::NotifyDynamicModeChanged();
+      reshade::set_config_value(nullptr, kConfigSection, "DynamicMFG",
+                                dynamic_mfg ? 1 : 0);
+    }
+    if (block_dynamic_enable) ImGui::EndDisabled();
+    if (xmx_selected && dynamic_mfg) {
+      ImGui::PushTextWrapPos();
+      ImGui::TextColored(kUiWarning, "Experimental with XMX: NVIDIA's runtime picks the count and XMX generates it.");
+      ImGui::PopTextWrapPos();
     }
 
     if (dynamic_mfg) {
