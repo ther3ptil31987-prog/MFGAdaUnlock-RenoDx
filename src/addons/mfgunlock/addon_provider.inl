@@ -976,6 +976,10 @@ void RunProviderMaintenance() {
   }
   version_candidates = g_gate_modules;
   const std::vector<HMODULE> providers = g_dlssg_modules;
+  // 1.8.7: RTX 50 leaves every provider unpatched, so g_gate_modules stays
+  // empty and Dynamic MFG never saw a provider version ("NVIDIA's frame
+  // generation file has not loaded yet"). Report every mapped provider there.
+  if (mfgunlock::gpuarch::AllNvidiaAdaptersBlackwell()) version_candidates = providers;
   ReleaseSRWLockExclusive(&g_provider_maintenance_lock);
   // After the gates, outside the lock. Before the addon is resident this only
   // remembers the providers; a preloaded one arrives only here (DL2's .bin).
