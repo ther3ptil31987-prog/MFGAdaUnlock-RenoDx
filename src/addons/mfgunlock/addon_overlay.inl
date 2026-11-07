@@ -2675,26 +2675,6 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
         "The XMX mode replaces NVIDIA's generator with Intel's model. Presentation and the game's settings remain DLSS-G's.",xmx_report.generating?mfgunlock::ui::Accent:mfgunlock::ui::Muted);
     if(mfgunlock::framecount::g_game_dynamic_replaced.load(std::memory_order_relaxed))
       mfgunlock::ui::Description("The game asked for Dynamic MFG, which XMX does not support; a fixed multiplier is used.");
-    if(mfgunlock::xmx::preada::Engaged()) {
-      mfgunlock::ui::Description("RTX 20/30, experimental: NVIDIA's runtime is admitted on this GPU so the game offers DLSS Frame Generation. Choose the multiplier in the game's menu.");
-      // 1.8.5: Streamline drops DLSS-G inside slInit on these GPUs; the
-      // admission reaches slInit only when the addon loads early.
-      if(!mfgunlock::xmx::preada::g_init_observed.load(std::memory_order_acquire)) {
-        if(!HasEarlyLoadEntry()) {
-          mfgunlock::ui::Notice("This game started Streamline before the addon loaded, so DLSS Frame Generation may stay locked in its menu. Enable early loading and restart the game.");
-          static int early_state=0;  // 0 not tried, 1 saved, 2 failed
-          mfgunlock::ui::ButtonRow early(1);
-          if(early("Enable early addon loading","Adds this addon to ReShade's LoadFromDllMain list in ReShade.ini, so it loads before the game starts Streamline. It applies after a game restart.")) {
-            early_state=EnsureEarlyLoadEntry()?1:2;
-            reshade::log::message(early_state==1?reshade::log::level::info:reshade::log::level::error,
-                early_state==1?"mfgunlock: added this addon to ADDON.LoadFromDllMain for the pre-Ada admission; restart required."
-                              :"mfgunlock: could not update ADDON.LoadFromDllMain; add renodx-mfgunlock.addon64 manually and restart.");
-          }
-          if(early_state==1) mfgunlock::ui::Description("Saved. Restart the game.");
-          else if(early_state==2) mfgunlock::ui::Description("ReShade.ini could not be updated. Add renodx-mfgunlock.addon64 to LoadFromDllMain under [ADDON] and restart.");
-        }
-      }
-    }
     if(!xmx_d3d12) mfgunlock::ui::Notice("XMX only runs in Direct3D 12 games, so NVIDIA's generator is producing the frames.");
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
     // 1.8.3: RTX 20 and 30. NVIDIA's runtime is admitted on this GPU so the
@@ -2741,6 +2721,33 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     }
     if(xmx_report.partiallyHooked) mfgunlock::ui::Notice("XMX could not hook every copy of NVIDIA's generator, so NVIDIA's model may still produce some frames.");
     if(xmx_report.framesLimit!=0) mfgunlock::ui::Notice(("This XMX model produces "+std::to_string(xmx_report.framesLimit)+" generated frame(s) per real frame; higher multipliers repeat it.").c_str());
+  }
+  // 1.9.0: RTX 20/30 with XMX or with NVIDIA's own generator.
+  if(mfgunlock::xmx::preada::Admitted()) {
+    mfgunlock::ui::Description(xmx_selected
+        ?"RTX 20/30, experimental: NVIDIA's runtime is admitted on this GPU so the game offers DLSS Frame Generation, and XMX generates the frames. Choose the multiplier in the game's menu."
+        :"RTX 20/30, experimental: NVIDIA's runtime is admitted on this GPU and its generator runs kernels prepared for it. Choose the multiplier in the game's menu.");
+    // 1.8.5: Streamline drops DLSS-G inside slInit on these GPUs; the
+    // admission reaches slInit only when the addon loads early.
+    if(!mfgunlock::xmx::preada::g_init_observed.load(std::memory_order_acquire) && !HasEarlyLoadEntry()) {
+      mfgunlock::ui::Notice("This game started Streamline before the addon loaded, so DLSS Frame Generation may stay locked in its menu. Enable early loading and restart the game.");
+      static int early_state=0;  // 0 not tried, 1 saved, 2 failed
+      mfgunlock::ui::ButtonRow early(1);
+      if(early("Enable early addon loading","Adds this addon to ReShade's LoadFromDllMain list in ReShade.ini, so it loads before the game starts Streamline. It applies after a game restart.")) {
+        early_state=EnsureEarlyLoadEntry()?1:2;
+        reshade::log::message(early_state==1?reshade::log::level::info:reshade::log::level::error,
+            early_state==1?"mfgunlock: added this addon to ADDON.LoadFromDllMain for the pre-Ada admission; restart required."
+                          :"mfgunlock: could not update ADDON.LoadFromDllMain; add the addon manually and restart.");
+      }
+      if(early_state==1) mfgunlock::ui::Description("Saved. Restart the game.");
+      else if(early_state==2) mfgunlock::ui::Description("ReShade.ini could not be updated. Add this addon's file name to LoadFromDllMain under [ADDON] and restart.");
+    }
+    const int64_t created=mfgunlock::xmx::preada::g_create_result.load();
+    if(!xmx_selected && created>=0 && NVSDK_NGX_FAILED(static_cast<NVSDK_NGX_Result>(created))) {
+      mfgunlock::ui::ProblemCard problem("##dlssg_pre_ada","NVIDIA's frame generation could not start on this GPU",mfgunlock::ui::Warning);
+      char code[16]; std::snprintf(code,sizeof(code),"0x%08x",static_cast<unsigned>(created));
+      ImGui::TextWrapped("NVIDIA's runtime refused to create frame generation here (%s). Try the XMX method, which replaces NVIDIA's generator with Intel's model, and send ReShade.log if this repeats.",code);
+    }
   }
   mfgunlock::ui::SessionNotice(xmx_support_report);
   mfgunlock::ui::SafeModeNotice();

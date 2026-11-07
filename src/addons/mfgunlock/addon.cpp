@@ -1368,10 +1368,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           std::memory_order_release);
       if (mfgunlock::drsoverride::g_max_multiplier.load(std::memory_order_relaxed) != 0)
         mfgunlock::drsoverride::TryInstall();
-      if (mfgunlock::xmx::preada::Engaged() && !HasEarlyLoadEntry()) {
+      if (mfgunlock::xmx::preada::Admitted() && !HasEarlyLoadEntry()) {
         reshade::log::message(
             reshade::log::level::warning,
-            "mfgunlock: pre-Ada XMX without ADDON.LoadFromDllMain; games that call slInit before normal addon loading keep DLSS Frame Generation locked. Use the overlay button and restart.");
+            "mfgunlock: RTX 20/30 without ADDON.LoadFromDllMain; games that call slInit before normal addon loading keep DLSS Frame Generation locked. Use the overlay button and restart.");
       }
       mfgunlock::loadhook::g_on_dlssg_plugin_loaded = ProcessLoadedStreamlineDlssgPlugin;
       mfgunlock::loadhook::g_on_ngx_loaded = []() {

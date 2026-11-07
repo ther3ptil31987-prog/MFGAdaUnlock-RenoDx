@@ -14,10 +14,10 @@
 //
 // Adapted from nefh's MFGAmpereUnlock-RenoDx (MIT, a fork of this project):
 // the scoped architecture answer, the requirements and Streamline admission,
-// and the provider minimum. Its PTX retargeting is not taken: XMX never runs
-// NVIDIA's generation kernels. Everything here acts only while
-// xmx::preada::Engaged(): every NVIDIA adapter predates Ada and XMX is on.
-// Nothing changes on RTX 40 or 50.
+// the provider minimum and (1.8.7) the provider's kernels for this GPU.
+// Everything here acts only while xmx::preada::Admitted(): every NVIDIA
+// adapter predates Ada (1.9.0: with XMX or NVIDIA's own generator). Nothing
+// changes on RTX 40 or 50.
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <windows.h>
@@ -53,6 +53,18 @@ constexpr uint32_t kLoweredMinimum = 0x160;
 // XMX selected, its files present, and this GPU older than Ada.
 inline bool Engaged() {
   return Active() && generator::Enabled() && generator::Preflight();
+}
+// 1.9.0: NVIDIA's own generator on RTX 20/30 too. The admission, the provider
+// minimum, the multi-frame gate and the kernel preparation act on every
+// pre-Ada GPU, with XMX or with DLSS-G; [DLSSG] PreAdaAdmission=0 turns them
+// off. Only XMX's own pieces (its generator, its failure) still read Engaged().
+inline bool AdmissionDisabled() {
+  return GetPrivateProfileIntW(L"DLSSG", L"PreAdaAdmission", 1,
+                               (backend::Directory() / L"MFGAdaUnlock.ini").c_str()) == 0;
+}
+inline bool Admitted() {
+  static const bool value = Active() && !AdmissionDisabled();
+  return value;
 }
 inline void Log(const std::string& text, bool warning = false) {
   reshade::log::message(warning ? reshade::log::level::warning : reshade::log::level::info,
@@ -130,7 +142,7 @@ inline bool IsNvidiaAdapter(const sl::AdapterInfo& adapter) {
 inline sl::Result HookedIsFeatureSupported(sl::Feature feature, const sl::AdapterInfo& adapter) {
   if (g_real_support == nullptr) return sl::Result::eErrorNotInitialized;
   const sl::Result native = g_real_support(feature, adapter);
-  if (feature != sl::kFeatureDLSS_G || !Engaged() ||
+  if (feature != sl::kFeatureDLSS_G || !Admitted() ||
       (native != sl::Result::eErrorNoSupportedAdapterFound && native != sl::Result::eErrorAdapterNotSupported))
     return native;
   // Streamline asks NVAPI for the architecture itself: ask again inside the scope.
@@ -155,7 +167,7 @@ inline const std::vector<hook::HookItem> kStreamlineHooks = {
 // Installed when sl.interposer.dll maps; slIsFeatureSupported comes long before
 // the first Present. Removed on an explicit unload.
 inline void TryInstallStreamline() {
-  if (g_support_hooked.load(std::memory_order_acquire) || !Engaged()) return;
+  if (g_support_hooked.load(std::memory_order_acquire) || !Admitted()) return;
   static SRWLOCK lock = SRWLOCK_INIT;
   AcquireSRWLockExclusive(&lock);
   if (!g_support_hooked.load(std::memory_order_relaxed)) {
@@ -177,7 +189,7 @@ inline std::atomic_bool g_requirements_relaxed{false};
 inline NVSDK_NGX_Result NVSDK_CONV HookedRequirements(IDXGIAdapter* adapter, const NVSDK_NGX_FeatureDiscoveryInfo* info,
                                                        NVSDK_NGX_FeatureRequirement* out) {
   if (g_real_requirements == nullptr) return NVSDK_NGX_Result_FAIL_InvalidParameter;
-  if (info == nullptr || info->FeatureID != NVSDK_NGX_Feature_FrameGeneration || !Engaged())
+  if (info == nullptr || info->FeatureID != NVSDK_NGX_Feature_FrameGeneration || !Admitted())
     return g_real_requirements(adapter, info, out);
   EnsureArchHook();
   NVSDK_NGX_Result result;
@@ -211,9 +223,9 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedRequirements(IDXGIAdapter* adapter, con
 // slInit (ReShade's LoadFromDllMain); the panel warns when it did not.
 inline std::atomic_bool g_init_observed{false};
 inline thread_local bool g_init_previous = false;
-inline bool InitHookWanted() { return Engaged(); }
+inline bool InitHookWanted() { return Admitted(); }
 inline void InitScope(bool begin) {
-  if (!Engaged()) return;
+  if (!Admitted()) return;
   if (begin) {
     EnsureArchHook();
     g_init_previous = g_in_admission;
@@ -229,7 +241,7 @@ inline const std::vector<hook::HookItem> kRequirementHooks = {
      reinterpret_cast<void*>(&HookedRequirements)},
 };
 inline void TryInstallRequirements() {
-  if (g_requirements_hooked.load(std::memory_order_acquire) || !Engaged()) return;
+  if (g_requirements_hooked.load(std::memory_order_acquire) || !Admitted()) return;
   static SRWLOCK lock = SRWLOCK_INIT;
   AcquireSRWLockExclusive(&lock);
   for (const wchar_t* name : {L"_nvngx.dll", L"nvngx.dll"}) {
@@ -248,10 +260,10 @@ inline void TryInstallRequirements() {
 // feature loads it even though XMX never runs it. nefh's preparation (vendored
 // in ampere/, MIT) rewrites the provider's sm_89 PTX for this GPU (sm_86 or
 // sm_75) and hides the sm_89 cubins, so the driver compiles kernels this GPU
-// can load. Only while Engaged(), and only on one Turing or Ampere family.
+// can load. Only while Admitted(), and only on one Turing or Ampere family.
 inline bool RetargetConfigured() {
   static const bool configured = [] {
-    if (!Engaged()) return false;
+    if (!Admitted()) return false;
     auto family = gpuarch::NvidiaPreAdaFamily();
     // A simulated pre-Ada run on Ada takes the Ampere path: sm_86 code runs there.
     if (Simulated()) family = gpuarch::PreAdaFamily::kAmpere;
@@ -271,7 +283,7 @@ inline bool RetargetConfigured() {
 }
 
 // The provider's own quality transforms replace the same sm_89 cubins and PTX
-// descriptors; XMX does not run NVIDIA's kernels, so they are skipped here.
+// descriptors the preparation rewrites, so they are skipped on these GPUs.
 inline bool SkipQualityPatches() {
   if (!RetargetConfigured()) return false;
   static std::atomic_bool logged{false};
@@ -315,7 +327,7 @@ inline void RetargetProvider(HMODULE module) {
 inline SRWLOCK g_minimum_lock = SRWLOCK_INIT;
 inline std::vector<patching::Write> g_minimum_writes;
 inline void LowerProviderMinimum(HMODULE module) {
-  if (module == nullptr || !Engaged()) return;
+  if (module == nullptr || !Admitted()) return;
   auto* entry = reinterpret_cast<uint8_t*>(GetProcAddress(module, "NVSDK_NGX_GetGPUArchitecture"));
   if (entry == nullptr || !patching::Readable(entry, 6) || entry[0] != 0xB8 || entry[5] != 0xC3) return;
   uint32_t declared = 0;
@@ -342,7 +354,7 @@ inline void LowerProviderMinimum(HMODULE module) {
 // instead of Ada, so the provider advertises 3x-6x to this GPU as it does to
 // RTX 40. Called on the gate writes before they are applied.
 inline void LowerGateWrites(std::vector<patching::Write>& writes) {
-  if (!Engaged()) return;
+  if (!Admitted()) return;
   for (auto& write : writes)
     if (write.original.size() == 1 && write.original[0] == 0xB0 && write.replacement.size() == 1 &&
         write.replacement[0] == 0x90)
@@ -359,7 +371,7 @@ inline void ObserveCreate(NVSDK_NGX_Result result) {
     std::ostringstream text;
     text << "NVIDIA's frame generation could not be created on this GPU (0x" << std::hex
          << static_cast<uint32_t>(result) << ")";
-    generator::Fail(text.str());
+    if (Engaged()) generator::Fail(text.str());
     Log(text.str(), true);
   } else {
     Log("NVIDIA's frame generation feature was created on this GPU");

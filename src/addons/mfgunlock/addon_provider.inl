@@ -71,10 +71,11 @@ std::vector<GamePresetHints> g_game_preset_hints;
 
 NVSDK_NGX_Result NVSDK_CONV HookedCreateFeature(ID3D12GraphicsCommandList* list, NVSDK_NGX_Feature feature,
                                                 NVSDK_NGX_Parameter* parameters, NVSDK_NGX_Handle** handle) {
-  // 1.8.3, RTX 20/30 with XMX: whether NVIDIA's runtime created the feature
-  // there, for the panel. Nothing in the call changes.
+  // 1.8.3, RTX 20/30 (1.9.0: with XMX or NVIDIA's generator): whether
+  // NVIDIA's runtime created the feature there, for the panel. Nothing in the
+  // call changes.
   if (feature == NVSDK_NGX_Feature_FrameGeneration && g_real_create_feature != nullptr &&
-      mfgunlock::xmx::preada::Engaged()) {
+      mfgunlock::xmx::preada::Admitted()) {
     // 1.8.7: CUDA may keep pointers into the prepared containers from here on,
     // so nefh's preparation no longer rewrites a provider after this.
     mfgunlock::ampere::provider::g_create_seen.store(true, std::memory_order_release);
@@ -128,7 +129,7 @@ bool EnsureResident();
 
 bool PresetHookWanted() {
   return mfgunlock::dlsspreset::g_selected.load(std::memory_order_relaxed) != 0 ||
-         mfgunlock::xmx::preada::Engaged();
+         mfgunlock::xmx::preada::Admitted();
 }
 
 void TryInstallPresetHook() {
