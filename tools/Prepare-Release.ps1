@@ -50,6 +50,8 @@ $expected = @(
   @{ File = 'src/addons/mfgunlock/panel_ui.hpp';              Text = "MFG Unlock | $Version by" },
   @{ File = 'src/addons/mfgunlock/xemfg/native_controls.cpp'; Text = "MFG Unlock $Version\nstartup_failed=" },
   @{ File = 'src/addons/mfgunlock/xemfg/native_notices.rc.in'; Text = "`"$Version.0\0`"" },
+  @{ File = 'src/addons/mfgunlock/xemfg/native_notices.rc.in'; Text = " FILEVERSION $($Version.Replace('.', ',')),0" },
+  @{ File = 'src/addons/mfgunlock/xemfg/native_notices.rc.in'; Text = " PRODUCTVERSION $($Version.Replace('.', ',')),0" },
   @{ File = 'src/addons/mfgunlock/xemfg/native_notices.rc.in'; Text = "`"$Version\0`"" },
   @{ File = 'src/addons/mfgunlock/xemfg/native_notices.rc.in'; Text = "MFG Unlock $Version - DLSS-G and XeMFG backends\0" },
   @{ File = 'src/addons/mfgunlock/xemfg/native_session.cpp';  Text = '\"addon\":\"' + $Version + '\"' }
