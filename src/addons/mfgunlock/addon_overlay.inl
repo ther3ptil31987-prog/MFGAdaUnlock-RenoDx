@@ -515,7 +515,9 @@ void DrawFrameGenChainCard() {
   static FrameGenChain shown;
   if (const auto chain = DescribeFrameGenChain(); !chain.streamline.empty()) shown = chain;
   if (shown.streamline.empty()) return;
-  mfgunlock::ui::Section("Frame generation chain", "Where each part of frame generation came from in this game.");
+  // 1.9.0: closed by default, like "Advanced pacing (testing)".
+  if (!ImGui::CollapsingHeader("Frame generation chain")) return;
+  mfgunlock::ui::Description("Where each part of frame generation came from in this game.");
   mfgunlock::ui::Card card("##fg_chain_card");
   using mfgunlock::ui::Readout;
   Readout("##chain_streamline", "Streamline DLSS-G", shown.streamline.c_str(),

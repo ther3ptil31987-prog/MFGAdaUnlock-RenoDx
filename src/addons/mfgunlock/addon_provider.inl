@@ -1151,10 +1151,14 @@ FrameGenChain DescribeFrameGenChain() {
     chain.slinit = "seen by the addon";
     chain.slinit_health = ChainHealth::kOk;
   } else if (GetModuleHandleW(L"sl.interposer.dll") != nullptr) {
-    chain.slinit = mfgunlock::framecount::internal::g_real_init != nullptr
-                       ? "not called since the addon loaded"
-                       : "ran before the addon loaded (or not hooked)";
-    chain.slinit_health = ChainHealth::kWarn;
+    const bool needed = mfgunlock::xmx::preada::Admitted() ||
+                        mfgunlock::drsoverride::g_max_multiplier.load(std::memory_order_relaxed) != 0;
+    chain.slinit = std::string(mfgunlock::framecount::internal::g_real_init != nullptr
+                                   ? "not called since the addon loaded"
+                                   : "ran before the addon loaded (or not hooked)") +
+                   (needed ? "" : "; not needed here");
+    // Only RTX 20/30 and the Dynamic MFG ceiling depend on it.
+    chain.slinit_health = needed ? ChainHealth::kWarn : ChainHealth::kUnknown;
   } else {
     chain.slinit = "unknown (Streamline not loaded yet)";
   }
