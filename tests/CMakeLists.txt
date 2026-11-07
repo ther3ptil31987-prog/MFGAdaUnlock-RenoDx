@@ -252,6 +252,12 @@ target_compile_definitions(ampere_prepare_tests PRIVATE NOMINMAX)
 target_include_directories(ampere_prepare_tests SYSTEM PRIVATE
   $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
 add_test(NAME ampere_prepare COMMAND ampere_prepare_tests ${AMPERE_OFFLINE_PROVIDERS})
+add_executable(preada_gate_tests preada_gate_tests.cpp)
+target_compile_definitions(preada_gate_tests PRIVATE NOMINMAX)
+target_include_directories(preada_gate_tests SYSTEM PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+add_test(NAME preada_gate COMMAND preada_gate_tests ${AMPERE_OFFLINE_PROVIDERS})
+set_tests_properties(preada_gate PROPERTIES SKIP_RETURN_CODE 77)
 set_tests_properties(ampere_prepare PROPERTIES SKIP_RETURN_CODE 77)
 add_executable(generic_gate_tests generic_gate_tests.cpp)
 add_test(NAME generic_gate_tests COMMAND generic_gate_tests)

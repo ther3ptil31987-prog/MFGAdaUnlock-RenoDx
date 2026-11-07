@@ -461,11 +461,25 @@ void PatchArchGatesInModule(HMODULE mod) {
   const bool planned = profile && session && mfgunlock::binarypatch::Plan(mod, *profile, transaction.writes);
   // RTX 20/30 with XMX only; RTX 40/50 keep the Ada threshold written above.
   if (planned) mfgunlock::xmx::preada::LowerGateWrites(transaction.writes);
-  if (!planned || !mfgunlock::binarypatch::Apply(mod, transaction.writes)) {
+  const bool applied = planned && mfgunlock::binarypatch::Apply(mod, transaction.writes);
+  if (!applied) {
     if (mfgunlock::pointerredirect::Pending(transaction.writes)) g_gate_transactions.push_back(std::move(transaction));
     g_gate_rejected_modules.push_back(mod);
-    reshade::log::message(reshade::log::level::warning,
-        "mfgunlock: architecture gate refused: executable identity, instruction preflight or transaction failed.");
+    // 1.9.0: which step refused, and in which file (an RTX 3080 report showed
+    // only the generic line for a provider whose gate plans offline).
+    const char* step = session == nullptr                           ? "no module session"
+                       : !mfgunlock::modulesession::Validate(*session) ? "executable identity changed"
+                       : profile == nullptr                          ? "no exact or generic profile for this file"
+                       : !planned                                    ? "instruction preflight failed"
+                                                                     : "write transaction failed";
+    char path[MAX_PATH] = {};
+    GetModuleFileNameA(mod, path, MAX_PATH);
+    const auto v = mfgunlock::runtimeversion::FromModule(mod);
+    std::ostringstream refusal;
+    refusal << "mfgunlock: architecture gate refused for " << path;
+    if (v.valid) refusal << " (" << v.major << '.' << v.minor << '.' << v.patch << '.' << v.revision << ")";
+    refusal << ": " << step << ".";
+    reshade::log::message(reshade::log::level::warning, refusal.str().c_str());
     return;
   }
   for (const auto& write : transaction.writes) g_gate_sites.push_back({mod, write.address, write.original[0]});
