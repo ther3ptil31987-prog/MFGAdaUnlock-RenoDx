@@ -6,9 +6,9 @@
 > DLSS Frame Generation now runs on RTX 20 and 30 GPUs with NVIDIA's own generator, not
 > only with XMX: the addon prepares NVIDIA's GPU code for these cards (from
 > [nefh's MFGAmpereUnlock-RenoDx](https://github.com/nefh/MFGAmpereUnlock-RenoDx)) and
-> adds itself to ReShade's early loading, which they need. On RTX 50, Dynamic MFG now
-> sees the frame generation file's version (not yet confirmed by a tester). The panel shows where each part of frame generation came from and warns about
-> duplicate addon files. See the [1.9.0 release notes](docs/releases/1.9.0.md) and
+> adds itself to ReShade's early loading, which they need. On RTX 50, Dynamic MFG can be
+> turned on again (confirmed on an RTX 5090 D). The panel shows where each part of frame
+> generation came from and warns about duplicate addon files. See the [1.9.0 release notes](docs/releases/1.9.0.md) and
 > [RTX 20 and 30 GPUs](#rtx-20-and-30-gpus).
 >
 > ### 1.8.6: XMX multi-frame in games with jittered motion vectors
@@ -1865,7 +1865,8 @@ RTX 20 or 30, the addon:
   runtime loads it, so the driver builds kernels the card can run. This comes
   from [nefh's MFGAmpereUnlock-RenoDx](https://github.com/nefh/MFGAmpereUnlock-RenoDx)
   (MIT). On RTX 20 it takes about 3 seconds per file at every game start;
-- does not apply the quality patches made for RTX 40.
+- does not apply the quality patches made for RTX 40; nefh's temporal correction,
+  applied to the rewritten code, keeps 3x and above smoother than 2x.
 
 These GPUs need the addon loaded before the game starts Streamline. On the first
 start the addon adds itself to `[ADDON] LoadFromDllMain` in `ReShade.ini` (when
