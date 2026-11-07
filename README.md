@@ -233,6 +233,20 @@ Later releases added, also by [mavismmg](https://github.com/mavismmg):
   [`vendor/PROVENANCE.md`](src/addons/mfgunlock/xemfg/vendor/PROVENANCE.md).
 - **DLSS-G:** live DLSS Super Resolution and Ray Reconstruction presets (1.6), and
   leaving the provider alone on RTX 50 (1.7).
+- **XMX on more games and GPUs (1.8.3–1.8.6):** XMX with Dynamic MFG, XMX's
+  multi-frame model in games with jittered motion vectors (Death Stranding 2,
+  Horizon Zero Dawn Remastered), and the RTX 20/30 integration of the admission
+  adapted from nefh's MFGAmpereUnlock-RenoDx.
+- **DLSS-G (1.8.4–1.8.5):** a generic multi-frame gate for frame generation files
+  without an exact profile, a Dynamic MFG ceiling chosen in the panel without
+  changing the driver profile, recognition of Streamline from the NVIDIA app
+  override, and a warning when only the driver's 2x file is in use.
+- **RTX 20/30 with NVIDIA's generator (1.9):** the integration of nefh's code
+  preparation and temporal correction into DLSS-G and XMX, with automatic early
+  loading; and the Dynamic MFG fix on RTX 50.
+- **Diagnostics (1.8.6–1.9):** the frame generation chain card, the read-only
+  driver-profile report, the duplicate-addon warning, the `game_xefg_modules`
+  profiles and a release script that publishes nothing by itself.
 
 These additions extend Dreamt's addon and dashdogy's research; they do not
 replace or claim authorship of either original contribution.
