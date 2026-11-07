@@ -2698,6 +2698,24 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
   mfgunlock::ui::Hero(multiplier_text.c_str(),xmx_running?"XMX":"DLSS-G",RenderApiName(render_api),
       xmx_failed?"Frame generation stopped":xmx_running?(xmx_report.generating?"Generating frames":xmx_waiting):player_state,
       xmx_running?xmx_report.generating:mfg_live);
+  // 1.9.0: another MFG Unlock file beside this one, or an early-loading
+  // entry that names a file other than this one.
+  if(const auto copies=CheckAddonCopies(); !copies.others.empty() || !copies.stale_early.empty()) {
+    mfgunlock::ui::ProblemCard problem("##addon_copies","More than one MFG Unlock file",mfgunlock::ui::Warning);
+    std::string text;
+    if(!copies.others.empty()) {
+      text="ReShade loads every addon file in this folder, and these copies fight over the same hooks: ";
+      for(size_t i=0;i<copies.others.size();++i) text+=(i?", ":"")+copies.others[i];
+      text+=". Keep only "+SelfModuleFileName()+" and delete the others while the game is closed.";
+    }
+    if(!copies.stale_early.empty()) {
+      if(!text.empty()) text+="\n";
+      text+="ReShade.ini loads early a file that is not this one: ";
+      for(size_t i=0;i<copies.stale_early.size();++i) text+=(i?", ":"")+copies.stale_early[i];
+      text+=". Replace it with "+SelfModuleFileName()+" under [ADDON] LoadFromDllMain.";
+    }
+    ImGui::TextWrapped("%s",text.c_str());
+  }
   // 1.8.5: only the driver's built-in provider is in use (2x at most).
   if(const auto driver_only=CheckDriverOnlyProvider(); driver_only.active) {
     mfgunlock::ui::ProblemCard problem("##driver_only_provider","Only 2x: NVIDIA is using the driver's built-in frame generation",mfgunlock::ui::Warning);

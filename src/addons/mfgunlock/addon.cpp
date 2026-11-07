@@ -420,6 +420,51 @@ void TryAutoEarlyLoad() {
       "mfgunlock: RTX 20/30 without ADDON.LoadFromDllMain, and ReShade.ini could not be updated; games that call slInit before normal addon loading keep DLSS Frame Generation locked. Use the overlay button or add the addon manually, then restart.");
 }
 
+// 1.9.0: two MFG Unlock files side by side both load and fight over the same
+// hooks, and a LoadFromDllMain entry naming a file that is not this one never
+// loads early. Only *.addon64 files with "mfgunlock" in the name, in this
+// addon's folder; only while the panel is open, at most every 10 s.
+struct AddonCopies {
+  std::vector<std::string> others;       // other mfgunlock*.addon64 beside this one
+  std::vector<std::string> stale_early;  // LoadFromDllMain entries for another mfgunlock file
+};
+AddonCopies CheckAddonCopies() {
+  static AddonCopies cached;
+  static uint64_t last_ms = 0;
+  const uint64_t now = GetTickCount64();
+  if (last_ms != 0 && now - last_ms < 10000) return cached;
+  last_ms = now;
+  AddonCopies result;
+  const std::string self = SelfModuleFileName();
+  wchar_t path[MAX_PATH]{};
+  const DWORD length = GetModuleFileNameW(g_self_module, path, MAX_PATH);
+  if (length != 0 && length < MAX_PATH) {
+    std::error_code error;
+    const auto folder = std::filesystem::path(path).parent_path();
+    for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error)) {
+      if (!it->is_regular_file(error)) continue;
+      std::string name = it->path().filename().string();
+      std::string lower = name;
+      for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      if (lower.size() < 8 || lower.compare(lower.size() - 8, 8, ".addon64") != 0) continue;
+      if (lower.find("mfgunlock") == std::string::npos || _stricmp(name.c_str(), self.c_str()) == 0) continue;
+      result.others.push_back(name);
+    }
+  }
+  for (const auto& entry : ReadConfigArray("ADDON", "LoadFromDllMain")) {
+    const char* slash = std::strrchr(entry.c_str(), '\\');
+    const char* forward = std::strrchr(entry.c_str(), '/');
+    const char* name = slash == nullptr ? forward : (forward == nullptr || slash > forward ? slash : forward);
+    std::string base = name == nullptr ? entry : std::string(name + 1);
+    std::string lower = base;
+    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lower.find("mfgunlock") != std::string::npos && _stricmp(base.c_str(), self.c_str()) != 0)
+      result.stale_early.push_back(base);
+  }
+  cached = result;
+  return result;
+}
+
 const char* RenderApiName(DetectedRenderApi api) {
   switch (api) {
     case DetectedRenderApi::kD3D11:
