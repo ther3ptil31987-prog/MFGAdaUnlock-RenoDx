@@ -1,14 +1,23 @@
 # MFG Unlock
 
 > [!NOTE]
-> ### New in 1.8.4: MFG on DLSS-G versions with no profile yet
+> ### New in 1.8.6: XMX multi-frame in games with jittered motion vectors
 >
-> MFG now unlocks on a DLSS frame generation file the addon has no exact profile for,
-> when it has the same gate as every reviewed version. This fixes Assassin's Creed IV
-> Black Flag Resynced, which ships its own build, and keeps MFG working after NVIDIA's
-> next update. See the [1.8.4 release notes](docs/releases/1.8.4.md). 1.8.3 brought the
-> XMX multipliers back and NVIDIA Dynamic MFG with XMX: see the
-> [1.8.3 release notes](docs/releases/1.8.3.md).
+> XMX now generates 3x–6x in games whose motion vectors carry the camera jitter, such as
+> Death Stranding 2 and Horizon Zero Dawn Remastered, where 1.8.3–1.8.5 fell back to
+> Intel's 2x model. With the XeMFG backend, Elden Ring's ERSS mod is now treated as the
+> game's own XeFG integration (trial). See the [1.8.6 release notes](docs/releases/1.8.6.md).
+>
+> ### 1.8.5: Dynamic MFG ceiling, and Dynamic MFG with the NVIDIA app override
+>
+> Choose **Up to 2x–6x** for NVIDIA Dynamic MFG in the panel, as the NVIDIA app does,
+> without changing the driver profile. Dynamic MFG no longer stays at "Waiting for runtime
+> detection" when the NVIDIA app's frame generation override supplies Streamline. The
+> panel now warns when a game is stuck at 2x because NVIDIA is using the driver's
+> built-in frame generation file. With XMX on RTX 20/30, the game's own DLSS Frame
+> Generation menu can now unlock. See the [1.8.5 release notes](docs/releases/1.8.5.md).
+> 1.8.4 unlocked MFG on DLSS-G files with no exact profile: see the
+> [1.8.4 release notes](docs/releases/1.8.4.md).
 
 > [!TIP]
 > ### New in 1.8: use XMX whenever the game has frame generation
@@ -343,11 +352,11 @@ artifact on a HUD/UI element, switch back to **Native**.
 | Alan Wake 2 | DX12 | Working | Working | XMX since 1.8.2 |
 | Stellar Blade | DX12 | Not tested | Working | XMX since 1.8.3 |
 | Ghost of Tsushima | DX12 | Not tested | Working | XMX since 1.8.3. Its Streamline (2.4) has no multi-frame generation: 2x only, and a forced 3x or more is not applied |
-| Horizon Zero Dawn Remastered | DX12 | Not tested | Working | XMX since 1.8.3, with Intel's 2x model (the game sends jittered motion vectors). Its Streamline (2.2.1) offers 2x only |
+| Horizon Zero Dawn Remastered | DX12 | Not tested | Working | XMX since 1.8.3. It sends jittered motion vectors: Intel's 2x model until 1.8.5, the multi-frame model since 1.8.6 (not retested). Its Streamline (2.2.1) offers 2x only |
 | The Last of Us Part II Remastered | DX12 | Working | Working | XMX since 1.8.3; in 1.8.2 a saved DLSS preset crashed the game at start |
 | Mafia: The Old Country | DX12 | Working | Maybe |  |
 | Resonance: A Plague Tale Legacy | DX12 | Working | Working |  |
-| Death Stranding 2: On the Beach | DX12 | Working | Maybe | Its jittered motion vectors are corrected automatically |
+| Death Stranding 2: On the Beach | DX12 | Working | Working | Its jittered motion vectors are corrected automatically. XMX: 3x–6x since 1.8.6 (Intel's 2x model before) |
 | Ghostrunner 2 | DX12 | Working | Working |  |
 | S.T.A.L.K.E.R. 2: Heart of Chornobyl | DX12 | Working | Maybe | Set the display mode to **Borderless / Windowed Fullscreen** |
 | Warhammer 40,000: Darktide | DX12 | Working | Working | Fixed in 1.5.1; on 1.5.0, add `[Adapters] FidelityFX=0` to `MFGAdaUnlock.ini` |
@@ -368,6 +377,7 @@ artifact on a HUD/UI element, switch back to **Native**.
 | The Blood of Dawnwalker | DX12 | Maybe | Working |  |
 | Silent Hill 2 Remake | DX12 | Not Working | Working |  |
 | Ghotic 1 Remake | DX12 | Not Working | Working |  |
+| Once Human | DX12 | Maybe | Working |  |
 
 **XeMFG CUDA** shows the games tested with the XeMFG backend. In the **XMX** column,
 **Maybe** means it has not been tested in that game yet, so
@@ -1003,12 +1013,20 @@ How to read these numbers:
   Generation and its menu offers 3x-6x, as on RTX 40. Nothing changes on RTX 40 or 50.
   Not yet confirmed on a real RTX 20/30. If NVIDIA's runtime still cannot create frame
   generation on the card, the panel says why and offers **Use XeMFG**, which runs on
-  RTX 20 and 30.
+  RTX 20 and 30. Since 1.8.5 the admission also covers `slInit`, where Streamline keeps
+  or drops its frame generation plugin, so the addon must load before the game starts
+  Streamline: if the panel says so, press **Enable early addon loading** (it adds the
+  addon to `[ADDON] LoadFromDllMain` in `ReShade.ini`) and restart the game.
 - **No more than 2x when the game's Streamline is older than 2.7** (Ghost of Tsushima,
   Horizon Zero Dawn Remastered). Forcing more crashed inside Streamline, so the panel's
   **Frame Multiplier** is not applied above 2x there, and the panel says why.
-- **Horizon Zero Dawn Remastered** uses Intel's own 2x model, because the ported
-  multi-frame model refuses its jittered motion vectors.
+- **Games with jittered motion vectors** (Horizon Zero Dawn Remastered, Death Stranding 2):
+  the ported multi-frame model refuses the jittered-motion flag, so 1.8.3–1.8.5 used
+  Intel's own 2x model there and repeated its frame at higher multipliers. Since 1.8.6 the
+  multi-frame model starts without that flag; the motion vectors still carry the camera
+  jitter (about a render pixel at most), and no artifact was seen in Death Stranding 2.
+  **XMX multi-frame with jittered motion: Off** in the panel's advanced settings, or
+  `[DLSSG] XmxJitter=0` in `MFGAdaUnlock.ini`, restores the 2x model.
 - **Only Crimson Desert was measured.** Cyberpunk 2077 was tested by playing it, without
   captures.
 - **NVIDIA Dynamic MFG with XMX is experimental** (since 1.8.3). NVIDIA's runtime
@@ -1027,8 +1045,6 @@ How to read these numbers:
   log then says `generic gate`. Turn it off with **Generic provider gate** in the
   panel's advanced settings, or `[DLSSG] GenericGate=0` in `MFGAdaUnlock.ini`, and
   restart the game. A file with another gate is still refused.
-- **Once Human:** its `nvngx_dlssg.dll` has the timestamp of the 310.3 build, whose gate
-  has four compares instead of two, so XMX likely stays at 2x there.
 - **Elden Ring with ERSS:** if ERSS generates frames without NVIDIA's DLSS frame
   generation, XMX has nothing to replace. Use XeMFG.
 - A newer `nvngx_dlssg.dll` might change how the module reacts to XMX's hook. It ran
@@ -1352,12 +1368,14 @@ by the Pacing Lab.
 
 **Use NVIDIA Dynamic MFG** requests Streamline's native
 [`DLSSGMode::eDynamic`](https://github.com/NVIDIA-RTX/Streamline/blob/main/docs/ProgrammingGuideDLSS_G.md#63-enabling-dynamic-multi-frame-generation).
-Dynamic MFG accepts the following explicit runtime versions. The new
-310.9.16 + 2.14.16 stack has passed offline interface and patch checks;
-in-game validation is pending. The previously supported .1 stack is retained:
+Since 1.8.5, Dynamic MFG accepts any runtime from these versions on; NVIDIA's
+runtime still has the final say through `bIsDynamicMFGSupported`. The
+310.9.16 + 2.14.16 stack was tested in Cyberpunk 2077 with XMX on an RTX 4070 SUPER:
 
-- **DLSS-G 310.9.1 or 310.9.16**
-- **Streamline 2.14.1 or 2.14.16**
+- **DLSS-G 310.9.1 or newer**
+- **Streamline 2.14 or newer**, including the copy the NVIDIA app's frame generation
+  override supplies (`ProgramData\NVIDIA\NGX\models\sl_dlss_g_override_0`), which
+  1.8.4 did not recognize, so the panel stayed at "Waiting for runtime detection"
 - NVIDIA display driver **595.41 or newer**, as required by NVIDIA's current
   Dynamic MFG integration guide
 - A compatible NVIDIA driver/runtime that reports
@@ -1370,12 +1388,29 @@ ignored. A target of `0` follows the refresh rate of the display containing the
 game window; with VSync off, a nonzero `dynamicTargetFrameRate` requests that
 output target.
 
+**Dynamic multiplier ceiling** (1.8.5) is the NVIDIA app's "Multiplier: Up to Nx".
+The NVIDIA app stores it in the driver profile (setting `0x10562D0F`), and Streamline
+reads it once when it starts. The addon answers that read in the game's process with
+the ceiling chosen in the panel, so NVIDIA's own Dynamic MFG never picks more; the
+driver profile, the NVIDIA app and other games are unchanged. **Auto** keeps the
+driver's value. Streamline reads the value only at startup, so a change applies after
+a game restart; the panel says which ceiling the current session uses. Changing it
+during play would mean writing Streamline's internal memory, whose layout changes
+between builds, so the addon does not do it.
+
+**Stuck at 2x?** If the NVIDIA app's frame generation override is off for a game (a
+per-game profile can turn it off even when the global setting is on), NVIDIA uses the
+frame generation file built into the driver (310.2.1 on the development PC), which has no
+multi-frame support: the game offers 2x at most and Dynamic MFG is unavailable. Since
+1.8.5 the panel warns about it. In the NVIDIA app, open the game and set
+**DLSS Override – Frame Generation** to **Latest**, then restart the game.
+
 VSync is **not** a universal requirement for Dynamic MFG. When VSync is active,
 Streamline ignores the numeric Dynamic target and instead aims near the active
 display refresh for tear-free presentation. Users who are not using G-SYNC
 through the NVIDIA driver do not need to enable VSync solely because Dynamic
-MFG is enabled. If VSync is used with Dynamic MFG, use a supported 310.9.1/310.9.16 +
-2.14.1/2.14.16 stack, check that the addon reports VSync capability, and avoid a path
+MFG is enabled. If VSync is used with Dynamic MFG, use Streamline 2.14.1 or newer
+(VSync support for Dynamic MFG arrived in 2.14.1), check that the addon reports VSync capability, and avoid a path
 that cannot reach Independent Flip; NVIDIA warns that such a path can add high
 latency.
 
@@ -1412,7 +1447,8 @@ it is not a universal claim for every game or presentation setup.
 | 310.9.0 | 2.14.0 / internal RC builds | Fixed MFG may work, including NVIDIA App override builds | Not release-validated as a complete combination | Not release-validated | The underlying runtime may expose Dynamic without VSync when its capability bit is true, but this addon does not advertise this combination as supported | Do not assume 2.14.1 VSync/frame-limiter behavior; use the exact current stack below for release testing |
 | 310.9.1 | 2.14.1 | Previously validated path | Validated | Validated where the game supplies a correct pair; slight provider cost is expected | Supported on D3D12 when the runtime capability bit is true; final in-game release retest pending | VSync optional; with VSync, target follows refresh. G-SYNC remains a driver/display choice; capability and Independent Flip still matter |
 
-| 310.9.16 | 2.14.16 | Offline patch/restore checks passed; in-game testing pending | In-game validation pending | In-game validation pending | Accepted by the version gate on D3D12; runtime capability is still required; in-game validation pending | Same public Dynamic/VSync interface as 2.14.1; verify capability and presentation behavior in-game |
+| 310.9.16 | 2.14.16 | Played with XMX in several games (1.8.3–1.8.5) | In-game validation pending | In-game validation pending | Tested in Cyberpunk 2077 with XMX, including the NVIDIA app override copy and the Dynamic ceiling (1.8.5) | Same public Dynamic/VSync interface as 2.14.1; tested with driver VSync + G-SYNC |
+| 310.9.1 or newer | 2.14 or newer | Fixed MFG follows the provider gate (exact or generic profile) | Not release-validated | Not release-validated | Accepted by the 1.8.5 version minimum on D3D12; the runtime's support bit decides | VSync with Dynamic needs 2.14.1 or newer |
 
 ### Manually using the current NVIDIA runtime
 
@@ -1520,8 +1556,9 @@ Written to your `ReShade.ini` under `[RenoDX.MFGUnlock]`:
 | `ThinGeometryPreviousScatter` | `0` | Unstable advanced research control for a separate previous-to-current motion-rejection path; not recommended for normal use |
 | `BoundaryArtifactMitigationMode` | `1` | `0` restores the 0.9 intermediate-retention behavior, `1` is **Balanced** (recommended default for fresh configurations), and `2` is Aggressive. Existing saved choices are preserved; changing it requires a restart |
 | `ForceMultiplier` | `0` | `0` respects the game's own choice; `2`–`6` requests that exact multiplier, whether it is higher or lower than the game's choice |
-| `DynamicMFG` | `0` | Requests native NVIDIA Dynamic MFG only on the supported 310.9.1/310.9.16 + 2.14.1/2.14.16 D3D12 runtimes after the provider reports support; takes priority over `ForceMultiplier` while active |
+| `DynamicMFG` | `0` | Requests native NVIDIA Dynamic MFG on D3D12 with DLSS-G 310.9.1 or newer and Streamline 2.14 or newer (1.8.5; before, exactly 310.9.1/310.9.16 + 2.14.1/2.14.16), after the runtime reports support; takes priority over `ForceMultiplier` while active |
 | `DynamicTargetFPS` | `0` | Dynamic output target; `0` follows display refresh. With VSync active, Streamline ignores a nonzero value and follows refresh instead |
+| `DynamicMaxMultiplier` | `0` | 1.8.5. The highest multiplier Dynamic MFG may pick: `0` keeps the driver's or NVIDIA app's value, `2`–`6` is "Up to 2x"–"Up to 6x". Given to Streamline in this game only; the driver profile is not changed. Read when the game starts, so a change applies after a restart |
 | `ReflexSourceFpsCap` | `0` | Compatibility key for **Output FPS Cap (Reflex)**. Despite the historical key name, the number is the final/output FPS ceiling; `120` targets up to approximately 120 displayed FPS |
 | `ReflexModeOverride` | `0` | `0` preserves the game setting; `1` uses FG-safe Off by keeping Streamline at Low Latency and bypassing only `slReflexSleep` (the NVIDIA overlay still shows Reflex On); `2` forces On; `3` forces On + Boost. With Frame Generation on, DLSS-G paces its own queue, so these usually measure the same latency; Boost helps only when the CPU is the bottleneck. A change in the panel applies on the game's next Reflex sleep |
 | `ReflexPacingMethod` | `0` | `0` uses native `slReflexSleep`; `1` requests the experimental DXGI Waitable path after its 120-token safety probe |
