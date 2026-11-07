@@ -1058,6 +1058,77 @@ DriverOnlyProvider CheckDriverOnlyProvider() {
   return result;
 }
 
+// 1.9.0: the frame generation chain, for the panel and the support report.
+// Never blocks: a busy maintenance lock returns the last answer.
+struct FrameGenChain {
+  std::string streamline;  // sl.dlss_g.dll source and version
+  std::string provider;    // nvngx_dlssg source(s) and version
+  std::string gate;
+  std::string slinit;
+  std::string dynamic;
+};
+std::string ChainVersion(HMODULE module) {
+  const auto v = mfgunlock::runtimeversion::FromModule(module);
+  if (!v.valid) return std::string();
+  return " " + std::to_string(v.major) + "." + std::to_string(v.minor) + "." + std::to_string(v.patch) + "." +
+         std::to_string(v.revision);
+}
+FrameGenChain DescribeFrameGenChain() {
+  static SRWLOCK lock = SRWLOCK_INIT;
+  static FrameGenChain cached;
+  static uint64_t last_ms = 0;
+  if (!TryAcquireSRWLockExclusive(&lock)) return {};
+  struct Unlock { ~Unlock() { ReleaseSRWLockExclusive(&lock); } } unlock;
+  const uint64_t now = GetTickCount64();
+  if (last_ms != 0 && now - last_ms < 1000) return cached;  // file versions: once a second at most
+  last_ms = now;
+  FrameGenChain chain;
+  wchar_t path[MAX_PATH]{};
+  if (const HMODULE plugin = GetModuleHandleW(L"sl.dlss_g.dll");
+      plugin != nullptr && GetModuleFileNameW(plugin, path, MAX_PATH) != 0)
+    chain.streamline = std::string(mfgunlock::fgchain::Name(mfgunlock::fgchain::ClassifyStreamline(path))) +
+                       ChainVersion(plugin);
+  else
+    chain.streamline = GetModuleHandleW(L"sl.interposer.dll") != nullptr ? "Streamline loaded; DLSS-G plugin not loaded"
+                                                                         : "unknown (Streamline not loaded yet)";
+  std::vector<HMODULE> providers;
+  bool have_providers = false;
+  if (TryAcquireSRWLockShared(&g_provider_maintenance_lock)) {
+    providers = g_dlssg_modules;
+    ReleaseSRWLockShared(&g_provider_maintenance_lock);
+    have_providers = true;
+  }
+  if (!have_providers) return cached;
+  for (HMODULE module : providers) {
+    if (GetModuleFileNameW(module, path, MAX_PATH) == 0) continue;
+    if (!chain.provider.empty()) chain.provider += "; ";
+    chain.provider += std::string(mfgunlock::fgchain::Name(mfgunlock::fgchain::ClassifyProvider(path))) +
+                      ChainVersion(module);
+  }
+  if (chain.provider.empty()) chain.provider = "unknown (not loaded yet)";
+  if (mfgunlock::gpuarch::AllNvidiaAdaptersBlackwell())
+    chain.gate = "not needed (RTX 50)";
+  else if (g_gate_patched.load(std::memory_order_acquire))
+    chain.gate = "open in " + std::to_string(g_gate_modules.size()) + " file(s)";
+  else
+    chain.gate = providers.empty() ? "unknown" : "not open";
+  if (mfgunlock::framecount::internal::g_init_seen.load(std::memory_order_acquire))
+    chain.slinit = "seen by the addon";
+  else if (GetModuleHandleW(L"sl.interposer.dll") != nullptr)
+    chain.slinit = mfgunlock::framecount::internal::g_real_init != nullptr
+                       ? "not called since the addon loaded"
+                       : "ran before the addon loaded (or not hooked)";
+  else
+    chain.slinit = "unknown (Streamline not loaded yet)";
+  if (!mfgunlock::framecount::g_dynamic_support_seen.load(std::memory_order_acquire))
+    chain.dynamic = "unknown";
+  else
+    chain.dynamic = mfgunlock::framecount::g_dynamic_supported.load(std::memory_order_relaxed) ? "supported"
+                                                                                             : "not supported";
+  cached = chain;
+  return chain;
+}
+
 void RestoreMidpoint() {
   // These modules have retained leases. Restore ownership is checked by each writer.
   for (auto& module : g_midpoint_modules) mfgunlock::midpoint::Restore(module.patches, module.allocation);

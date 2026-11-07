@@ -1987,8 +1987,11 @@ inline sl::Result HookedSetConstants(const sl::Constants& values,
 inline std::atomic<bool (*)()> g_init_wanted{nullptr};
 inline std::atomic<void (*)(bool)> g_init_scope{nullptr};
 inline sl::Result InitWithPolicy(const sl::Preferences& pref, uint64_t sdk_version);
+// 1.9.0: slInit reached this hook, for the panel's frame generation chain.
+inline std::atomic_bool g_init_seen{false};
 inline sl::Result HookedInit(const sl::Preferences& pref, uint64_t sdk_version) {
   if (g_real_init == nullptr) return sl::Result::eErrorNotInitialized;
+  g_init_seen.store(true, std::memory_order_release);
   const auto scope = g_init_scope.load(std::memory_order_acquire);
   // 1.8.7 diagnostics (Rift Apart on an RTX 3060 Ti): say whether slInit
   // reached this hook at all, and whether the DLSS-G plugin was already loaded.

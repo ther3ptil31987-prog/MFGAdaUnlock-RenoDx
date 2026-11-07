@@ -475,6 +475,40 @@ void AppendInputDiagnosticsReport(std::ostringstream& report) {
   }
 }
 
+// 1.9.0: where each link of the frame generation chain came from.
+std::string FrameGenChainGenerator() {
+  if (!mfgunlock::xmx::generator::Enabled())
+    return mfgunlock::xmx::preada::Admitted() ? "NVIDIA DLSS-G (kernels prepared for RTX 20/30)" : "NVIDIA DLSS-G";
+  const auto report = mfgunlock::xmx::generator::Snapshot();
+  if (!report.failure.empty() && !report.generating) return "XMX selected; not running: " + report.failure;
+  return report.generating ? "XMX (Intel's model) generating" : report.hooked ? "XMX ready" : "XMX selected; not started";
+}
+std::string FrameGenChainReport() {
+  const auto chain = DescribeFrameGenChain();
+  if (chain.streamline.empty()) return std::string();
+  return "chain_streamline=" + chain.streamline + "\nchain_provider=" + chain.provider + "\nchain_gate=" + chain.gate +
+         "\nchain_slinit=" + chain.slinit + "\nchain_dynamic=" + chain.dynamic + "\nchain_generator=" +
+         FrameGenChainGenerator() + "\n";
+}
+void DrawFrameGenChainCard() {
+  static FrameGenChain shown;
+  if (const auto chain = DescribeFrameGenChain(); !chain.streamline.empty()) shown = chain;
+  if (shown.streamline.empty()) return;
+  mfgunlock::ui::Section("Frame generation chain", "Where each part of frame generation came from in this game.");
+  mfgunlock::ui::Card card("##fg_chain_card");
+  using mfgunlock::ui::Readout;
+  Readout("##chain_streamline", "Streamline DLSS-G", shown.streamline.c_str(),
+          "sl.dlss_g.dll: the game's own copy, or one the NVIDIA app supplies (DLSS Override or its automatic update).");
+  Readout("##chain_provider", "Frame generation file", shown.provider.c_str(),
+          "nvngx_dlssg: the game's copy, the NVIDIA app's, or the driver's built-in one (2x only).");
+  Readout("##chain_gate", "Multi-frame gate", shown.gate.c_str(), "Whether the addon opened NVIDIA's multi-frame check in that file.");
+  Readout("##chain_slinit", "Streamline start", shown.slinit.c_str(),
+          "Whether the addon saw the game start Streamline. RTX 20/30 and the Dynamic MFG ceiling need this; some games need early loading for it.");
+  Readout("##chain_dynamic", "Dynamic MFG", shown.dynamic.c_str(), "Whether NVIDIA's runtime reports Dynamic MFG support. Unknown until the game asks.");
+  const std::string generator = FrameGenChainGenerator();
+  Readout("##chain_generator", "Generator", generator.c_str());
+}
+
 void DrawInputDiagnosticsPanel() {
   if (!ImGui::TreeNode("Streamline input resources (read-only)")) return;
   bool enabled = mfgunlock::inputdiag::g_enabled.load(std::memory_order_relaxed);
@@ -2658,7 +2692,8 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
           +"\nxmx_idle="+mfgunlock::xmx::policy::IdleText(xmx_report.idle)+"\nxmx_failure="+xmx_report.failure
           +"\nxmx_frames_limit="+std::to_string(xmx_report.framesLimit);
     }
-    return report+"\n"+mfgunlock::system::Report();
+    report+=std::string("\npre_ada_admitted=")+(mfgunlock::xmx::preada::Admitted()?"1":"0");
+    return report+"\n"+FrameGenChainReport()+mfgunlock::system::Report();
   };
   mfgunlock::ui::Hero(multiplier_text.c_str(),xmx_running?"XMX":"DLSS-G",RenderApiName(render_api),
       xmx_failed?"Frame generation stopped":xmx_running?(xmx_report.generating?"Generating frames":xmx_waiting):player_state,
@@ -4916,7 +4951,9 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
 
   }
 
-  if (page == UiPage::General)
+  if (page == UiPage::General) {
     mfgunlock::ui::SystemCard(!sleep_status_available ? nullptr : driver_vsync_active && gsync_active ? "Driver VSync + G-SYNC" : driver_vsync_active ? "Driver VSync" : gsync_active ? "G-SYNC" : "Off", xmx_selected);
+    DrawFrameGenChainCard();
+  }
   mfgunlock::ui::Footer("Changes marked for restart keep the current session unchanged.");
 }

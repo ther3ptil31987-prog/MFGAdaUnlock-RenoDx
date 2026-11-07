@@ -161,6 +161,7 @@
 #include "./validation_status.hpp"
 #include "./blackwell.hpp"
 #include "./gpu_arch.hpp"
+#include "./fg_chain.hpp"
 
 // The addon_*.inl fragments below are parts of this file (plan 6.2-6.6).
 #define MFGUNLOCK_ADDON_FRAGMENTS
