@@ -2777,6 +2777,8 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
       if(early_state==1) mfgunlock::ui::Description("Saved. Restart the game.");
       else if(early_state==2) mfgunlock::ui::Description("ReShade.ini could not be updated. Add this addon's file name to LoadFromDllMain under [ADDON] and restart.");
     }
+    if(const uint64_t slow=mfgunlock::xmx::preada::g_slowest_prepare_ms.load(std::memory_order_relaxed); slow>=mfgunlock::xmx::preada::kSlowPrepareMs)
+      mfgunlock::ui::Description(("Preparing NVIDIA's kernels for this GPU took "+std::to_string((slow+500)/1000)+" s during the game's start. This is expected on RTX 20 and happens on every start.").c_str());
     const int64_t created=mfgunlock::xmx::preada::g_create_result.load();
     if(!xmx_selected && created>=0 && NVSDK_NGX_FAILED(static_cast<NVSDK_NGX_Result>(created))) {
       mfgunlock::ui::ProblemCard problem("##dlssg_pre_ada","NVIDIA's frame generation could not start on this GPU",mfgunlock::ui::Warning);

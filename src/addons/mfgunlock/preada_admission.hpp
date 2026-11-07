@@ -291,6 +291,11 @@ inline bool SkipQualityPatches() {
   return true;
 }
 
+// 1.9.0: the slowest preparation of this session, for the panel. On Turing
+// it recompresses the provider's kernels (about 3 s per file on the
+// development PC), during the game's start.
+inline std::atomic<uint64_t> g_slowest_prepare_ms{0};
+constexpr uint64_t kSlowPrepareMs = 1000;
 inline void RetargetProvider(HMODULE module) {
   if (module == nullptr || !RetargetConfigured()) return;
   const auto* session = modulesession::Acquire(module);
@@ -316,8 +321,13 @@ inline void RetargetProvider(HMODULE module) {
   if (!code.empty()) modulesession::RecordCode(*session, code);
   wchar_t path[MAX_PATH]{};
   GetModuleFileNameW(module, path, MAX_PATH);
+  const uint64_t elapsed = GetTickCount64() - start;
+  uint64_t slowest = g_slowest_prepare_ms.load(std::memory_order_relaxed);
+  while (elapsed > slowest && !g_slowest_prepare_ms.compare_exchange_weak(slowest, elapsed)) {}
   Log("NVIDIA's kernels prepared for this GPU in " + std::filesystem::path(path).filename().string() + " (" +
-      std::to_string(GetTickCount64() - start) + " ms)");
+          std::to_string(elapsed) + " ms" +
+          (elapsed >= kSlowPrepareMs ? "; this slows the game's start on RTX 20 and is expected" : "") + ")",
+      elapsed >= kSlowPrepareMs);
 }
 
 // ---------------------------------------------------- the provider minimum
