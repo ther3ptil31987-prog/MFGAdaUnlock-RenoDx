@@ -498,7 +498,7 @@ std::string FrameGenChainGenerator(ChainHealth* health = nullptr) {
 }
 ImVec4 ChainColor(ChainHealth health) {
   switch (health) {
-    case ChainHealth::kOk: return mfgunlock::ui::Good;
+    case ChainHealth::kOk: return mfgunlock::ui::Accent;  // the panel's colour for a good value
     case ChainHealth::kWarn: return mfgunlock::ui::Warning;
     case ChainHealth::kFail: return mfgunlock::ui::Danger;
     default: return mfgunlock::ui::Muted;
