@@ -1,23 +1,22 @@
 # MFG Unlock
 
 > [!NOTE]
-> ### New in 1.8.6: XMX multi-frame in games with jittered motion vectors
+> ### New in 1.9.0: NVIDIA's frame generation on RTX 20/30
 >
-> XMX now generates 3x–6x in games whose motion vectors carry the camera jitter, such as
-> Death Stranding 2 and Horizon Zero Dawn Remastered, where 1.8.3–1.8.5 fell back to
-> Intel's 2x model. With the XeMFG backend, Elden Ring's ERSS mod is now treated as the
-> game's own XeFG integration (trial). See the [1.8.6 release notes](docs/releases/1.8.6.md).
+> DLSS Frame Generation now runs on RTX 20 and 30 GPUs with NVIDIA's own generator, not
+> only with XMX: the addon prepares NVIDIA's GPU code for these cards (from
+> [nefh's MFGAmpereUnlock-RenoDx](https://github.com/nefh/MFGAmpereUnlock-RenoDx)) and
+> adds itself to ReShade's early loading, which they need. On RTX 50, Dynamic MFG now
+> sees the frame generation file's version (not yet confirmed by a tester). The panel shows where each part of frame generation came from and warns about
+> duplicate addon files. See the [1.9.0 release notes](docs/releases/1.9.0.md) and
+> [RTX 20 and 30 GPUs](#rtx-20-and-30-gpus).
 >
-> ### 1.8.5: Dynamic MFG ceiling, and Dynamic MFG with the NVIDIA app override
+> ### 1.8.6: XMX multi-frame in games with jittered motion vectors
 >
-> Choose **Up to 2x–6x** for NVIDIA Dynamic MFG in the panel, as the NVIDIA app does,
-> without changing the driver profile. Dynamic MFG no longer stays at "Waiting for runtime
-> detection" when the NVIDIA app's frame generation override supplies Streamline. The
-> panel now warns when a game is stuck at 2x because NVIDIA is using the driver's
-> built-in frame generation file. With XMX on RTX 20/30, the game's own DLSS Frame
-> Generation menu can now unlock. See the [1.8.5 release notes](docs/releases/1.8.5.md).
-> 1.8.4 unlocked MFG on DLSS-G files with no exact profile: see the
-> [1.8.4 release notes](docs/releases/1.8.4.md).
+> XMX generates 3x–6x in games whose motion vectors carry the camera jitter, such as
+> Death Stranding 2 and Horizon Zero Dawn Remastered. See the
+> [1.8.6 release notes](docs/releases/1.8.6.md); for 1.8.5 (Dynamic MFG ceiling) see the
+> [1.8.5 release notes](docs/releases/1.8.5.md).
 
 > [!TIP]
 > ### New in 1.8: use XMX whenever the game has frame generation
@@ -435,7 +434,7 @@ runtime version.
 |---|---|---|---|
 | Who generates the frames | NVIDIA DLSS-G, unlocked to 3x–6x on Ada | Intel's multi-frame model, 2x–6x, on NVIDIA Tensor Cores where available | Intel's multi-frame model, 2x–6x, without CUDA |
 | Who presents them | DLSS-G | Intel's swap chain | DLSS-G |
-| GPU | GeForce RTX 40-series | GeForce RTX 20/30/40/50 | Tested on RTX 40 only |
+| GPU | GeForce RTX 40-series (RTX 20/30 experimental since 1.9.0) | GeForce RTX 20/30/40/50 | Tested on RTX 40; confirmed on an RTX 3060 Ti |
 | Game requirement | DLSS frame generation through Streamline | DLSS-G inputs through Streamline, the game's own XeSS-FG, or FSR 3.1 frame generation (D3D12); DLSS Super Resolution or Ray Reconstruction (Vulkan) | DLSS frame generation in D3D12 |
 | Exclusive fullscreen | Works | Not supported directly; can be served as borderless | Not tested |
 | Latency | NVIDIA Reflex | Intel XeLL | NVIDIA Reflex |
@@ -459,9 +458,8 @@ generation method**, then restart the game. Only one is active per launch. The
 These requirements are for the **DLSS-G backend**. For XeMFG, see
 [XeMFG requirements](#xemfg-requirements).
 
-- **GeForce RTX 40-series.** For the separate RTX 30-series solution, see
-  [RTX 30-series support](#rtx-30-series-support) below, or use the
-  [XeMFG backend](#xemfg-backend).
+- **GeForce RTX 40-series or 50-series.** RTX 20 and 30 are experimental since 1.9.0:
+  see [RTX 20 and 30 GPUs](#rtx-20-and-30-gpus), or use the [XeMFG backend](#xemfg-backend).
 - ReShade with addon support (this is an `.addon64`, not an effect).
 - A game shipping DLSS frame generation via Streamline, with a reasonably modern
   `nvngx_dlssg.dll` (310.x). Games still on the DLSS 3 snippet (3.5.x) contain no
@@ -1051,15 +1049,11 @@ How to read these numbers:
 - **Only `libxess_fg.dll` 1.3.1.78.** With another version or a missing file, XMX does
   not start, NVIDIA's generator keeps running, and the panel says why.
 - **Tested on an RTX 4070 SUPER only.** Other cards are unknown.
-- **RTX 20 and 30 GPUs are experimental** (1.8.3). NVIDIA's DLSS-G runtime refuses these
-  cards on its own, so with XMX the addon admits them: the game offers DLSS Frame
-  Generation and its menu offers 3x-6x, as on RTX 40. Nothing changes on RTX 40 or 50.
-  Not yet confirmed on a real RTX 20/30. If NVIDIA's runtime still cannot create frame
-  generation on the card, the panel says why and offers **Use XeMFG**, which runs on
-  RTX 20 and 30. Since 1.8.5 the admission also covers `slInit`, where Streamline keeps
-  or drops its frame generation plugin, so the addon must load before the game starts
-  Streamline: if the panel says so, press **Enable early addon loading** (it adds the
-  addon to `[ADDON] LoadFromDllMain` in `ReShade.ini`) and restart the game.
+- **RTX 20 and 30 GPUs are experimental** (1.8.3). See
+  [RTX 20 and 30 GPUs](#rtx-20-and-30-gpus): since 1.9.0 the same path also runs
+  NVIDIA's own generator there. XMX was confirmed on an RTX 3060 Ti. If NVIDIA's runtime
+  still cannot create frame generation on the card, the panel says why and offers
+  **Use XeMFG**, which runs on RTX 20 and 30.
 - **No more than 2x when the game's Streamline is older than 2.7** (Ghost of Tsushima,
   Horizon Zero Dawn Remastered). Forcing more crashed inside Streamline, so the panel's
   **Frame Multiplier** is not applied above 2x there, and the panel says why.
@@ -1854,10 +1848,44 @@ interval distributions, robust outliers, Present API time, available GPU and
 instrumented latency fields, and only clearly labeled heuristic generated-frame
 cadence.
 
-## RTX 30-series support
+## RTX 20 and 30 GPUs
+
+Since 1.9.0 the DLSS-G backend runs DLSS Frame Generation on RTX 20 and 30 GPUs,
+with NVIDIA's own generator (**DLSS-G**) or with Intel's model (**XMX**). It is
+experimental: XMX was confirmed on an RTX 3060 Ti; NVIDIA's generator on a real
+RTX 30 and anything on RTX 20 are not confirmed yet.
+
+NVIDIA's runtime refuses these GPUs on its own, and its frame generation file
+carries GPU code for RTX 40 and 50 only. On a PC where every NVIDIA GPU is an
+RTX 20 or 30, the addon:
+
+- answers the runtime's GPU checks (Streamline, NGX and the file's minimum) so
+  the game offers DLSS Frame Generation and 3x–6x;
+- rewrites the file's GPU code for RTX 30 (sm_86) or RTX 20 (sm_75) before the
+  runtime loads it, so the driver builds kernels the card can run. This comes
+  from [nefh's MFGAmpereUnlock-RenoDx](https://github.com/nefh/MFGAmpereUnlock-RenoDx)
+  (MIT). On RTX 20 it takes about 3 seconds per file at every game start;
+- does not apply the quality patches made for RTX 40.
+
+These GPUs need the addon loaded before the game starts Streamline. On the first
+start the addon adds itself to `[ADDON] LoadFromDllMain` in `ReShade.ini` (when
+the file can be written), so **start the game twice the first time**. If it
+could not, the panel offers **Enable early addon loading**.
+
+Settings in `MFGAdaUnlock.ini` (next to the game), under `[DLSSG]`:
+
+| Key | Default | Effect |
+|---|---|---|
+| `PreAdaAdmission` | `1` | `0` turns the whole RTX 20/30 path off |
+| `AutoEarlyLoad` | `1` | `0` stops the addon from adding itself to `LoadFromDllMain` |
+
+Nothing changes on RTX 40 or 50. When something fails, the panel's
+**Frame generation chain** card and **Save support files** show where.
+
+### Other options on RTX 20/30
 
 RTX 30-series (and, since its 0.4 releases, RTX 20-series) support for NVIDIA's
-own DLSS-G is available through
+own DLSS-G is also available through
 [sdli1995's separate `dlssg_for_sm86` project](https://github.com/sdli1995/dlssg_for_sm86).
 It is a proxy DLL that keeps NVIDIA's runtime and replaces its inference
 kernels with its own CUDA kernels for SM86/SM75, instead of relying on the
@@ -1871,15 +1899,15 @@ instructions.
 
 When to use which on RTX 20/30:
 
-- **`dlssg_for_sm86`** in Direct3D 12 games that ship DLSS Frame Generation,
-  for NVIDIA's frame-generation model and exclusive fullscreen.
+- **This addon's DLSS-G or XMX** in Direct3D 12 games that ship DLSS Frame
+  Generation, first.
+- **`dlssg_for_sm86`** in those games when this addon's path does not work there.
 - **The [XeMFG backend](#xemfg-backend)** in games without DLSS Frame
   Generation (it also reads FSR 3.1 and DLSS Super Resolution inputs), or when
   `dlssg_for_sm86` does not support the game.
 
 `dlssg_for_sm86` is an independent implementation (GPLv3) and is not bundled
-with or maintained by this fork. The DLSS-G backend of MFG Unlock remains
-targeted at RTX 40-series GPUs.
+with or maintained by this fork.
 
 ## Building
 
@@ -2044,9 +2072,12 @@ execution plan and record are in [`docs/plan/`](docs/plan/).
   the addresses it uses were written and verified independently against `libxess_fg.dll`.
 - [nefh/MFGAmpereUnlock-RenoDx](https://github.com/nefh/MFGAmpereUnlock-RenoDx) (MIT, a
   fork of this project) showed how NVIDIA's DLSS-G runtime admits RTX 20 and 30 GPUs. The
-  1.8.3 RTX 20/30 path for XMX adapts its Streamline and NGX admission, its scoped NVAPI
+  1.8.3 RTX 20/30 path adapts its Streamline and NGX admission, its scoped NVAPI
   architecture answer and its provider minimum (`src/addons/mfgunlock/preada_admission.hpp`).
-  Its PTX retargeting is not used: XMX never runs NVIDIA's generation kernels.
+  Since 1.9.0 its provider preparation, which rewrites NVIDIA's GPU code for sm_86 and
+  sm_75, is included in `src/addons/mfgunlock/ampere/` (namespace `mfgunlock::ampere`,
+  with its MIT license in `LICENSE.nefh`), and two of its unit tests run in
+  `tests/ampere/`. It is what lets NVIDIA's runtime create frame generation on these GPUs.
 - [sdli1995/dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) documents where the
   NGX core refuses frame generation on RTX 20 and the D3D12 states Streamline hands NGX.
   Its source is GPLv3, so it was used as a reference only: no code is included.
