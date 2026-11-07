@@ -732,6 +732,49 @@ An optional `MFGAdaUnlock.profiles.json` in the game folder can add or
 override rules for local testing. An invalid file is rejected as a whole and
 the addon keeps the built-in rules.
 
+#### Writing `MFGAdaUnlock.profiles.json`
+
+The file uses the same format as the built-in rules. Its rules apply after the
+built-in ones: a later rule replaces a yes/no setting and adds to a list. For
+example, a mod that creates XeFG from its own DLL (as Elden Ring's ERSS does
+from `zzz_ERSS.dll`) is treated as the game's own XeFG integration with:
+
+```json
+{
+  "schema": 1,
+  "profiles": [
+    {
+      "id": "my-game-mod-xefg",
+      "match": {"executable": "mygame.exe"},
+      "game_xefg_modules": ["my_mod.dll"],
+      "evidence": "local test: my_mod.dll creates XeFG for the game"
+    }
+  ]
+}
+```
+
+- `schema` must be `1`, and every rule needs a non-empty `id` and `evidence`
+  (a note on why the rule exists).
+- `match` limits the rule: `executable` (the game's .exe file name) and/or
+  `module` (a DLL that must be loaded). `{}` matches every game. Names are not
+  case-sensitive.
+- Settings a rule can carry:
+
+  | Key | Value | Effect |
+  |---|---|---|
+  | `game_xefg_modules` | list of DLL names | XeFG calls from these DLLs count as the game's own |
+  | `depth_inverted` | `true`/`false` | the game's depth convention, when the automatic reading is wrong |
+  | `motion_jittered` | `true`/`false` | whether the game's motion vectors carry the camera jitter |
+  | `retain_native_output` | `true`/`false` | keep the native swap chain (as with the Steam overlay) |
+  | `observer_modules` | list of DLL names | DLLs that only observe presentation and keep the original functions |
+  | `conflicting_modules` | list of DLL names | other frame-generation plugins that conflict with XeMFG |
+  | `accept_missing_dlssg_plugin` | `true`/`false` | accept a Streamline whose DLSS-G plugin is absent |
+  | `known_bad_reframework_sha256` | list of SHA-256 hashes | REFramework builds with the XeFG hook issue |
+
+Any other key rejects the whole file. The `native_profiles` line of
+`MFGAdaUnlock-XeMFG.log` lists the rules that applied. The built-in rules are in
+[`src/addons/mfgunlock/xemfg/profiles.json`](src/addons/mfgunlock/xemfg/profiles.json).
+
 ### XeMFG troubleshooting
 
 #### The panel says Intel files are missing or a different version
