@@ -2693,7 +2693,9 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
           +"\nxmx_frames_limit="+std::to_string(xmx_report.framesLimit);
     }
     report+=std::string("\npre_ada_admitted=")+(mfgunlock::xmx::preada::Admitted()?"1":"0");
-    return report+"\n"+FrameGenChainReport()+mfgunlock::system::Report();
+    // 1.9.0: the driver profile, read only, and only now: this runs when
+    // the report is saved or copied.
+    return report+"\n"+FrameGenChainReport()+mfgunlock::drsreport::Describe()+mfgunlock::system::Report();
   };
   mfgunlock::ui::Hero(multiplier_text.c_str(),xmx_running?"XMX":"DLSS-G",RenderApiName(render_api),
       xmx_failed?"Frame generation stopped":xmx_running?(xmx_report.generating?"Generating frames":xmx_waiting):player_state,
@@ -3926,6 +3928,8 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     mfgunlock::ui::Tooltip("Applies the validated quality fixes on RTX 50 cards too. Off by default.");
   }
   if (page == UiPage::Support) {
+    // 1.9.0: always available here, not only on a problem card.
+    mfgunlock::ui::SupportActions(xmx_support_report);
     ImGui::Spacing();
     ImGui::TextDisabled("SUPPORT DIAGNOSTICS");
     ImGui::Separator();

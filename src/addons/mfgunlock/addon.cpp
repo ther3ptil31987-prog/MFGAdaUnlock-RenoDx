@@ -142,6 +142,7 @@
 #include "xmx_hook.hpp"
 #include "preada_admission.hpp"
 #include "drs_override.hpp"
+#include "drs_report.hpp"
 #include "advanced_settings.hpp"
 
 #include <deps/imgui/imgui.h>
