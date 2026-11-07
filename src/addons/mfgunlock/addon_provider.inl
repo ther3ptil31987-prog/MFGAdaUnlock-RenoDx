@@ -1105,8 +1105,9 @@ FrameGenChain DescribeFrameGenChain() {
   last_ms = now;
   FrameGenChain chain;
   wchar_t path[MAX_PATH]{};
-  if (const HMODULE plugin = GetModuleHandleW(L"sl.dlss_g.dll");
-      plugin != nullptr && GetModuleFileNameW(plugin, path, MAX_PATH) != 0) {
+  HMODULE plugin = mfgunlock::framecount::g_active_streamline_module.load(std::memory_order_acquire);
+  if (plugin == nullptr) plugin = GetModuleHandleW(L"sl.dlss_g.dll");
+  if (plugin != nullptr && GetModuleFileNameW(plugin, path, MAX_PATH) != 0) {
     chain.streamline = std::string(mfgunlock::fgchain::Name(mfgunlock::fgchain::ClassifyStreamline(path))) +
                        ChainVersion(plugin);
     chain.streamline_health = ChainHealth::kOk;

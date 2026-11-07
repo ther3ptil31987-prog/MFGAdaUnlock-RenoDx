@@ -546,6 +546,11 @@ inline void ObserveDlssgProviderVersion(HMODULE module) {
   }
 }
 
+// 1.9.0: the DLSS-G plugin whose functions the game actually calls, for the
+// panel's chain card. The NVIDIA app's override copy is not named
+// sl.dlss_g.dll (190_E658700.dll in Cyberpunk), so the name alone finds the
+// game's unused copy.
+inline std::atomic<HMODULE> g_active_streamline_module{nullptr};
 inline void ObserveStreamlinePluginVersion(HMODULE module,
                                            bool authoritative = false) {
   if (!authoritative &&
@@ -557,6 +562,7 @@ inline void ObserveStreamlinePluginVersion(HMODULE module,
   if (authoritative) {
     g_streamline_function_owner_seen.store(true, std::memory_order_release);
   }
+  g_active_streamline_module.store(module, std::memory_order_release);
   const uint64_t packed = runtimeversion::Pack(version);
   const uint64_t previous = g_active_streamline_version.exchange(
       packed, std::memory_order_acq_rel);
