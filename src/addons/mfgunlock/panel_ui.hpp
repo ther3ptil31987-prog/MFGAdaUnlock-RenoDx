@@ -19,6 +19,7 @@ inline constexpr ImVec4 Muted{0.65f,0.72f,0.82f,1.f};
 inline constexpr ImVec4 Warning{1.f,0.77f,0.35f,1.f};
 inline constexpr ImVec4 Bright{.93f,.95f,.98f,1.f};
 inline constexpr ImVec4 Danger{1.f,.48f,.45f,1.f};
+inline constexpr ImVec4 Good{.45f,.85f,.48f,1.f};  // 1.9.0: a working link in the chain card
 // ReShade's blue: anything that is not a health status (green, yellow, red).
 inline constexpr ImVec4 Selected{.165f,.29f,.47f,1.f};
 inline constexpr ImVec4 SelectedLine{.29f,.47f,.72f,1.f};

@@ -476,12 +476,33 @@ void AppendInputDiagnosticsReport(std::ostringstream& report) {
 }
 
 // 1.9.0: where each link of the frame generation chain came from.
-std::string FrameGenChainGenerator() {
-  if (!mfgunlock::xmx::generator::Enabled())
+std::string FrameGenChainGenerator(ChainHealth* health = nullptr) {
+  ChainHealth ignored;
+  ChainHealth& out = health ? *health : ignored;
+  if (!mfgunlock::xmx::generator::Enabled()) {
+    const int64_t created = mfgunlock::xmx::preada::g_create_result.load();
+    if (mfgunlock::xmx::preada::Admitted() && created >= 0 && NVSDK_NGX_FAILED(static_cast<NVSDK_NGX_Result>(created))) {
+      out = ChainHealth::kFail;
+      return "NVIDIA DLSS-G could not be created on this GPU";
+    }
+    out = ChainHealth::kOk;
     return mfgunlock::xmx::preada::Admitted() ? "NVIDIA DLSS-G (kernels prepared for RTX 20/30)" : "NVIDIA DLSS-G";
+  }
   const auto report = mfgunlock::xmx::generator::Snapshot();
-  if (!report.failure.empty() && !report.generating) return "XMX selected; not running: " + report.failure;
+  if (!report.failure.empty() && !report.generating) {
+    out = ChainHealth::kFail;
+    return "XMX selected; not running: " + report.failure;
+  }
+  out = report.generating ? ChainHealth::kOk : ChainHealth::kWarn;
   return report.generating ? "XMX (Intel's model) generating" : report.hooked ? "XMX ready" : "XMX selected; not started";
+}
+ImVec4 ChainColor(ChainHealth health) {
+  switch (health) {
+    case ChainHealth::kOk: return mfgunlock::ui::Good;
+    case ChainHealth::kWarn: return mfgunlock::ui::Warning;
+    case ChainHealth::kFail: return mfgunlock::ui::Danger;
+    default: return mfgunlock::ui::Muted;
+  }
 }
 std::string FrameGenChainReport() {
   const auto chain = DescribeFrameGenChain();
@@ -498,15 +519,23 @@ void DrawFrameGenChainCard() {
   mfgunlock::ui::Card card("##fg_chain_card");
   using mfgunlock::ui::Readout;
   Readout("##chain_streamline", "Streamline DLSS-G", shown.streamline.c_str(),
-          "sl.dlss_g.dll: the game's own copy, or one the NVIDIA app supplies (DLSS Override or its automatic update).");
+          "sl.dlss_g.dll: the game's own copy, or one the NVIDIA app supplies (DLSS Override or its automatic update).",
+          ChainColor(shown.streamline_health));
   Readout("##chain_provider", "Frame generation file", shown.provider.c_str(),
-          "nvngx_dlssg: the game's copy, the NVIDIA app's, or the driver's built-in one (2x only).");
-  Readout("##chain_gate", "Multi-frame gate", shown.gate.c_str(), "Whether the addon opened NVIDIA's multi-frame check in that file.");
+          "nvngx_dlssg: the game's copy, the NVIDIA app's, or the driver's built-in one (2x only).",
+          ChainColor(shown.provider_health));
+  Readout("##chain_gate", "Multi-frame gate", shown.gate.c_str(),
+          "Whether the addon opened NVIDIA's multi-frame check in that file. Without it the game offers 2x at most.",
+          ChainColor(shown.gate_health));
   Readout("##chain_slinit", "Streamline start", shown.slinit.c_str(),
-          "Whether the addon saw the game start Streamline. RTX 20/30 and the Dynamic MFG ceiling need this; some games need early loading for it.");
-  Readout("##chain_dynamic", "Dynamic MFG", shown.dynamic.c_str(), "Whether NVIDIA's runtime reports Dynamic MFG support. Unknown until the game asks.");
-  const std::string generator = FrameGenChainGenerator();
-  Readout("##chain_generator", "Generator", generator.c_str());
+          "Whether the addon saw the game start Streamline. RTX 20/30 and the Dynamic MFG ceiling need this; some games need early loading for it.",
+          ChainColor(shown.slinit_health));
+  Readout("##chain_dynamic", "Dynamic MFG", shown.dynamic.c_str(),
+          "Whether NVIDIA's runtime reports Dynamic MFG support. Unknown until the game asks.",
+          ChainColor(shown.dynamic_health));
+  ChainHealth generator_health = ChainHealth::kUnknown;
+  const std::string generator = FrameGenChainGenerator(&generator_health);
+  Readout("##chain_generator", "Generator", generator.c_str(), nullptr, ChainColor(generator_health));
 }
 
 void DrawInputDiagnosticsPanel() {

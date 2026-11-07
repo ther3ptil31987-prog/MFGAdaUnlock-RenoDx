@@ -1076,12 +1076,17 @@ DriverOnlyProvider CheckDriverOnlyProvider() {
 
 // 1.9.0: the frame generation chain, for the panel and the support report.
 // Never blocks: a busy maintenance lock returns the last answer.
+// Each link also carries a health, for the card's colour.
+enum class ChainHealth { kUnknown, kOk, kWarn, kFail };
 struct FrameGenChain {
   std::string streamline;  // sl.dlss_g.dll source and version
   std::string provider;    // nvngx_dlssg source(s) and version
   std::string gate;
   std::string slinit;
   std::string dynamic;
+  ChainHealth streamline_health = ChainHealth::kUnknown, provider_health = ChainHealth::kUnknown,
+              gate_health = ChainHealth::kUnknown, slinit_health = ChainHealth::kUnknown,
+              dynamic_health = ChainHealth::kUnknown;
 };
 std::string ChainVersion(HMODULE module) {
   const auto v = mfgunlock::runtimeversion::FromModule(module);
@@ -1101,12 +1106,16 @@ FrameGenChain DescribeFrameGenChain() {
   FrameGenChain chain;
   wchar_t path[MAX_PATH]{};
   if (const HMODULE plugin = GetModuleHandleW(L"sl.dlss_g.dll");
-      plugin != nullptr && GetModuleFileNameW(plugin, path, MAX_PATH) != 0)
+      plugin != nullptr && GetModuleFileNameW(plugin, path, MAX_PATH) != 0) {
     chain.streamline = std::string(mfgunlock::fgchain::Name(mfgunlock::fgchain::ClassifyStreamline(path))) +
                        ChainVersion(plugin);
-  else
-    chain.streamline = GetModuleHandleW(L"sl.interposer.dll") != nullptr ? "Streamline loaded; DLSS-G plugin not loaded"
-                                                                         : "unknown (Streamline not loaded yet)";
+    chain.streamline_health = ChainHealth::kOk;
+  } else if (GetModuleHandleW(L"sl.interposer.dll") != nullptr) {
+    chain.streamline = "Streamline loaded; DLSS-G plugin not loaded";
+    chain.streamline_health = ChainHealth::kWarn;
+  } else {
+    chain.streamline = "unknown (Streamline not loaded yet)";
+  }
   std::vector<HMODULE> providers;
   bool have_providers = false;
   if (TryAcquireSRWLockShared(&g_provider_maintenance_lock)) {
@@ -1115,32 +1124,48 @@ FrameGenChain DescribeFrameGenChain() {
     have_providers = true;
   }
   if (!have_providers) return cached;
+  bool driver_only = !providers.empty();
   for (HMODULE module : providers) {
     if (GetModuleFileNameW(module, path, MAX_PATH) == 0) continue;
+    const auto source = mfgunlock::fgchain::ClassifyProvider(path);
+    if (source != mfgunlock::fgchain::Source::kDriver) driver_only = false;
     if (!chain.provider.empty()) chain.provider += "; ";
-    chain.provider += std::string(mfgunlock::fgchain::Name(mfgunlock::fgchain::ClassifyProvider(path))) +
-                      ChainVersion(module);
+    chain.provider += std::string(mfgunlock::fgchain::Name(source)) + ChainVersion(module);
   }
   if (chain.provider.empty()) chain.provider = "unknown (not loaded yet)";
-  if (mfgunlock::gpuarch::AllNvidiaAdaptersBlackwell())
+  else chain.provider_health = driver_only ? ChainHealth::kWarn : ChainHealth::kOk;
+  if (mfgunlock::gpuarch::AllNvidiaAdaptersBlackwell()) {
     chain.gate = "not needed (RTX 50)";
-  else if (g_gate_patched.load(std::memory_order_acquire))
+    chain.gate_health = ChainHealth::kOk;
+  } else if (g_gate_patched.load(std::memory_order_acquire)) {
     chain.gate = "open in " + std::to_string(g_gate_modules.size()) + " file(s)";
-  else
-    chain.gate = providers.empty() ? "unknown" : "not open";
-  if (mfgunlock::framecount::internal::g_init_seen.load(std::memory_order_acquire))
+    chain.gate_health = ChainHealth::kOk;
+  } else if (!providers.empty()) {
+    chain.gate = "not open (2x at most)";
+    chain.gate_health = ChainHealth::kFail;
+  } else {
+    chain.gate = "unknown";
+  }
+  if (mfgunlock::framecount::internal::g_init_seen.load(std::memory_order_acquire)) {
     chain.slinit = "seen by the addon";
-  else if (GetModuleHandleW(L"sl.interposer.dll") != nullptr)
+    chain.slinit_health = ChainHealth::kOk;
+  } else if (GetModuleHandleW(L"sl.interposer.dll") != nullptr) {
     chain.slinit = mfgunlock::framecount::internal::g_real_init != nullptr
                        ? "not called since the addon loaded"
                        : "ran before the addon loaded (or not hooked)";
-  else
+    chain.slinit_health = ChainHealth::kWarn;
+  } else {
     chain.slinit = "unknown (Streamline not loaded yet)";
-  if (!mfgunlock::framecount::g_dynamic_support_seen.load(std::memory_order_acquire))
+  }
+  if (!mfgunlock::framecount::g_dynamic_support_seen.load(std::memory_order_acquire)) {
     chain.dynamic = "unknown";
-  else
-    chain.dynamic = mfgunlock::framecount::g_dynamic_supported.load(std::memory_order_relaxed) ? "supported"
-                                                                                             : "not supported";
+  } else if (mfgunlock::framecount::g_dynamic_supported.load(std::memory_order_relaxed)) {
+    chain.dynamic = "supported";
+    chain.dynamic_health = ChainHealth::kOk;
+  } else {
+    chain.dynamic = "not supported";
+    chain.dynamic_health = ChainHealth::kWarn;
+  }
   cached = chain;
   return chain;
 }
