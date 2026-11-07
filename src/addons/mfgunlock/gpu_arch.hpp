@@ -43,6 +43,18 @@ constexpr bool IsPreAdaDeviceId(uint32_t device_id) {
   return device_id >= 0x1B00 && device_id < 0x2680;
 }
 
+// 1.8.7: which pre-Ada family, for the RTX 20/30 provider preparation (sm_75 or
+// sm_86 PTX). Turing: TU10x 0x1E00-0x1FFF and TU11x (GTX 16) 0x2180-0x21FF.
+// Ampere: GA10x 0x2200-0x267F. GA100 (0x2080-0x20FF, sm_80) and Pascal are
+// neither and get no preparation.
+enum class PreAdaFamily : uint32_t { kNone = 0, kTuring = 1, kAmpere = 2 };
+constexpr PreAdaFamily ClassifyPreAdaDeviceId(uint32_t device_id) {
+  if ((device_id >= 0x1E00 && device_id < 0x2000) || (device_id >= 0x2180 && device_id < 0x2200))
+    return PreAdaFamily::kTuring;
+  if (device_id >= 0x2200 && device_id < 0x2680) return PreAdaFamily::kAmpere;
+  return PreAdaFamily::kNone;
+}
+
 // Parses "pci\ven_10de&dev_XXXX..." (any case). Returns false for another
 // vendor or a malformed string.
 constexpr bool ParseNvidiaDeviceId(const wchar_t* text, uint32_t& device_id) {
@@ -75,6 +87,8 @@ struct Census {
   uint32_t nvidia = 0;
   uint32_t blackwell = 0;
   uint32_t pre_ada = 0;
+  uint32_t turing = 0;
+  uint32_t ampere = 0;
   void Add(Family family) {
     ++nvidia;
     if (family == Family::kBlackwell) ++blackwell;
@@ -82,10 +96,20 @@ struct Census {
   void AddDevice(uint32_t device_id) {
     Add(ClassifyDeviceId(device_id));
     if (IsPreAdaDeviceId(device_id)) ++pre_ada;
+    const auto pre = ClassifyPreAdaDeviceId(device_id);
+    if (pre == PreAdaFamily::kTuring) ++turing;
+    if (pre == PreAdaFamily::kAmpere) ++ampere;
   }
   constexpr bool AllBlackwell() const { return nvidia != 0 && blackwell == nvidia; }
   // Every NVIDIA adapter predates Ada: none can run NVIDIA's frame generation.
   constexpr bool AllPreAda() const { return nvidia != 0 && pre_ada == nvidia; }
+  // One family for every NVIDIA adapter; mixed or other GPUs get kNone.
+  constexpr PreAdaFamily SinglePreAdaFamily() const {
+    if (nvidia == 0) return PreAdaFamily::kNone;
+    if (turing == nvidia) return PreAdaFamily::kTuring;
+    if (ampere == nvidia) return PreAdaFamily::kAmpere;
+    return PreAdaFamily::kNone;
+  }
 };
 
 // The registry functions are taken from kernelbase.dll, which every process
@@ -145,6 +169,12 @@ inline bool AllNvidiaAdaptersBlackwell() {
 // Read once; safe under the loader lock.
 inline bool AllNvidiaAdaptersPreAda() {
   static const bool value = ReadInstalledAdapters().AllPreAda();
+  return value;
+}
+
+// Read once; safe under the loader lock.
+inline PreAdaFamily NvidiaPreAdaFamily() {
+  static const PreAdaFamily value = ReadInstalledAdapters().SinglePreAdaFamily();
   return value;
 }
 

@@ -75,6 +75,9 @@ NVSDK_NGX_Result NVSDK_CONV HookedCreateFeature(ID3D12GraphicsCommandList* list,
   // there, for the panel. Nothing in the call changes.
   if (feature == NVSDK_NGX_Feature_FrameGeneration && g_real_create_feature != nullptr &&
       mfgunlock::xmx::preada::Engaged()) {
+    // 1.8.7: CUDA may keep pointers into the prepared containers from here on,
+    // so nefh's preparation no longer rewrites a provider after this.
+    mfgunlock::ampere::provider::g_create_seen.store(true, std::memory_order_release);
     const NVSDK_NGX_Result result = g_real_create_feature(list, feature, parameters, handle);
     mfgunlock::xmx::preada::ObserveCreate(result);
     return result;
@@ -326,6 +329,8 @@ void RememberDlssgModule(HMODULE mod) {
     g_dlssg_modules.push_back(mod);
     // RTX 20/30 with XMX only: before the NGX core reads the provider's minimum.
     mfgunlock::xmx::preada::LowerProviderMinimum(mod);
+    // 1.8.7: NVIDIA's kernels for this GPU, before the NGX core creates anything.
+    mfgunlock::xmx::preada::RetargetProvider(mod);
   }
 }
 
@@ -608,6 +613,7 @@ bool ModuleHasTemporalPatch(HMODULE mod) {
 }
 
 bool PatchBlackwellInModule(HMODULE mod) {
+  if (mfgunlock::xmx::preada::SkipQualityPatches()) return false;
   if (!mfgunlock::modulesession::Acquire(mod)) return false;
   if (mod == nullptr || ModuleHasTemporalPatch(mod)) return false;
   std::vector<mfgunlock::blackwell::Patch> patches;
@@ -707,6 +713,7 @@ void LogThinGeometryMechanism(
 }
 
 void PatchThinGeometryInModule(HMODULE mod) {
+  if (mfgunlock::xmx::preada::SkipQualityPatches()) return;
   const bool native_blackwell = NativeBlackwellLeavesProviderAlone();
   if (native_blackwell && !g_rtx50_quality_fixes.load(std::memory_order_relaxed))
     return;
@@ -869,6 +876,7 @@ void PatchThinGeometryInModule(HMODULE mod) {
 }
 
 void PatchMidpointInModule(HMODULE mod) {
+  if (mfgunlock::xmx::preada::SkipQualityPatches()) return;
   if (!mfgunlock::modulesession::Acquire(mod)) return;
   if (mod == nullptr) return;
   if (ModuleHasTemporalPatch(mod)) return;
@@ -903,6 +911,7 @@ void PatchMidpointInModule(HMODULE mod) {
 }
 
 void PatchTemporalInModule(HMODULE mod) {
+  if (mfgunlock::xmx::preada::SkipQualityPatches()) return;
   if (mod == nullptr || ModuleHasTemporalPatch(mod)) return;
   if (NativeBlackwellLeavesProviderAlone()) return;
   // NGX may map a DriverStore fallback only long enough to inspect it and then

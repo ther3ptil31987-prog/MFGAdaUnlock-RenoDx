@@ -37,6 +37,8 @@
 
 #include <include/reshade.hpp>
 
+#include "./ampere/provider.hpp"
+#include "./gpu_arch.hpp"
 #include "./module_session.hpp"
 #include "./ngx_hook.hpp"
 #include "./patch_transaction.hpp"
@@ -238,6 +240,72 @@ inline void TryInstallRequirements() {
       g_requirements_hooked.store(true, std::memory_order_release);
   }
   ReleaseSRWLockExclusive(&lock);
+}
+
+// ------------------------------------- NVIDIA's kernels for this GPU (nefh)
+// 1.8.7: on RTX 20/30 NVIDIA's CreateFeature failed with PlatformError: the
+// provider carries CUDA code for Ada and Blackwell only, and creating the
+// feature loads it even though XMX never runs it. nefh's preparation (vendored
+// in ampere/, MIT) rewrites the provider's sm_89 PTX for this GPU (sm_86 or
+// sm_75) and hides the sm_89 cubins, so the driver compiles kernels this GPU
+// can load. Only while Engaged(), and only on one Turing or Ampere family.
+inline bool RetargetConfigured() {
+  static const bool configured = [] {
+    if (!Engaged()) return false;
+    auto family = gpuarch::NvidiaPreAdaFamily();
+    // A simulated pre-Ada run on Ada takes the Ampere path: sm_86 code runs there.
+    if (Simulated()) family = gpuarch::PreAdaFamily::kAmpere;
+    switch (family) {
+      case gpuarch::PreAdaFamily::kAmpere:
+        ampere::architecture::Configure(ampere::Architecture::kAmpere);
+        return true;
+      case gpuarch::PreAdaFamily::kTuring:
+        ampere::architecture::Configure(ampere::Architecture::kTuring);
+        return true;
+      default:
+        Log("NVIDIA's kernels are not prepared: the NVIDIA GPUs are not all one Turing or Ampere family", true);
+        return false;
+    }
+  }();
+  return configured;
+}
+
+// The provider's own quality transforms replace the same sm_89 cubins and PTX
+// descriptors; XMX does not run NVIDIA's kernels, so they are skipped here.
+inline bool SkipQualityPatches() {
+  if (!RetargetConfigured()) return false;
+  static std::atomic_bool logged{false};
+  if (!logged.exchange(true)) Log("NVIDIA's kernels are prepared for this GPU; the provider quality patches are not applied");
+  return true;
+}
+
+inline void RetargetProvider(HMODULE module) {
+  if (module == nullptr || !RetargetConfigured()) return;
+  const auto* session = modulesession::Acquire(module);
+  if (session == nullptr) return;
+  const auto start = GetTickCount64();
+  if (!ampere::provider::PrepareProvider(module)) return;  // nefh logs why
+  // Code bytes it changed (the Turing endpoint and load sites) belong to the
+  // addon, like our own gate writes, so the provider's identity still holds.
+  std::vector<patching::Write> code;
+  AcquireSRWLockShared(&ampere::provider::internal::g_lock);
+  for (const auto& provider : ampere::provider::internal::g_providers) {
+    if (provider.module != module) continue;
+    for (const auto& patch : provider.patches) {
+      MEMORY_BASIC_INFORMATION memory{};
+      if (!VirtualQuery(patch.address, &memory, sizeof(memory))) continue;
+      const DWORD protection = memory.Protect & 0xFF;
+      if (protection == PAGE_EXECUTE || protection == PAGE_EXECUTE_READ ||
+          protection == PAGE_EXECUTE_READWRITE || protection == PAGE_EXECUTE_WRITECOPY)
+        code.push_back({patch.address, {patch.before}, {patch.after}, true});
+    }
+  }
+  ReleaseSRWLockShared(&ampere::provider::internal::g_lock);
+  if (!code.empty()) modulesession::RecordCode(*session, code);
+  wchar_t path[MAX_PATH]{};
+  GetModuleFileNameW(module, path, MAX_PATH);
+  Log("NVIDIA's kernels prepared for this GPU in " + std::filesystem::path(path).filename().string() + " (" +
+      std::to_string(GetTickCount64() - start) + " ms)");
 }
 
 // ---------------------------------------------------- the provider minimum

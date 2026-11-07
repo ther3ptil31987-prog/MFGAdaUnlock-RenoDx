@@ -245,6 +245,14 @@ add_executable(dlss_preset_tests dlss_preset_tests.cpp)
 target_include_directories(dlss_preset_tests SYSTEM PRIVATE
   "${RENODX_SOURCE_DIR}/external/Streamline/include")
 add_test(NAME dlss_preset_tests COMMAND dlss_preset_tests)
+# 1.8.7: the vendored nefh RTX 20/30 provider preparation, on real providers.
+set(AMPERE_OFFLINE_PROVIDERS "" CACHE STRING "DLSS-G providers for the RTX 20/30 preparation test")
+add_executable(ampere_prepare_tests ampere_prepare_tests.cpp)
+target_compile_definitions(ampere_prepare_tests PRIVATE NOMINMAX)
+target_include_directories(ampere_prepare_tests SYSTEM PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+add_test(NAME ampere_prepare COMMAND ampere_prepare_tests ${AMPERE_OFFLINE_PROVIDERS})
+set_tests_properties(ampere_prepare PROPERTIES SKIP_RETURN_CODE 77)
 add_executable(generic_gate_tests generic_gate_tests.cpp)
 add_test(NAME generic_gate_tests COMMAND generic_gate_tests)
 add_executable(gpu_arch_tests gpu_arch_tests.cpp)
