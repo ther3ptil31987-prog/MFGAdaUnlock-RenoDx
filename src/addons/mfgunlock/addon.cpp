@@ -393,11 +393,19 @@ bool ReShadeIniWritable() {
   const DWORD length = reshade_module ? GetModuleFileNameW(reshade_module, path, MAX_PATH) : 0;
   if (length == 0 || length >= MAX_PATH) return false;
   const auto ini = std::filesystem::path(path).parent_path() / L"ReShade.ini";
-  // OPEN_EXISTING with write access: nothing is created or truncated.
-  const HANDLE file = CreateFileW(ini.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) return false;
-  CloseHandle(file);
+  // 1.9.0 field fix: opening the file for writing failed on an RTX 3080 while
+  // ReShade itself saved it a moment later (the panel button). ReShade writes
+  // the file, so only what would stop it is checked: present, not read-only.
+  const DWORD attributes = GetFileAttributesW(ini.c_str());
+  if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+    const DWORD error = attributes == INVALID_FILE_ATTRIBUTES ? GetLastError() : 0;
+    reshade::log::message(reshade::log::level::warning,
+        ("mfgunlock: ReShade.ini next to ReShade is " +
+         std::string(attributes == INVALID_FILE_ATTRIBUTES ? "not readable (error " + std::to_string(error) + ")"
+                                                           : "read-only") +
+         "; automatic early loading skipped.").c_str());
+    return false;
+  }
   return true;
 }
 void TryAutoEarlyLoad() {
