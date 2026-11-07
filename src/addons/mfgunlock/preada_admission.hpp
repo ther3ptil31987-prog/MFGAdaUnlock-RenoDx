@@ -37,6 +37,7 @@
 
 #include <include/reshade.hpp>
 
+#include "./ampere/midpoint.hpp"
 #include "./ampere/provider.hpp"
 #include "./gpu_arch.hpp"
 #include "./module_session.hpp"
@@ -283,7 +284,8 @@ inline bool RetargetConfigured() {
 }
 
 // The provider's own quality transforms replace the same sm_89 cubins and PTX
-// descriptors the preparation rewrites, so they are skipped on these GPUs.
+// descriptors the preparation rewrites, so they are skipped on these GPUs;
+// nefh's temporal correction below takes the midpoint fix's place.
 inline bool SkipQualityPatches() {
   if (!RetargetConfigured()) return false;
   static std::atomic_bool logged{false};
@@ -328,6 +330,54 @@ inline void RetargetProvider(HMODULE module) {
           std::to_string(elapsed) + " ms" +
           (elapsed >= kSlowPrepareMs ? "; this slows the game's start on RTX 20 and is expected" : "") + ")",
       elapsed >= kSlowPrepareMs);
+}
+
+// ------------------------------------------ the temporal correction (nefh)
+// 1.9.0: without it, 3x and above put every generated frame at the midpoint
+// between the two real frames (the Ada midpoint problem), so 4x looked worse
+// than 2x in a simulated RTX 30 test. The addon's own midpoint fix edits sm_89
+// PTX and is skipped here; nefh's version (vendored in ampere/midpoint.hpp)
+// edits the PTX the preparation just retargeted for this GPU, then redirects
+// the kernel's descriptors to the rebuilt container. Descriptor slots are data,
+// not code, so the provider's identity is unaffected.
+struct TemporalModule {
+  HMODULE module = nullptr;
+  std::vector<ampere::midpoint::Patch> patches;
+  void* allocation = nullptr;
+};
+inline SRWLOCK g_temporal_lock = SRWLOCK_INIT;
+inline std::vector<TemporalModule> g_temporal_modules;
+inline std::vector<HMODULE> g_temporal_rejected;
+inline std::atomic<uint32_t> g_temporal_applied{0};
+inline std::atomic<uint32_t> g_temporal_missing{0};
+
+inline void ApplyTemporalCorrection(HMODULE module) {
+  if (module == nullptr || !RetargetConfigured()) return;
+  if (ampere::provider::g_create_seen.load(std::memory_order_acquire)) return;
+  AcquireSRWLockExclusive(&g_temporal_lock);
+  struct Unlock {
+    ~Unlock() { ReleaseSRWLockExclusive(&g_temporal_lock); }
+  } unlock;
+  for (const auto& done : g_temporal_modules)
+    if (done.module == module) return;
+  for (HMODULE rejected : g_temporal_rejected)
+    if (rejected == module) return;
+  TemporalModule entry{module};
+  std::string detail;
+  wchar_t path[MAX_PATH]{};
+  GetModuleFileNameW(module, path, MAX_PATH);
+  const std::string name = std::filesystem::path(path).filename().string();
+  if (!ampere::midpoint::Apply(module, entry.patches, entry.allocation, detail)) {
+    g_temporal_rejected.push_back(module);
+    g_temporal_missing.fetch_add(1, std::memory_order_relaxed);
+    Log("temporal correction not applied to " + name + " (" + detail +
+            "); above 2x, generated frames from this file land at the midpoint",
+        true);
+    return;
+  }
+  g_temporal_modules.push_back(std::move(entry));
+  g_temporal_applied.fetch_add(1, std::memory_order_relaxed);
+  Log("temporal correction applied to " + name + ": " + detail);
 }
 
 // ---------------------------------------------------- the provider minimum
@@ -399,5 +449,13 @@ inline void Uninstall() {
   AcquireSRWLockExclusive(&g_minimum_lock);
   patching::Restore(g_minimum_writes, true);
   ReleaseSRWLockExclusive(&g_minimum_lock);
+  // Only before NVIDIA's runtime created the feature: afterwards its kernels
+  // may still reference the rebuilt containers (nefh's rule: leak, never dangle).
+  if (!ampere::provider::g_create_seen.load(std::memory_order_acquire)) {
+    AcquireSRWLockExclusive(&g_temporal_lock);
+    for (auto& entry : g_temporal_modules) ampere::midpoint::Restore(entry.patches, entry.allocation);
+    std::erase_if(g_temporal_modules, [](const auto& e) { return e.patches.empty() && e.allocation == nullptr; });
+    ReleaseSRWLockExclusive(&g_temporal_lock);
+  }
 }
 }  // namespace mfgunlock::xmx::preada

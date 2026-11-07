@@ -2802,6 +2802,10 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     }
     if(const uint64_t slow=mfgunlock::xmx::preada::g_slowest_prepare_ms.load(std::memory_order_relaxed); slow>=mfgunlock::xmx::preada::kSlowPrepareMs)
       mfgunlock::ui::Description(("Preparing NVIDIA's kernels for this GPU took "+std::to_string((slow+500)/1000)+" s during the game's start. This is expected on RTX 20 and happens on every start.").c_str());
+    // 1.9.0: no temporal correction in any provider: 3x and above are not smoother than 2x.
+    if(!xmx_selected && mfgunlock::xmx::preada::g_temporal_applied.load(std::memory_order_relaxed)==0 &&
+       mfgunlock::xmx::preada::g_temporal_missing.load(std::memory_order_relaxed)!=0)
+      mfgunlock::ui::Notice("The temporal correction could not be applied to NVIDIA's frame generation file, so 3x and above are not smoother than 2x on this GPU. Use 2x, or XMX.");
     const int64_t created=mfgunlock::xmx::preada::g_create_result.load();
     if(!xmx_selected && created>=0 && NVSDK_NGX_FAILED(static_cast<NVSDK_NGX_Result>(created))) {
       mfgunlock::ui::ProblemCard problem("##dlssg_pre_ada","NVIDIA's frame generation could not start on this GPU",mfgunlock::ui::Warning);

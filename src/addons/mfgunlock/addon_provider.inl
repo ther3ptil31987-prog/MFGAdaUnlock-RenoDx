@@ -328,10 +328,12 @@ void RememberDlssgModule(HMODULE mod) {
   if (mod == nullptr || mod == g_self_module) return;
   if (std::find(g_dlssg_modules.begin(), g_dlssg_modules.end(), mod) == g_dlssg_modules.end()) {
     g_dlssg_modules.push_back(mod);
-    // RTX 20/30 with XMX only: before the NGX core reads the provider's minimum.
+    // RTX 20/30 only: before the NGX core reads the provider's minimum.
     mfgunlock::xmx::preada::LowerProviderMinimum(mod);
-    // 1.8.7: NVIDIA's kernels for this GPU, before the NGX core creates anything.
+    // 1.8.7: NVIDIA's kernels for this GPU, before the NGX core creates anything;
+    // 1.9.0: then the temporal correction on the retargeted kernel.
     mfgunlock::xmx::preada::RetargetProvider(mod);
+    mfgunlock::xmx::preada::ApplyTemporalCorrection(mod);
   }
 }
 
