@@ -380,6 +380,46 @@ bool EnsureEarlyLoadEntry() {
   return HasEarlyLoadEntry();
 }
 
+// 1.9.0: RTX 20/30 need the addon loaded before the game calls slInit, so it
+// adds itself to LoadFromDllMain once, at start, when ReShade.ini beside
+// ReShade's module exists and can be written. [DLSSG] AutoEarlyLoad=0 in
+// MFGAdaUnlock.ini turns this off; the panel button stays.
+enum class AutoEarlyLoad : int { kNotNeeded = 0, kAdded = 1, kNotWritable = 2, kTurnedOff = 3 };
+std::atomic<int> g_auto_early_load{0};
+bool ReShadeIniWritable() {
+  const HMODULE reshade_module = reshade::internal::get_reshade_module_handle();
+  wchar_t path[MAX_PATH]{};
+  const DWORD length = reshade_module ? GetModuleFileNameW(reshade_module, path, MAX_PATH) : 0;
+  if (length == 0 || length >= MAX_PATH) return false;
+  const auto ini = std::filesystem::path(path).parent_path() / L"ReShade.ini";
+  // OPEN_EXISTING with write access: nothing is created or truncated.
+  const HANDLE file = CreateFileW(ini.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  CloseHandle(file);
+  return true;
+}
+void TryAutoEarlyLoad() {
+  if (!mfgunlock::xmx::preada::Admitted() || HasEarlyLoadEntry()) return;
+  if (GetPrivateProfileIntW(L"DLSSG", L"AutoEarlyLoad", 1,
+                            (mfgunlock::backend::Directory() / L"MFGAdaUnlock.ini").c_str()) == 0) {
+    g_auto_early_load.store(static_cast<int>(AutoEarlyLoad::kTurnedOff), std::memory_order_release);
+    reshade::log::message(reshade::log::level::warning,
+        "mfgunlock: RTX 20/30 without ADDON.LoadFromDllMain (automatic early loading is off in MFGAdaUnlock.ini); games that call slInit before normal addon loading keep DLSS Frame Generation locked.");
+    return;
+  }
+  if (ReShadeIniWritable() && EnsureEarlyLoadEntry()) {
+    g_auto_early_load.store(static_cast<int>(AutoEarlyLoad::kAdded), std::memory_order_release);
+    reshade::log::message(reshade::log::level::info,
+        ("mfgunlock: RTX 20/30: added " + SelfModuleFileName() +
+         " to ADDON.LoadFromDllMain in ReShade.ini, so it loads before the game starts Streamline. It applies from the next start. [DLSSG] AutoEarlyLoad=0 in MFGAdaUnlock.ini turns this off.").c_str());
+    return;
+  }
+  g_auto_early_load.store(static_cast<int>(AutoEarlyLoad::kNotWritable), std::memory_order_release);
+  reshade::log::message(reshade::log::level::warning,
+      "mfgunlock: RTX 20/30 without ADDON.LoadFromDllMain, and ReShade.ini could not be updated; games that call slInit before normal addon loading keep DLSS Frame Generation locked. Use the overlay button or add the addon manually, then restart.");
+}
+
 const char* RenderApiName(DetectedRenderApi api) {
   switch (api) {
     case DetectedRenderApi::kD3D11:
@@ -1369,11 +1409,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           std::memory_order_release);
       if (mfgunlock::drsoverride::g_max_multiplier.load(std::memory_order_relaxed) != 0)
         mfgunlock::drsoverride::TryInstall();
-      if (mfgunlock::xmx::preada::Admitted() && !HasEarlyLoadEntry()) {
-        reshade::log::message(
-            reshade::log::level::warning,
-            "mfgunlock: RTX 20/30 without ADDON.LoadFromDllMain; games that call slInit before normal addon loading keep DLSS Frame Generation locked. Use the overlay button and restart.");
-      }
+      TryAutoEarlyLoad();
       mfgunlock::loadhook::g_on_dlssg_plugin_loaded = ProcessLoadedStreamlineDlssgPlugin;
       mfgunlock::loadhook::g_on_ngx_loaded = []() {
         TryInstallPresetHook();

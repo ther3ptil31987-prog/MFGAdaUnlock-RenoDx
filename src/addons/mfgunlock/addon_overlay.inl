@@ -2764,6 +2764,9 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
         :"RTX 20/30, experimental: NVIDIA's runtime is admitted on this GPU and its generator runs kernels prepared for it. Choose the multiplier in the game's menu.");
     // 1.8.5: Streamline drops DLSS-G inside slInit on these GPUs; the
     // admission reaches slInit only when the addon loads early.
+    if(g_auto_early_load.load(std::memory_order_acquire)==static_cast<int>(AutoEarlyLoad::kAdded) &&
+       !mfgunlock::xmx::preada::g_init_observed.load(std::memory_order_acquire))
+      mfgunlock::ui::Notice("The addon added itself to ReShade's early loading (LoadFromDllMain), which RTX 20/30 need in some games. Restart the game once. [DLSSG] AutoEarlyLoad=0 in MFGAdaUnlock.ini turns this off.",mfgunlock::ui::Muted);
     if(!mfgunlock::xmx::preada::g_init_observed.load(std::memory_order_acquire) && !HasEarlyLoadEntry()) {
       mfgunlock::ui::Notice("This game started Streamline before the addon loaded, so DLSS Frame Generation may stay locked in its menu. Enable early loading and restart the game.");
       static int early_state=0;  // 0 not tried, 1 saved, 2 failed
