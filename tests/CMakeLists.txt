@@ -266,6 +266,18 @@ target_include_directories(drs_report_tests SYSTEM PRIVATE
   $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
 add_test(NAME drs_report_tests COMMAND drs_report_tests)
 set_tests_properties(drs_report_tests PROPERTIES SKIP_RETURN_CODE 77)
+# 1.9.0: nefh's own unit tests for the vendored provider preparation (MIT,
+# MFGAmpereUnlock-RenoDx contrib/validation), namespace adjusted. Asserts stay
+# on in Release: they are the oracle.
+foreach(nefh_test ptx_retarget_test cubin_trial_test)
+  add_executable(ampere_${nefh_test} ampere/${nefh_test}.cpp)
+  target_compile_definitions(ampere_${nefh_test} PRIVATE NOMINMAX)
+  target_compile_options(ampere_${nefh_test} PRIVATE /UNDEBUG)
+  target_include_directories(ampere_${nefh_test} SYSTEM PRIVATE
+    $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+  add_test(NAME ampere_${nefh_test} COMMAND ampere_${nefh_test})
+  set_tests_properties(ampere_${nefh_test} PROPERTIES TIMEOUT 120)
+endforeach()
 add_executable(ngx_param_vtable_tests ngx_param_vtable_tests.cpp)
 add_test(NAME ngx_param_vtable_tests COMMAND ngx_param_vtable_tests)
 add_executable(module_scan_tests module_scan_tests.cpp)
