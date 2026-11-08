@@ -50,6 +50,27 @@ int main() {
     CHECK(blackwell.AllBlackwell() && !blackwell.AllPreAda());
     CHECK(!Census{}.AllPreAda());
   }
+  // 1.8.7: the pre-Ada family picks the PTX target (sm_75 or sm_86).
+  CHECK(ClassifyPreAdaDeviceId(0x2489) == PreAdaFamily::kAmpere);   // 3060 Ti
+  CHECK(ClassifyPreAdaDeviceId(0x2204) == PreAdaFamily::kAmpere);   // 3090
+  CHECK(ClassifyPreAdaDeviceId(0x2560) == PreAdaFamily::kAmpere);   // 3060 laptop
+  CHECK(ClassifyPreAdaDeviceId(0x1F02) == PreAdaFamily::kTuring);   // 2070
+  CHECK(ClassifyPreAdaDeviceId(0x1E84) == PreAdaFamily::kTuring);   // 2070 SUPER
+  CHECK(ClassifyPreAdaDeviceId(0x2184) == PreAdaFamily::kTuring);   // GTX 1660
+  CHECK(ClassifyPreAdaDeviceId(0x20B0) == PreAdaFamily::kNone);     // A100 (sm_80)
+  CHECK(ClassifyPreAdaDeviceId(0x1B80) == PreAdaFamily::kNone);     // GTX 1080
+  CHECK(ClassifyPreAdaDeviceId(0x2684) == PreAdaFamily::kNone);     // 4090
+  {
+    Census one;
+    one.AddDevice(0x2489);
+    CHECK(one.SinglePreAdaFamily() == PreAdaFamily::kAmpere);
+    one.AddDevice(0x1F02);  // a Turing beside it: no single target
+    CHECK(one.SinglePreAdaFamily() == PreAdaFamily::kNone);
+    Census turing;
+    turing.AddDevice(0x2184);
+    CHECK(turing.SinglePreAdaFamily() == PreAdaFamily::kTuring);
+    CHECK(Census{}.SinglePreAdaFamily() == PreAdaFamily::kNone);
+  }
 
   uint32_t id = 0;
   CHECK(ParseNvidiaDeviceId(L"pci\\ven_10de&dev_2c05", id) && id == 0x2C05);

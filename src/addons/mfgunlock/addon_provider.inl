@@ -71,10 +71,14 @@ std::vector<GamePresetHints> g_game_preset_hints;
 
 NVSDK_NGX_Result NVSDK_CONV HookedCreateFeature(ID3D12GraphicsCommandList* list, NVSDK_NGX_Feature feature,
                                                 NVSDK_NGX_Parameter* parameters, NVSDK_NGX_Handle** handle) {
-  // 1.8.3, RTX 20/30 with XMX: whether NVIDIA's runtime created the feature
-  // there, for the panel. Nothing in the call changes.
+  // 1.8.3, RTX 20/30 (1.9.0: with XMX or NVIDIA's generator): whether
+  // NVIDIA's runtime created the feature there, for the panel. Nothing in the
+  // call changes.
   if (feature == NVSDK_NGX_Feature_FrameGeneration && g_real_create_feature != nullptr &&
-      mfgunlock::xmx::preada::Engaged()) {
+      mfgunlock::xmx::preada::Admitted()) {
+    // 1.8.7: CUDA may keep pointers into the prepared containers from here on,
+    // so nefh's preparation no longer rewrites a provider after this.
+    mfgunlock::ampere::provider::g_create_seen.store(true, std::memory_order_release);
     const NVSDK_NGX_Result result = g_real_create_feature(list, feature, parameters, handle);
     mfgunlock::xmx::preada::ObserveCreate(result);
     return result;
@@ -125,7 +129,7 @@ bool EnsureResident();
 
 bool PresetHookWanted() {
   return mfgunlock::dlsspreset::g_selected.load(std::memory_order_relaxed) != 0 ||
-         mfgunlock::xmx::preada::Engaged();
+         mfgunlock::xmx::preada::Admitted();
 }
 
 void TryInstallPresetHook() {
@@ -324,8 +328,12 @@ void RememberDlssgModule(HMODULE mod) {
   if (mod == nullptr || mod == g_self_module) return;
   if (std::find(g_dlssg_modules.begin(), g_dlssg_modules.end(), mod) == g_dlssg_modules.end()) {
     g_dlssg_modules.push_back(mod);
-    // RTX 20/30 with XMX only: before the NGX core reads the provider's minimum.
+    // RTX 20/30 only: before the NGX core reads the provider's minimum.
     mfgunlock::xmx::preada::LowerProviderMinimum(mod);
+    // 1.8.7: NVIDIA's kernels for this GPU, before the NGX core creates anything;
+    // 1.9.0: then the temporal correction on the retargeted kernel.
+    mfgunlock::xmx::preada::RetargetProvider(mod);
+    mfgunlock::xmx::preada::ApplyTemporalCorrection(mod);
   }
 }
 
@@ -453,11 +461,25 @@ void PatchArchGatesInModule(HMODULE mod) {
   const bool planned = profile && session && mfgunlock::binarypatch::Plan(mod, *profile, transaction.writes);
   // RTX 20/30 with XMX only; RTX 40/50 keep the Ada threshold written above.
   if (planned) mfgunlock::xmx::preada::LowerGateWrites(transaction.writes);
-  if (!planned || !mfgunlock::binarypatch::Apply(mod, transaction.writes)) {
+  const bool applied = planned && mfgunlock::binarypatch::Apply(mod, transaction.writes);
+  if (!applied) {
     if (mfgunlock::pointerredirect::Pending(transaction.writes)) g_gate_transactions.push_back(std::move(transaction));
     g_gate_rejected_modules.push_back(mod);
-    reshade::log::message(reshade::log::level::warning,
-        "mfgunlock: architecture gate refused: executable identity, instruction preflight or transaction failed.");
+    // 1.9.0: which step refused, and in which file (an RTX 3080 report showed
+    // only the generic line for a provider whose gate plans offline).
+    const char* step = session == nullptr                           ? "no module session"
+                       : !mfgunlock::modulesession::Validate(*session) ? "executable identity changed"
+                       : profile == nullptr                          ? "no exact or generic profile for this file"
+                       : !planned                                    ? "instruction preflight failed"
+                                                                     : "write transaction failed";
+    char path[MAX_PATH] = {};
+    GetModuleFileNameA(mod, path, MAX_PATH);
+    const auto v = mfgunlock::runtimeversion::FromModule(mod);
+    std::ostringstream refusal;
+    refusal << "mfgunlock: architecture gate refused for " << path;
+    if (v.valid) refusal << " (" << v.major << '.' << v.minor << '.' << v.patch << '.' << v.revision << ")";
+    refusal << ": " << step << ".";
+    reshade::log::message(reshade::log::level::warning, refusal.str().c_str());
     return;
   }
   for (const auto& write : transaction.writes) g_gate_sites.push_back({mod, write.address, write.original[0]});
@@ -608,6 +630,7 @@ bool ModuleHasTemporalPatch(HMODULE mod) {
 }
 
 bool PatchBlackwellInModule(HMODULE mod) {
+  if (mfgunlock::xmx::preada::SkipQualityPatches()) return false;
   if (!mfgunlock::modulesession::Acquire(mod)) return false;
   if (mod == nullptr || ModuleHasTemporalPatch(mod)) return false;
   std::vector<mfgunlock::blackwell::Patch> patches;
@@ -707,6 +730,7 @@ void LogThinGeometryMechanism(
 }
 
 void PatchThinGeometryInModule(HMODULE mod) {
+  if (mfgunlock::xmx::preada::SkipQualityPatches()) return;
   const bool native_blackwell = NativeBlackwellLeavesProviderAlone();
   if (native_blackwell && !g_rtx50_quality_fixes.load(std::memory_order_relaxed))
     return;
@@ -869,6 +893,7 @@ void PatchThinGeometryInModule(HMODULE mod) {
 }
 
 void PatchMidpointInModule(HMODULE mod) {
+  if (mfgunlock::xmx::preada::SkipQualityPatches()) return;
   if (!mfgunlock::modulesession::Acquire(mod)) return;
   if (mod == nullptr) return;
   if (ModuleHasTemporalPatch(mod)) return;
@@ -903,6 +928,7 @@ void PatchMidpointInModule(HMODULE mod) {
 }
 
 void PatchTemporalInModule(HMODULE mod) {
+  if (mfgunlock::xmx::preada::SkipQualityPatches()) return;
   if (mod == nullptr || ModuleHasTemporalPatch(mod)) return;
   if (NativeBlackwellLeavesProviderAlone()) return;
   // NGX may map a DriverStore fallback only long enough to inspect it and then
@@ -976,6 +1002,10 @@ void RunProviderMaintenance() {
   }
   version_candidates = g_gate_modules;
   const std::vector<HMODULE> providers = g_dlssg_modules;
+  // 1.8.7: RTX 50 leaves every provider unpatched, so g_gate_modules stays
+  // empty and Dynamic MFG never saw a provider version ("NVIDIA's frame
+  // generation file has not loaded yet"). Report every mapped provider there.
+  if (mfgunlock::gpuarch::AllNvidiaAdaptersBlackwell()) version_candidates = providers;
   ReleaseSRWLockExclusive(&g_provider_maintenance_lock);
   // After the gates, outside the lock. Before the addon is resident this only
   // remembers the providers; a preloaded one arrives only here (DL2's .bin).
@@ -1042,6 +1072,107 @@ DriverOnlyProvider CheckDriverOnlyProvider() {
             .c_str());
   }
   return result;
+}
+
+// 1.9.0: the frame generation chain, for the panel and the support report.
+// Never blocks: a busy maintenance lock returns the last answer.
+// Each link also carries a health, for the card's colour.
+enum class ChainHealth { kUnknown, kOk, kWarn, kFail };
+struct FrameGenChain {
+  std::string streamline;  // sl.dlss_g.dll source and version
+  std::string provider;    // nvngx_dlssg source(s) and version
+  std::string gate;
+  std::string slinit;
+  std::string dynamic;
+  ChainHealth streamline_health = ChainHealth::kUnknown, provider_health = ChainHealth::kUnknown,
+              gate_health = ChainHealth::kUnknown, slinit_health = ChainHealth::kUnknown,
+              dynamic_health = ChainHealth::kUnknown;
+};
+std::string ChainVersion(HMODULE module) {
+  const auto v = mfgunlock::runtimeversion::FromModule(module);
+  if (!v.valid) return std::string();
+  return " " + std::to_string(v.major) + "." + std::to_string(v.minor) + "." + std::to_string(v.patch) + "." +
+         std::to_string(v.revision);
+}
+FrameGenChain DescribeFrameGenChain() {
+  static SRWLOCK lock = SRWLOCK_INIT;
+  static FrameGenChain cached;
+  static uint64_t last_ms = 0;
+  if (!TryAcquireSRWLockExclusive(&lock)) return {};
+  struct Unlock { ~Unlock() { ReleaseSRWLockExclusive(&lock); } } unlock;
+  const uint64_t now = GetTickCount64();
+  if (last_ms != 0 && now - last_ms < 1000) return cached;  // file versions: once a second at most
+  last_ms = now;
+  FrameGenChain chain;
+  wchar_t path[MAX_PATH]{};
+  HMODULE plugin = mfgunlock::framecount::g_active_streamline_module.load(std::memory_order_acquire);
+  if (plugin == nullptr) plugin = GetModuleHandleW(L"sl.dlss_g.dll");
+  if (plugin != nullptr && GetModuleFileNameW(plugin, path, MAX_PATH) != 0) {
+    chain.streamline = std::string(mfgunlock::fgchain::Name(mfgunlock::fgchain::ClassifyStreamline(path))) +
+                       ChainVersion(plugin);
+    chain.streamline_health = ChainHealth::kOk;
+  } else if (GetModuleHandleW(L"sl.interposer.dll") != nullptr) {
+    chain.streamline = "Streamline loaded; DLSS-G plugin not loaded";
+    chain.streamline_health = ChainHealth::kWarn;
+  } else {
+    chain.streamline = "unknown (Streamline not loaded yet)";
+  }
+  std::vector<HMODULE> providers;
+  bool have_providers = false;
+  if (TryAcquireSRWLockShared(&g_provider_maintenance_lock)) {
+    providers = g_dlssg_modules;
+    ReleaseSRWLockShared(&g_provider_maintenance_lock);
+    have_providers = true;
+  }
+  if (!have_providers) return cached;
+  bool driver_only = !providers.empty();
+  for (HMODULE module : providers) {
+    if (GetModuleFileNameW(module, path, MAX_PATH) == 0) continue;
+    const auto source = mfgunlock::fgchain::ClassifyProvider(path);
+    if (source != mfgunlock::fgchain::Source::kDriver) driver_only = false;
+    if (!chain.provider.empty()) chain.provider += "; ";
+    chain.provider += std::string(mfgunlock::fgchain::Name(source)) + ChainVersion(module);
+  }
+  if (chain.provider.empty()) chain.provider = "unknown (not loaded yet)";
+  else chain.provider_health = driver_only ? ChainHealth::kWarn : ChainHealth::kOk;
+  if (mfgunlock::gpuarch::AllNvidiaAdaptersBlackwell()) {
+    chain.gate = "not needed (RTX 50)";
+    chain.gate_health = ChainHealth::kOk;
+  } else if (g_gate_patched.load(std::memory_order_acquire)) {
+    chain.gate = "open in " + std::to_string(g_gate_modules.size()) + " file(s)";
+    chain.gate_health = ChainHealth::kOk;
+  } else if (!providers.empty()) {
+    chain.gate = "not open (2x at most)";
+    chain.gate_health = ChainHealth::kFail;
+  } else {
+    chain.gate = "unknown";
+  }
+  if (mfgunlock::framecount::internal::g_init_seen.load(std::memory_order_acquire)) {
+    chain.slinit = "seen by the addon";
+    chain.slinit_health = ChainHealth::kOk;
+  } else if (GetModuleHandleW(L"sl.interposer.dll") != nullptr) {
+    const bool needed = mfgunlock::xmx::preada::Admitted() ||
+                        mfgunlock::drsoverride::g_max_multiplier.load(std::memory_order_relaxed) != 0;
+    chain.slinit = std::string(mfgunlock::framecount::internal::g_real_init != nullptr
+                                   ? "not called since the addon loaded"
+                                   : "ran before the addon loaded (or not hooked)") +
+                   (needed ? "" : "; not needed here");
+    // Only RTX 20/30 and the Dynamic MFG ceiling depend on it.
+    chain.slinit_health = needed ? ChainHealth::kWarn : ChainHealth::kUnknown;
+  } else {
+    chain.slinit = "unknown (Streamline not loaded yet)";
+  }
+  if (!mfgunlock::framecount::g_dynamic_support_seen.load(std::memory_order_acquire)) {
+    chain.dynamic = "unknown";
+  } else if (mfgunlock::framecount::g_dynamic_supported.load(std::memory_order_relaxed)) {
+    chain.dynamic = "supported";
+    chain.dynamic_health = ChainHealth::kOk;
+  } else {
+    chain.dynamic = "not supported";
+    chain.dynamic_health = ChainHealth::kWarn;
+  }
+  cached = chain;
+  return chain;
 }
 
 void RestoreMidpoint() {

@@ -475,6 +475,71 @@ void AppendInputDiagnosticsReport(std::ostringstream& report) {
   }
 }
 
+// 1.9.0: where each link of the frame generation chain came from.
+std::string FrameGenChainGenerator(ChainHealth* health = nullptr) {
+  ChainHealth ignored;
+  ChainHealth& out = health ? *health : ignored;
+  if (!mfgunlock::xmx::generator::Enabled()) {
+    const int64_t created = mfgunlock::xmx::preada::g_create_result.load();
+    if (mfgunlock::xmx::preada::Admitted() && created >= 0 && NVSDK_NGX_FAILED(static_cast<NVSDK_NGX_Result>(created))) {
+      out = ChainHealth::kFail;
+      return "NVIDIA DLSS-G could not be created on this GPU";
+    }
+    out = ChainHealth::kOk;
+    return mfgunlock::xmx::preada::Admitted() ? "NVIDIA DLSS-G (kernels prepared for RTX 20/30)" : "NVIDIA DLSS-G";
+  }
+  const auto report = mfgunlock::xmx::generator::Snapshot();
+  if (!report.failure.empty() && !report.generating) {
+    out = ChainHealth::kFail;
+    return "XMX selected; not running: " + report.failure;
+  }
+  out = report.generating ? ChainHealth::kOk : ChainHealth::kWarn;
+  return report.generating ? "XMX (Intel's model) generating" : report.hooked ? "XMX ready" : "XMX selected; not started";
+}
+ImVec4 ChainColor(ChainHealth health) {
+  switch (health) {
+    case ChainHealth::kOk: return mfgunlock::ui::Accent;  // the panel's colour for a good value
+    case ChainHealth::kWarn: return mfgunlock::ui::Warning;
+    case ChainHealth::kFail: return mfgunlock::ui::Danger;
+    default: return mfgunlock::ui::Muted;
+  }
+}
+std::string FrameGenChainReport() {
+  const auto chain = DescribeFrameGenChain();
+  if (chain.streamline.empty()) return std::string();
+  return "chain_streamline=" + chain.streamline + "\nchain_provider=" + chain.provider + "\nchain_gate=" + chain.gate +
+         "\nchain_slinit=" + chain.slinit + "\nchain_dynamic=" + chain.dynamic + "\nchain_generator=" +
+         FrameGenChainGenerator() + "\n";
+}
+void DrawFrameGenChainCard() {
+  static FrameGenChain shown;
+  if (const auto chain = DescribeFrameGenChain(); !chain.streamline.empty()) shown = chain;
+  if (shown.streamline.empty()) return;
+  // 1.9.0: closed by default, like "Advanced pacing (testing)".
+  if (!ImGui::CollapsingHeader("Frame generation chain")) return;
+  mfgunlock::ui::Description("Where each part of frame generation came from in this game.");
+  mfgunlock::ui::Card card("##fg_chain_card");
+  using mfgunlock::ui::Readout;
+  Readout("##chain_streamline", "Streamline DLSS-G", shown.streamline.c_str(),
+          "sl.dlss_g.dll: the game's own copy, or one the NVIDIA app supplies (DLSS Override or its automatic update).",
+          ChainColor(shown.streamline_health));
+  Readout("##chain_provider", "Frame generation file", shown.provider.c_str(),
+          "nvngx_dlssg: the game's copy, the NVIDIA app's, or the driver's built-in one (2x only).",
+          ChainColor(shown.provider_health));
+  Readout("##chain_gate", "Multi-frame gate", shown.gate.c_str(),
+          "Whether the addon opened NVIDIA's multi-frame check in that file. Without it the game offers 2x at most.",
+          ChainColor(shown.gate_health));
+  Readout("##chain_slinit", "Streamline start", shown.slinit.c_str(),
+          "Whether the addon saw the game start Streamline. RTX 20/30 and the Dynamic MFG ceiling need this; some games need early loading for it.",
+          ChainColor(shown.slinit_health));
+  Readout("##chain_dynamic", "Dynamic MFG", shown.dynamic.c_str(),
+          "Whether NVIDIA's runtime reports Dynamic MFG support. Unknown until the game asks.",
+          ChainColor(shown.dynamic_health));
+  ChainHealth generator_health = ChainHealth::kUnknown;
+  const std::string generator = FrameGenChainGenerator(&generator_health);
+  Readout("##chain_generator", "Generator", generator.c_str(), nullptr, ChainColor(generator_health));
+}
+
 void DrawInputDiagnosticsPanel() {
   if (!ImGui::TreeNode("Streamline input resources (read-only)")) return;
   bool enabled = mfgunlock::inputdiag::g_enabled.load(std::memory_order_relaxed);
@@ -2649,7 +2714,7 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
   }
   const char* xmx_waiting=xmx_bypassed?"NVIDIA is generating":xmx_report.evaluating?"Waiting for frames":"Paused or off in the game";
   const auto xmx_support_report=[&] {
-    std::string report="MFG Unlock 1.8.6\nmethod=";
+    std::string report="MFG Unlock 1.9.0\nmethod=";
     report+=xmx_selected?"XMX":"DLSS-G";
     report+=std::string("\nrenderer=")+RenderApiName(render_api)+"\nstatus="+player_state;
     if(xmx_selected) {
@@ -2658,11 +2723,32 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
           +"\nxmx_idle="+mfgunlock::xmx::policy::IdleText(xmx_report.idle)+"\nxmx_failure="+xmx_report.failure
           +"\nxmx_frames_limit="+std::to_string(xmx_report.framesLimit);
     }
-    return report+"\n"+mfgunlock::system::Report();
+    report+=std::string("\npre_ada_admitted=")+(mfgunlock::xmx::preada::Admitted()?"1":"0");
+    // 1.9.0: the driver profile, read only, and only now: this runs when
+    // the report is saved or copied.
+    return report+"\n"+FrameGenChainReport()+mfgunlock::drsreport::Describe()+mfgunlock::system::Report();
   };
   mfgunlock::ui::Hero(multiplier_text.c_str(),xmx_running?"XMX":"DLSS-G",RenderApiName(render_api),
       xmx_failed?"Frame generation stopped":xmx_running?(xmx_report.generating?"Generating frames":xmx_waiting):player_state,
       xmx_running?xmx_report.generating:mfg_live);
+  // 1.9.0: another MFG Unlock file beside this one, or an early-loading
+  // entry that names a file other than this one.
+  if(const auto copies=CheckAddonCopies(); !copies.others.empty() || !copies.stale_early.empty()) {
+    mfgunlock::ui::ProblemCard problem("##addon_copies","More than one MFG Unlock file",mfgunlock::ui::Warning);
+    std::string text;
+    if(!copies.others.empty()) {
+      text="ReShade loads every addon file in this folder, and these copies fight over the same hooks: ";
+      for(size_t i=0;i<copies.others.size();++i) text+=(i?", ":"")+copies.others[i];
+      text+=". Keep only "+SelfModuleFileName()+" and delete the others while the game is closed.";
+    }
+    if(!copies.stale_early.empty()) {
+      if(!text.empty()) text+="\n";
+      text+="ReShade.ini loads early a file that is not this one: ";
+      for(size_t i=0;i<copies.stale_early.size();++i) text+=(i?", ":"")+copies.stale_early[i];
+      text+=". Replace it with "+SelfModuleFileName()+" under [ADDON] LoadFromDllMain.";
+    }
+    ImGui::TextWrapped("%s",text.c_str());
+  }
   // 1.8.5: only the driver's built-in provider is in use (2x at most).
   if(const auto driver_only=CheckDriverOnlyProvider(); driver_only.active) {
     mfgunlock::ui::ProblemCard problem("##driver_only_provider","Only 2x: NVIDIA is using the driver's built-in frame generation",mfgunlock::ui::Warning);
@@ -2675,26 +2761,6 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
         "The XMX mode replaces NVIDIA's generator with Intel's model. Presentation and the game's settings remain DLSS-G's.",xmx_report.generating?mfgunlock::ui::Accent:mfgunlock::ui::Muted);
     if(mfgunlock::framecount::g_game_dynamic_replaced.load(std::memory_order_relaxed))
       mfgunlock::ui::Description("The game asked for Dynamic MFG, which XMX does not support; a fixed multiplier is used.");
-    if(mfgunlock::xmx::preada::Engaged()) {
-      mfgunlock::ui::Description("RTX 20/30, experimental: NVIDIA's runtime is admitted on this GPU so the game offers DLSS Frame Generation. Choose the multiplier in the game's menu.");
-      // 1.8.5: Streamline drops DLSS-G inside slInit on these GPUs; the
-      // admission reaches slInit only when the addon loads early.
-      if(!mfgunlock::xmx::preada::g_init_observed.load(std::memory_order_acquire)) {
-        if(!HasEarlyLoadEntry()) {
-          mfgunlock::ui::Notice("This game started Streamline before the addon loaded, so DLSS Frame Generation may stay locked in its menu. Enable early loading and restart the game.");
-          static int early_state=0;  // 0 not tried, 1 saved, 2 failed
-          mfgunlock::ui::ButtonRow early(1);
-          if(early("Enable early addon loading","Adds this addon to ReShade's LoadFromDllMain list in ReShade.ini, so it loads before the game starts Streamline. It applies after a game restart.")) {
-            early_state=EnsureEarlyLoadEntry()?1:2;
-            reshade::log::message(early_state==1?reshade::log::level::info:reshade::log::level::error,
-                early_state==1?"mfgunlock: added this addon to ADDON.LoadFromDllMain for the pre-Ada admission; restart required."
-                              :"mfgunlock: could not update ADDON.LoadFromDllMain; add renodx-mfgunlock.addon64 manually and restart.");
-          }
-          if(early_state==1) mfgunlock::ui::Description("Saved. Restart the game.");
-          else if(early_state==2) mfgunlock::ui::Description("ReShade.ini could not be updated. Add renodx-mfgunlock.addon64 to LoadFromDllMain under [ADDON] and restart.");
-        }
-      }
-    }
     if(!xmx_d3d12) mfgunlock::ui::Notice("XMX only runs in Direct3D 12 games, so NVIDIA's generator is producing the frames.");
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
     // 1.8.3: RTX 20 and 30. NVIDIA's runtime is admitted on this GPU so the
@@ -2741,6 +2807,42 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     }
     if(xmx_report.partiallyHooked) mfgunlock::ui::Notice("XMX could not hook every copy of NVIDIA's generator, so NVIDIA's model may still produce some frames.");
     if(xmx_report.framesLimit!=0) mfgunlock::ui::Notice(("This XMX model produces "+std::to_string(xmx_report.framesLimit)+" generated frame(s) per real frame; higher multipliers repeat it.").c_str());
+  }
+  // 1.9.0: RTX 20/30 with XMX or with NVIDIA's own generator.
+  if(mfgunlock::xmx::preada::Admitted()) {
+    mfgunlock::ui::Description(xmx_selected
+        ?"RTX 20/30, experimental: NVIDIA's runtime is admitted on this GPU so the game offers DLSS Frame Generation, and XMX generates the frames. Choose the multiplier in the game's menu."
+        :"RTX 20/30, experimental: NVIDIA's runtime is admitted on this GPU and its generator runs kernels prepared for it. Choose the multiplier in the game's menu.");
+    // 1.8.5: Streamline drops DLSS-G inside slInit on these GPUs; the
+    // admission reaches slInit only when the addon loads early.
+    if(g_auto_early_load.load(std::memory_order_acquire)==static_cast<int>(AutoEarlyLoad::kAdded) &&
+       !mfgunlock::xmx::preada::g_init_observed.load(std::memory_order_acquire))
+      mfgunlock::ui::Notice("The addon added itself to ReShade's early loading (LoadFromDllMain), which RTX 20/30 need in some games. Restart the game once. [DLSSG] AutoEarlyLoad=0 in MFGAdaUnlock.ini turns this off.",mfgunlock::ui::Muted);
+    if(!mfgunlock::xmx::preada::g_init_observed.load(std::memory_order_acquire) && !HasEarlyLoadEntry()) {
+      mfgunlock::ui::Notice("This game started Streamline before the addon loaded, so DLSS Frame Generation may stay locked in its menu. Enable early loading and restart the game.");
+      static int early_state=0;  // 0 not tried, 1 saved, 2 failed
+      mfgunlock::ui::ButtonRow early(1);
+      if(early("Enable early addon loading","Adds this addon to ReShade's LoadFromDllMain list in ReShade.ini, so it loads before the game starts Streamline. It applies after a game restart.")) {
+        early_state=EnsureEarlyLoadEntry()?1:2;
+        reshade::log::message(early_state==1?reshade::log::level::info:reshade::log::level::error,
+            early_state==1?"mfgunlock: added this addon to ADDON.LoadFromDllMain for the pre-Ada admission; restart required."
+                          :"mfgunlock: could not update ADDON.LoadFromDllMain; add the addon manually and restart.");
+      }
+      if(early_state==1) mfgunlock::ui::Description("Saved. Restart the game.");
+      else if(early_state==2) mfgunlock::ui::Description("ReShade.ini could not be updated. Add this addon's file name to LoadFromDllMain under [ADDON] and restart.");
+    }
+    if(const uint64_t slow=mfgunlock::xmx::preada::g_slowest_prepare_ms.load(std::memory_order_relaxed); slow>=mfgunlock::xmx::preada::kSlowPrepareMs)
+      mfgunlock::ui::Description(("Preparing NVIDIA's kernels for this GPU took "+std::to_string((slow+500)/1000)+" s during the game's start. This is expected on RTX 20 and happens on every start.").c_str());
+    // 1.9.0: no temporal correction in any provider: 3x and above are not smoother than 2x.
+    if(!xmx_selected && mfgunlock::xmx::preada::g_temporal_applied.load(std::memory_order_relaxed)==0 &&
+       mfgunlock::xmx::preada::g_temporal_missing.load(std::memory_order_relaxed)!=0)
+      mfgunlock::ui::Notice("The temporal correction could not be applied to NVIDIA's frame generation file, so 3x and above are not smoother than 2x on this GPU. Use 2x, or XMX.");
+    const int64_t created=mfgunlock::xmx::preada::g_create_result.load();
+    if(!xmx_selected && created>=0 && NVSDK_NGX_FAILED(static_cast<NVSDK_NGX_Result>(created))) {
+      mfgunlock::ui::ProblemCard problem("##dlssg_pre_ada","NVIDIA's frame generation could not start on this GPU",mfgunlock::ui::Warning);
+      char code[16]; std::snprintf(code,sizeof(code),"0x%08x",static_cast<unsigned>(created));
+      ImGui::TextWrapped("NVIDIA's runtime refused to create frame generation here (%s). Try the XMX method, which replaces NVIDIA's generator with Intel's model, and send ReShade.log if this repeats.",code);
+    }
   }
   mfgunlock::ui::SessionNotice(xmx_support_report);
   mfgunlock::ui::SafeModeNotice();
@@ -3861,6 +3963,8 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
     mfgunlock::ui::Tooltip("Applies the validated quality fixes on RTX 50 cards too. Off by default.");
   }
   if (page == UiPage::Support) {
+    // 1.9.0: always available here, not only on a problem card.
+    mfgunlock::ui::SupportActions(xmx_support_report);
     ImGui::Spacing();
     ImGui::TextDisabled("SUPPORT DIAGNOSTICS");
     ImGui::Separator();
@@ -4909,7 +5013,9 @@ void OnRegisterOverlay(reshade::api::effect_runtime* runtime) {
 
   }
 
-  if (page == UiPage::General)
+  if (page == UiPage::General) {
     mfgunlock::ui::SystemCard(!sleep_status_available ? nullptr : driver_vsync_active && gsync_active ? "Driver VSync + G-SYNC" : driver_vsync_active ? "Driver VSync" : gsync_active ? "G-SYNC" : "Off", xmx_selected);
+    DrawFrameGenChainCard();
+  }
   mfgunlock::ui::Footer("Changes marked for restart keep the current session unchanged.");
 }

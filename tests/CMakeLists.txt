@@ -245,11 +245,45 @@ add_executable(dlss_preset_tests dlss_preset_tests.cpp)
 target_include_directories(dlss_preset_tests SYSTEM PRIVATE
   "${RENODX_SOURCE_DIR}/external/Streamline/include")
 add_test(NAME dlss_preset_tests COMMAND dlss_preset_tests)
+# 1.8.7: the vendored nefh RTX 20/30 provider preparation, on real providers.
+set(AMPERE_OFFLINE_PROVIDERS "" CACHE STRING "DLSS-G providers for the RTX 20/30 preparation test")
+add_executable(ampere_prepare_tests ampere_prepare_tests.cpp)
+target_compile_definitions(ampere_prepare_tests PRIVATE NOMINMAX)
+target_include_directories(ampere_prepare_tests SYSTEM PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+add_test(NAME ampere_prepare COMMAND ampere_prepare_tests ${AMPERE_OFFLINE_PROVIDERS})
+add_executable(preada_gate_tests preada_gate_tests.cpp)
+target_compile_definitions(preada_gate_tests PRIVATE NOMINMAX)
+target_include_directories(preada_gate_tests SYSTEM PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+add_test(NAME preada_gate COMMAND preada_gate_tests ${AMPERE_OFFLINE_PROVIDERS})
+set_tests_properties(preada_gate PROPERTIES SKIP_RETURN_CODE 77)
+set_tests_properties(ampere_prepare PROPERTIES SKIP_RETURN_CODE 77)
 add_executable(generic_gate_tests generic_gate_tests.cpp)
 add_test(NAME generic_gate_tests COMMAND generic_gate_tests)
 add_executable(gpu_arch_tests gpu_arch_tests.cpp)
 target_link_libraries(gpu_arch_tests PRIVATE advapi32)
 add_test(NAME gpu_arch_tests COMMAND gpu_arch_tests)
+add_executable(fg_chain_tests fg_chain_tests.cpp)
+add_test(NAME fg_chain_tests COMMAND fg_chain_tests)
+add_executable(drs_report_tests drs_report_tests.cpp)
+target_compile_definitions(drs_report_tests PRIVATE NOMINMAX)
+target_include_directories(drs_report_tests SYSTEM PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+add_test(NAME drs_report_tests COMMAND drs_report_tests)
+set_tests_properties(drs_report_tests PROPERTIES SKIP_RETURN_CODE 77)
+# 1.9.0: nefh's own unit tests for the vendored provider preparation (MIT,
+# MFGAmpereUnlock-RenoDx contrib/validation), namespace adjusted. Asserts stay
+# on in Release: they are the oracle.
+foreach(nefh_test ptx_retarget_test cubin_trial_test)
+  add_executable(ampere_${nefh_test} ampere/${nefh_test}.cpp)
+  target_compile_definitions(ampere_${nefh_test} PRIVATE NOMINMAX)
+  target_compile_options(ampere_${nefh_test} PRIVATE /UNDEBUG)
+  target_include_directories(ampere_${nefh_test} SYSTEM PRIVATE
+    $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+  add_test(NAME ampere_${nefh_test} COMMAND ampere_${nefh_test})
+  set_tests_properties(ampere_${nefh_test} PROPERTIES TIMEOUT 120)
+endforeach()
 add_executable(ngx_param_vtable_tests ngx_param_vtable_tests.cpp)
 add_test(NAME ngx_param_vtable_tests COMMAND ngx_param_vtable_tests)
 add_executable(module_scan_tests module_scan_tests.cpp)

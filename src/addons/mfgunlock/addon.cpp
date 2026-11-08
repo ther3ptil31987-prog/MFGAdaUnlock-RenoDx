@@ -142,6 +142,7 @@
 #include "xmx_hook.hpp"
 #include "preada_admission.hpp"
 #include "drs_override.hpp"
+#include "drs_report.hpp"
 #include "advanced_settings.hpp"
 
 #include <deps/imgui/imgui.h>
@@ -161,6 +162,7 @@
 #include "./validation_status.hpp"
 #include "./blackwell.hpp"
 #include "./gpu_arch.hpp"
+#include "./fg_chain.hpp"
 
 // The addon_*.inl fragments below are parts of this file (plan 6.2-6.6).
 #define MFGUNLOCK_ADDON_FRAGMENTS
@@ -377,6 +379,99 @@ bool EnsureEarlyLoadEntry() {
   reshade::set_config_value(nullptr, "ADDON", "LoadFromDllMain",
                             serialized.c_str(), serialized.size());
   return HasEarlyLoadEntry();
+}
+
+// 1.9.0: RTX 20/30 need the addon loaded before the game calls slInit, so it
+// adds itself to LoadFromDllMain once, at start, when ReShade.ini beside
+// ReShade's module exists and can be written. [DLSSG] AutoEarlyLoad=0 in
+// MFGAdaUnlock.ini turns this off; the panel button stays.
+enum class AutoEarlyLoad : int { kNotNeeded = 0, kAdded = 1, kNotWritable = 2, kTurnedOff = 3 };
+std::atomic<int> g_auto_early_load{0};
+bool ReShadeIniWritable() {
+  const HMODULE reshade_module = reshade::internal::get_reshade_module_handle();
+  wchar_t path[MAX_PATH]{};
+  const DWORD length = reshade_module ? GetModuleFileNameW(reshade_module, path, MAX_PATH) : 0;
+  if (length == 0 || length >= MAX_PATH) return false;
+  const auto ini = std::filesystem::path(path).parent_path() / L"ReShade.ini";
+  // 1.9.0 field fix: opening the file for writing failed on an RTX 3080 while
+  // ReShade itself saved it a moment later (the panel button). ReShade writes
+  // the file, so only what would stop it is checked: present, not read-only.
+  const DWORD attributes = GetFileAttributesW(ini.c_str());
+  if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+    const DWORD error = attributes == INVALID_FILE_ATTRIBUTES ? GetLastError() : 0;
+    reshade::log::message(reshade::log::level::warning,
+        ("mfgunlock: ReShade.ini next to ReShade is " +
+         std::string(attributes == INVALID_FILE_ATTRIBUTES ? "not readable (error " + std::to_string(error) + ")"
+                                                           : "read-only") +
+         "; automatic early loading skipped.").c_str());
+    return false;
+  }
+  return true;
+}
+void TryAutoEarlyLoad() {
+  if (!mfgunlock::xmx::preada::Admitted() || HasEarlyLoadEntry()) return;
+  if (GetPrivateProfileIntW(L"DLSSG", L"AutoEarlyLoad", 1,
+                            (mfgunlock::backend::Directory() / L"MFGAdaUnlock.ini").c_str()) == 0) {
+    g_auto_early_load.store(static_cast<int>(AutoEarlyLoad::kTurnedOff), std::memory_order_release);
+    reshade::log::message(reshade::log::level::warning,
+        "mfgunlock: RTX 20/30 without ADDON.LoadFromDllMain (automatic early loading is off in MFGAdaUnlock.ini); games that call slInit before normal addon loading keep DLSS Frame Generation locked.");
+    return;
+  }
+  if (ReShadeIniWritable() && EnsureEarlyLoadEntry()) {
+    g_auto_early_load.store(static_cast<int>(AutoEarlyLoad::kAdded), std::memory_order_release);
+    reshade::log::message(reshade::log::level::info,
+        ("mfgunlock: RTX 20/30: added " + SelfModuleFileName() +
+         " to ADDON.LoadFromDllMain in ReShade.ini, so it loads before the game starts Streamline. It applies from the next start. [DLSSG] AutoEarlyLoad=0 in MFGAdaUnlock.ini turns this off.").c_str());
+    return;
+  }
+  g_auto_early_load.store(static_cast<int>(AutoEarlyLoad::kNotWritable), std::memory_order_release);
+  reshade::log::message(reshade::log::level::warning,
+      "mfgunlock: RTX 20/30 without ADDON.LoadFromDllMain, and ReShade.ini could not be updated; games that call slInit before normal addon loading keep DLSS Frame Generation locked. Use the overlay button or add the addon manually, then restart.");
+}
+
+// 1.9.0: two MFG Unlock files side by side both load and fight over the same
+// hooks, and a LoadFromDllMain entry naming a file that is not this one never
+// loads early. Only *.addon64 files with "mfgunlock" in the name, in this
+// addon's folder; only while the panel is open, at most every 10 s.
+struct AddonCopies {
+  std::vector<std::string> others;       // other mfgunlock*.addon64 beside this one
+  std::vector<std::string> stale_early;  // LoadFromDllMain entries for another mfgunlock file
+};
+AddonCopies CheckAddonCopies() {
+  static AddonCopies cached;
+  static uint64_t last_ms = 0;
+  const uint64_t now = GetTickCount64();
+  if (last_ms != 0 && now - last_ms < 10000) return cached;
+  last_ms = now;
+  AddonCopies result;
+  const std::string self = SelfModuleFileName();
+  wchar_t path[MAX_PATH]{};
+  const DWORD length = GetModuleFileNameW(g_self_module, path, MAX_PATH);
+  if (length != 0 && length < MAX_PATH) {
+    std::error_code error;
+    const auto folder = std::filesystem::path(path).parent_path();
+    for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error)) {
+      if (!it->is_regular_file(error)) continue;
+      std::string name = it->path().filename().string();
+      std::string lower = name;
+      for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      if (lower.size() < 8 || lower.compare(lower.size() - 8, 8, ".addon64") != 0) continue;
+      if (lower.find("mfgunlock") == std::string::npos || _stricmp(name.c_str(), self.c_str()) == 0) continue;
+      result.others.push_back(name);
+    }
+  }
+  for (const auto& entry : ReadConfigArray("ADDON", "LoadFromDllMain")) {
+    const char* slash = std::strrchr(entry.c_str(), '\\');
+    const char* forward = std::strrchr(entry.c_str(), '/');
+    const char* name = slash == nullptr ? forward : (forward == nullptr || slash > forward ? slash : forward);
+    std::string base = name == nullptr ? entry : std::string(name + 1);
+    std::string lower = base;
+    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lower.find("mfgunlock") != std::string::npos && _stricmp(base.c_str(), self.c_str()) != 0)
+      result.stale_early.push_back(base);
+  }
+  cached = result;
+  return result;
 }
 
 const char* RenderApiName(DetectedRenderApi api) {
@@ -1219,7 +1314,7 @@ void LoadConfig() {
 extern "C" __declspec(dllexport) constexpr const char* NAME = "MFG Unlock";
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
-    "MFG Unlock 1.8.6 - DLSS-G and XeMFG backends";
+    "MFG Unlock 1.9.0 - DLSS-G and XeMFG backends";
 #elif defined(MFGUNLOCK_DUAL_BACKEND)
     "Dual Backend Preview X1 - official 1.4.5 base; DLSS-G and XeMFG via OptiScaler; gameplay validation pending";
 #elif defined(MFGUNLOCK_RELEASE_1_4_5)
@@ -1368,11 +1463,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           std::memory_order_release);
       if (mfgunlock::drsoverride::g_max_multiplier.load(std::memory_order_relaxed) != 0)
         mfgunlock::drsoverride::TryInstall();
-      if (mfgunlock::xmx::preada::Engaged() && !HasEarlyLoadEntry()) {
-        reshade::log::message(
-            reshade::log::level::warning,
-            "mfgunlock: pre-Ada XMX without ADDON.LoadFromDllMain; games that call slInit before normal addon loading keep DLSS Frame Generation locked. Use the overlay button and restart.");
-      }
+      TryAutoEarlyLoad();
       mfgunlock::loadhook::g_on_dlssg_plugin_loaded = ProcessLoadedStreamlineDlssgPlugin;
       mfgunlock::loadhook::g_on_ngx_loaded = []() {
         TryInstallPresetHook();
