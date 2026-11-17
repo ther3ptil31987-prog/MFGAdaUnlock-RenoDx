@@ -7,6 +7,9 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 # binary. Debug retains _DEBUG, assertions and /Od; iterator wrappers would
 # change those wire layouts. Do not silence the layout assertions with NDEBUG.
 add_compile_definitions($<$<CONFIG:Debug>:_ITERATOR_DEBUG_LEVEL=0>)
+# 1.10.0 (plan 5): the panel's language tables are UTF-8 (Japanese, Korean,
+# Chinese); every target that compiles the panel must read them as UTF-8.
+add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 set(RENODX_SOURCE_DIR "" CACHE PATH "Existing RenoDX checkout with dependencies")
 if(NOT EXISTS "${RENODX_SOURCE_DIR}/external/Streamline/include/sl.h")
   message(FATAL_ERROR "Set RENODX_SOURCE_DIR to the existing RenoDX build tree")
@@ -24,6 +27,33 @@ add_executable(support_files_tests support_files_tests.cpp)
 target_compile_definitions(support_files_tests PRIVATE NOMINMAX)
 target_compile_features(support_files_tests PRIVATE cxx_std_20)
 add_test(NAME support_files COMMAND support_files_tests)
+# 1.10.0 (plan 5): the panel's six languages.
+add_executable(i18n_tests i18n_tests.cpp)
+target_compile_definitions(i18n_tests PRIVATE NOMINMAX)
+add_test(NAME i18n COMMAND i18n_tests)
+# 1.10.0 (dashdogy A1): NGX frame generation requirements failures.
+add_executable(ngx_requirements_tests ngx_requirements_tests.cpp)
+target_compile_features(ngx_requirements_tests PRIVATE cxx_std_20)
+add_test(NAME ngx_requirements COMMAND ngx_requirements_tests)
+# 1.10.0 (plan XMX/Vulkan/VRAM, item 4): DLSS frame generation in Streamline games without it.
+add_executable(force_fg_tests force_fg_tests.cpp)
+target_compile_definitions(force_fg_tests PRIVATE NOMINMAX)
+target_compile_features(force_fg_tests PRIVATE cxx_std_20)
+target_include_directories(force_fg_tests PRIVATE "${RENODX_SOURCE_DIR}/external/Streamline/include")
+add_test(NAME force_fg COMMAND force_fg_tests)
+# 1.10.0 (plan XMX/VRAM, item 1): the cost of turning frame generation on.
+add_executable(vram_timeline_tests vram_timeline_tests.cpp)
+target_compile_features(vram_timeline_tests PRIVATE cxx_std_20)
+add_test(NAME vram_timeline COMMAND vram_timeline_tests)
+# 1.10.0 (dashdogy B1): the opt-in crash record and dump.
+add_executable(crash_record_tests crash_record_tests.cpp)
+target_compile_definitions(crash_record_tests PRIVATE NOMINMAX UNICODE _UNICODE)
+target_compile_features(crash_record_tests PRIVATE cxx_std_20)
+add_test(NAME crash_record COMMAND crash_record_tests)
+add_executable(streamline_log_tests streamline_log_tests.cpp)
+target_compile_definitions(streamline_log_tests PRIVATE NOMINMAX)
+target_compile_features(streamline_log_tests PRIVATE cxx_std_20)
+add_test(NAME streamline_log COMMAND streamline_log_tests)
 add_executable(xemfg_compatibility_tests xemfg_compatibility_tests.cpp)
 add_test(NAME xemfg_compatibility_policy COMMAND xemfg_compatibility_tests)
 add_test(NAME dependency_repair COMMAND powershell -NoProfile -ExecutionPolicy Bypass
@@ -264,6 +294,16 @@ add_test(NAME generic_gate_tests COMMAND generic_gate_tests)
 add_executable(gpu_arch_tests gpu_arch_tests.cpp)
 target_link_libraries(gpu_arch_tests PRIVATE advapi32)
 add_test(NAME gpu_arch_tests COMMAND gpu_arch_tests)
+# 1.10.0 (plan 2.1): the caller rule of the RTX 20/30 architecture answer.
+add_executable(preada_caller_tests preada_caller_tests.cpp)
+target_compile_definitions(preada_caller_tests PRIVATE NOMINMAX
+  MFGUNLOCK_LOCAL_LOW_OVERHEAD MFGUNLOCK_LOCAL_STABILITY MFGUNLOCK_CONTINUOUS_BORDER_AXES
+  MFGUNLOCK_RELEASE_1_4_3 MFGUNLOCK_RELEASE_1_4_4)
+target_compile_options(preada_caller_tests PRIVATE /bigobj)
+target_include_directories(preada_caller_tests SYSTEM PRIVATE
+  $<TARGET_PROPERTY:mfgunlock_addon_compile,INCLUDE_DIRECTORIES>)
+target_link_libraries(preada_caller_tests PRIVATE ${MFGUNLOCK_NATIVE_LIBRARIES})
+add_test(NAME preada_caller COMMAND preada_caller_tests)
 add_executable(fg_chain_tests fg_chain_tests.cpp)
 add_test(NAME fg_chain_tests COMMAND fg_chain_tests)
 add_executable(drs_report_tests drs_report_tests.cpp)
@@ -339,6 +379,11 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 if(Python3_Interpreter_FOUND)
   add_test(NAME research_workflow COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/research_workflow_tests.py")
   add_test(NAME ini_panel_parity COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ini_panel_parity_tests.py")
+  # 1.10.0 (plan 5): no panel text outside the language tables; tables in step.
+  # 1.10.0 (plan XMX/Vulkan/VRAM): the D3D12 XMX files are guarded.
+  add_test(NAME xmx_dx12_guard COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/xmx_dx12_guard_tests.py")
+  add_test(NAME panel_strings COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/extract_panel_strings.py" --check)
+  add_test(NAME panel_tables COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/sync_panel_tables.py" --check)
   add_test(NAME xemfg_replay_corpus COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/xemfg_replay_tests.py")
   add_test(NAME quality_refinement
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/quality_refinement_tests.py")

@@ -32,6 +32,14 @@ int main() {
     CHECK(DriverName(0x1002, 32, 0, 21, 1000) == "32.0.21.1000");
     CHECK(WindowsName(10, 26300) == "11 (26300)" && WindowsName(10, 19045) == "10 (19045)");
     CHECK(!ReadMachine().windows.empty());
+    // 1.10.0: HAGS from the registry value, and the names the report uses.
+    CHECK(HagsFromMode(true, 2) == Hags::kOn && HagsFromMode(true, 1) == Hags::kOff);
+    CHECK(HagsFromMode(false, 2) == Hags::kUnknown && HagsFromMode(true, 7) == Hags::kUnknown);
+    CHECK(std::string(HagsName(Hags::kOn)) == "on" && std::string(HagsName(Hags::kOff)) == "off");
+    CHECK(std::string(HagsName(Hags::kUnknown)).find("not set") != std::string::npos);
+    const Hags here = ReadHags();  // any answer; it must not fail on this PC
+    CHECK(here == Hags::kOn || here == Hags::kOff || here == Hags::kUnknown);
+    CHECK(NgxCoreVersion().empty());  // the test process maps no NGX core
   }
 
   CHECK(ShouldApplyPanelFont(false, false, true));
@@ -115,6 +123,7 @@ int main() {
 
   CHECK(IsSupportFile(L"ReShade.log") && IsSupportFile(L"reshade.log1") && IsSupportFile(L"MFGAdaUnlock-XeMFG.log"));
   CHECK(IsSupportFile(L"MFGAdaUnlock.ini"));
+  CHECK(IsSupportFile(L"sl.log") && IsSupportFile(L"SL.LOG") && !IsSupportFile(L"sl.interposer.dll"));
   CHECK(!IsSupportFile(L"ReShade.ini") && !IsSupportFile(L"game.log") && !IsSupportFile(L"save.dat"));
 
   // A log the game still holds open for writing is copied too.

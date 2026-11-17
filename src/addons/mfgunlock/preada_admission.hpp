@@ -20,12 +20,14 @@
 // changes on RTX 40 or 50.
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <intrin.h>
 #include <windows.h>
 #include <wrl/client.h>
 
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <cwctype>
 #include <filesystem>
 #include <mutex>
 #include <sstream>
@@ -41,7 +43,9 @@
 #include "./ampere/provider.hpp"
 #include "./gpu_arch.hpp"
 #include "./module_session.hpp"
+#include "./sl_module.hpp"
 #include "./ngx_hook.hpp"
+#include "./ngx_requirements.hpp"
 #include "./patch_transaction.hpp"
 #include "./xmx_generator.hpp"
 #include "./xmx_preada.hpp"
@@ -50,6 +54,8 @@ namespace mfgunlock::xmx::preada {
 constexpr uint32_t kAdaArchitecture = 0x190;
 // Turing: the lowest architecture this path accepts, so RTX 20 and 30 pass.
 constexpr uint32_t kLoweredMinimum = 0x160;
+// SimulatePreAda=2 (test only): what NVAPI answers on this Ada GPU.
+constexpr uint32_t kSimulatedAmpere = 0x170;
 
 // XMX selected, its files present, and this GPU older than Ada.
 inline bool Engaged() {
@@ -73,8 +79,13 @@ inline void Log(const std::string& text, bool warning = false) {
 }
 
 // ------------------------------------------------- the architecture answer
-// NVAPI's GetArchInfo answers Ada, but only on a thread inside one of the
-// admission queries below and only for an architecture older than Ada.
+// NVAPI's GetArchInfo answers Ada for an architecture older than Ada when the
+// thread is inside one of the admission queries below, or (1.10.0, plan 2.1)
+// when the caller is Streamline's own code or the NGX core. The thread-local
+// window missed two real cases on an RTX 3060 Ti: Rift Apart's slInit was
+// already running when the addon loaded (the interposer loads ReShade's
+// dxgi.dll), and the DLSS-G plugin checks the GPU again when the device is
+// set. The game's own queries keep the real answer.
 struct ArchInfo {
   uint32_t version, architecture, implementation, revision;
 };
@@ -88,31 +99,121 @@ struct AdmissionScope {
   AdmissionScope() { g_in_admission = true; }
   ~AdmissionScope() { g_in_admission = previous; }
 };
+// The path of a module NVIDIA's frame generation runtime calls from. A strict
+// simulation on the development PC (SimulatePreAda=2, Streamline Sample 2.14.16)
+// traced every architecture query: the refusal came from the NVIDIA app's copy
+// of the DLSS-G plugin (...\NGX\models\sl_dlss_g_0\...\190_E658700.dll) and
+// its frame generation file (...\models\dlssg\...\160_E658700.bin), names
+// that carry no "sl." or "nvngx_dlssg". So: sl.*.dll (interposer, sl.common,
+// the game's sl.dlss_g), any nvngx_dlssg* file, the NGX core, and anything in
+// NVIDIA's NGX models folder. Pure, for the test.
+inline bool RuntimeModulePath(const wchar_t* path) {
+  if (path == nullptr || path[0] == L'\0') return false;
+  std::wstring lower(path);
+  for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
+  if (lower.find(L"\\nvidia\\ngx\\models\\") != std::wstring::npos) return true;
+  const size_t slash = lower.find_last_of(L"\\/");
+  const std::wstring name = slash == std::wstring::npos ? lower : lower.substr(slash + 1);
+  if (name == L"_nvngx.dll" || name == L"nvngx.dll") return true;
+  if (name.compare(0, 11, L"nvngx_dlssg") == 0) return true;
+  return name.size() > 7 && name.compare(0, 3, L"sl.") == 0 && name.compare(name.size() - 4, 4, L".dll") == 0;
+}
+inline bool CallerIsRuntime(const void* address) {
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          static_cast<LPCWSTR>(address), &module) ||
+      module == nullptr)
+    return false;
+  // A handful of modules ever ask; the verdict per module is kept.
+  static SRWLOCK lock = SRWLOCK_INIT;
+  static std::vector<std::pair<HMODULE, bool>> verdicts;
+  AcquireSRWLockShared(&lock);
+  for (const auto& [known, verdict] : verdicts)
+    if (known == module) {
+      ReleaseSRWLockShared(&lock);
+      return verdict;
+    }
+  ReleaseSRWLockShared(&lock);
+  wchar_t path[MAX_PATH]{};
+  const DWORD length = GetModuleFileNameW(module, path, MAX_PATH);
+  const bool verdict = length != 0 && length < MAX_PATH && RuntimeModulePath(path);
+  AcquireSRWLockExclusive(&lock);
+  if (verdicts.size() < 32) verdicts.emplace_back(module, verdict);
+  ReleaseSRWLockExclusive(&lock);
+  return verdict;
+}
+inline std::atomic<uint32_t> g_runtime_answers{0};  // answers given by the caller rule alone
 inline int __cdecl HookedArchInfo(void* gpu, ArchInfo* info) {
+  const void* caller = _ReturnAddress();
   const int result = g_real_arch_info(gpu, info);
-  if (g_in_admission && result == 0 && info != nullptr && info->architecture >= kLoweredMinimum &&
-      info->architecture < kAdaArchitecture)
-    info->architecture = kAdaArchitecture;
+  // Test only: an Ampere answer on this Ada GPU (xmx_preada.hpp).
+  if (SimulatedStrict() && result == 0 && info != nullptr && info->architecture >= kAdaArchitecture)
+    info->architecture = kSimulatedAmpere;
+  if (result != 0 || info == nullptr || info->architecture < kLoweredMinimum || info->architecture >= kAdaArchitecture)
+    return result;
+  bool admit = g_in_admission;
+  if (!admit && Admitted() && CallerIsRuntime(caller)) {
+    admit = true;
+    if (g_runtime_answers.fetch_add(1, std::memory_order_relaxed) == 0)
+      Log("architecture answered Ada to NVIDIA's runtime outside the slInit window (caller rule)");
+  }
+  if (admit) info->architecture = kAdaArchitecture;
+  // Test only (SimulatePreAda=2): every answer in a file beside the game, since
+  // ReShade drops add-on log lines written while Streamline starts.
+  if (SimulatedStrict()) {
+    static std::atomic<int> traced{0};
+    if (traced.fetch_add(1, std::memory_order_relaxed) < 64) {
+      wchar_t module_path[MAX_PATH]{};
+      HMODULE module = nullptr;
+      GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         static_cast<LPCWSTR>(caller), &module);
+      if (module) GetModuleFileNameW(module, module_path, MAX_PATH);
+      char line[512];
+      snprintf(line, sizeof(line), "tid %lu caller %ls scope %d admitted %d answer 0x%x\n", GetCurrentThreadId(),
+               std::filesystem::path(module_path).filename().c_str(), g_in_admission ? 1 : 0, Admitted() ? 1 : 0,
+               info->architecture);
+      const auto file = backend::Directory() / L"MFGAdaUnlock-archtrace.txt";
+      if (FILE* f = _wfopen(file.c_str(), L"a")) { fputs(line, f); fclose(f); }
+    }
+  }
   return result;
 }
-// Never from the loader callback: it may load nvapi64.dll.
-inline void EnsureArchHook() {
-  std::call_once(g_arch_once, [] {
-    HMODULE nvapi = GetModuleHandleW(L"nvapi64.dll");
-    if (nvapi == nullptr) nvapi = LoadLibraryExW(L"nvapi64.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    using QueryFn = void*(__cdecl*)(uint32_t);
-    const auto query = nvapi ? reinterpret_cast<QueryFn>(GetProcAddress(nvapi, "nvapi_QueryInterface")) : nullptr;
-    void* target = query ? query(0xd8265d24) : nullptr;  // NvAPI_GPU_GetArchInfo
-    if (target == nullptr) {
+// may_load: only outside the loader lock. From a loader callback the hook goes
+// in only once nvapi64.dll is already mapped; the loadhook calls again when
+// it maps. 1.10.0: no longer once-only, so that retry can happen.
+inline SRWLOCK g_arch_lock = SRWLOCK_INIT;
+inline bool g_arch_tried_with_load = false;
+inline void EnsureArchHook(bool may_load = true) {
+  if (g_arch_hooked.load(std::memory_order_acquire)) return;
+  AcquireSRWLockExclusive(&g_arch_lock);
+  struct Unlock {
+    ~Unlock() { ReleaseSRWLockExclusive(&g_arch_lock); }
+  } unlock;
+  if (g_arch_hooked.load(std::memory_order_relaxed) || g_arch_tried_with_load) return;
+  HMODULE nvapi = GetModuleHandleW(L"nvapi64.dll");
+  if (nvapi == nullptr) {
+    if (!may_load) return;  // the loadhook retries when nvapi64.dll maps
+    nvapi = LoadLibraryExW(L"nvapi64.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  }
+  if (may_load) g_arch_tried_with_load = true;
+  using QueryFn = void*(__cdecl*)(uint32_t);
+  const auto query = nvapi ? reinterpret_cast<QueryFn>(GetProcAddress(nvapi, "nvapi_QueryInterface")) : nullptr;
+  void* target = query ? query(0xd8265d24) : nullptr;  // NvAPI_GPU_GetArchInfo
+  if (target == nullptr) {
+    if (nvapi != nullptr) {
+      g_arch_tried_with_load = true;
       Log("NVAPI architecture query not found; admission relies on the other answers", true);
-      return;
     }
-    g_real_arch_info = reinterpret_cast<GetArchInfoFn>(target);
-    if (hook::InstallOne(reinterpret_cast<void**>(&g_real_arch_info), reinterpret_cast<void*>(&HookedArchInfo)))
-      g_arch_hooked.store(true, std::memory_order_release);
-    else
-      Log("NVAPI architecture hook failed", true);
-  });
+    return;
+  }
+  g_real_arch_info = reinterpret_cast<GetArchInfoFn>(target);
+  if (hook::InstallOne(reinterpret_cast<void**>(&g_real_arch_info), reinterpret_cast<void*>(&HookedArchInfo))) {
+    g_arch_hooked.store(true, std::memory_order_release);
+    Log("NVAPI architecture hook installed");
+  } else {
+    g_arch_tried_with_load = true;
+    Log("NVAPI architecture hook failed", true);
+  }
 }
 
 // --------------------------------------------------------------- Streamline
@@ -153,11 +254,19 @@ inline sl::Result HookedIsFeatureSupported(sl::Feature feature, const sl::Adapte
     AdmissionScope scope;
     result = g_real_support(feature, adapter);
   }
-  if ((result == sl::Result::eErrorNoSupportedAdapterFound || result == sl::Result::eErrorAdapterNotSupported) &&
-      IsNvidiaAdapter(adapter))
-    result = sl::Result::eOk;
+  // 1.10.0 (plan 2.3): until now a refusal that survived the re-query was
+  // turned into OK for an NVIDIA adapter. Streamline's plugin manager keeps
+  // its own answer, so the game offered a menu whose functions it never got
+  // (Rift Apart). The real answer goes back, and the log says what it was.
   if (result == sl::Result::eOk && !g_support_relaxed.exchange(true))
     Log("Streamline DLSS-G admission: " + std::to_string(static_cast<int>(native)) + " -> ok");
+  if (result != sl::Result::eOk && IsNvidiaAdapter(adapter)) {
+    static std::atomic_bool logged{false};
+    if (!logged.exchange(true))
+      Log("Streamline still refuses DLSS-G on this GPU (" + std::to_string(static_cast<int>(result)) +
+              "): its plugin decided when it loaded. The game keeps the real answer; see the Frame generation chain card.",
+          true);
+  }
   return result;
 }
 
@@ -168,16 +277,28 @@ inline const std::vector<hook::HookItem> kStreamlineHooks = {
 // Installed when sl.interposer.dll maps; slIsFeatureSupported comes long before
 // the first Present. Removed on an explicit unload.
 inline void TryInstallStreamline() {
-  if (g_support_hooked.load(std::memory_order_acquire) || !Admitted()) return;
+  if (SimulatedStrict()) EnsureArchHook(false);
+  if (!Admitted()) return;
+  // 1.10.0 (plan 2.1): the architecture answer as soon as Streamline is in
+  // the process, without loading nvapi64.dll from a loader callback.
+  EnsureArchHook(false);
+  if (g_support_hooked.load(std::memory_order_acquire)) return;
   static SRWLOCK lock = SRWLOCK_INIT;
   AcquireSRWLockExclusive(&lock);
   if (!g_support_hooked.load(std::memory_order_relaxed)) {
-    HMODULE interposer = GetModuleHandleW(L"sl.interposer.dll");
+    HMODULE interposer = slmodule::Interposer();  // 1.10.1: the host's copy while it hosts
     if (interposer != nullptr && GetProcAddress(interposer, "slIsFeatureSupported") != nullptr &&
         hook::Install(interposer, kStreamlineHooks, "sl.interposer.dll"))
       g_support_hooked.store(true, std::memory_order_release);
   }
   ReleaseSRWLockExclusive(&lock);
+}
+
+// 1.10.1 (plan item 1): Add frame generation loaded its own interposer beside another
+// one; the hook moves to the host's copy.
+inline void RehookStreamline() {
+  if (g_support_hooked.exchange(false, std::memory_order_acq_rel)) hook::Uninstall(kStreamlineHooks);
+  TryInstallStreamline();
 }
 
 // ---------------------------------------------------- NGX feature requirements
@@ -186,6 +307,92 @@ using RequirementsFn = NVSDK_NGX_Result(NVSDK_CONV*)(IDXGIAdapter*, const NVSDK_
 inline RequirementsFn g_real_requirements = nullptr;
 inline std::atomic_bool g_requirements_hooked{false};
 inline std::atomic_bool g_requirements_relaxed{false};
+
+// 1.10.0 (dashdogy A1, ngx_requirements.hpp): the last failure of the query
+// for frame generation, for the report; 0 when none was seen.
+inline std::atomic<uint32_t> g_requirements_failure{0};
+inline SRWLOCK g_requirements_text_lock = SRWLOCK_INIT;
+inline std::string g_requirements_text;
+inline std::string RequirementsReport() {
+  AcquireSRWLockShared(&g_requirements_text_lock);
+  std::string text = g_requirements_text;
+  ReleaseSRWLockShared(&g_requirements_text_lock);
+  return text;
+}
+// Test only (SimulatePreAda=2): [DLSSG] SimulateRequirementsFailure=1, 2 or 3
+// makes the query fail as FeatureNotFound, InvalidParameter or
+// FeatureNotSupported, the two field cases dashdogy documented.
+inline uint32_t SimulatedRequirementsFailure() {
+  static const uint32_t value = [] {
+    if (!SimulatedStrict()) return 0u;
+    switch (GetPrivateProfileIntW(L"DLSSG", L"SimulateRequirementsFailure", 0,
+                                  (backend::Directory() / L"MFGAdaUnlock.ini").c_str())) {
+      case 1: return ngxreq::kFeatureNotFound;
+      case 2: return ngxreq::kInvalidParameter;
+      case 3: return ngxreq::kFeatureNotSupported;
+      default: return 0u;
+    }
+  }();
+  return value;
+}
+inline std::atomic_bool g_requirements_answered{false};
+inline std::atomic_bool g_requirements_answer_logged{false};
+inline bool RequirementsAnswerEnabled() {
+  static const bool value = GetPrivateProfileIntW(L"DLSSG", L"PreAdaRequirementsAnswer", 1,
+                                                  (backend::Directory() / L"MFGAdaUnlock.ini").c_str()) != 0;
+  return value;
+}
+// ngxreq::ProviderPath over what is mapped, the game's folder and NGX's dlssg
+// model folder. Called only after a failed query, a handful of times.
+inline bool RequirementsProviderPresent() {
+  auto lower = [](std::wstring text) {
+    for (auto& c : text) c = static_cast<wchar_t>(towlower(c));
+    return text;
+  };
+  for (const wchar_t* name : {L"nvngx_dlssg.dll"})
+    if (GetModuleHandleW(name) != nullptr) return true;
+  wchar_t exe[MAX_PATH]{};
+  const DWORD length = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+  std::error_code error;
+  if (length != 0 && length < MAX_PATH &&
+      std::filesystem::exists(std::filesystem::path(exe).parent_path() / L"nvngx_dlssg.dll", error))
+    return true;
+  wchar_t data[MAX_PATH]{};
+  const DWORD data_length = GetEnvironmentVariableW(L"ProgramData", data, MAX_PATH);
+  if (data_length == 0 || data_length >= MAX_PATH) return false;
+  const auto models = std::filesystem::path(data) / L"NVIDIA" / L"NGX" / L"models" / L"dlssg" / L"versions";
+  for (std::filesystem::recursive_directory_iterator it(models, error), end; !error && it != end; it.increment(error)) {
+    if (it.depth() > 2) {
+      it.disable_recursion_pending();
+      continue;
+    }
+    if (it->is_regular_file(error) && ngxreq::ProviderPath(lower(it->path().wstring()))) return true;
+  }
+  return false;
+}
+inline void NoteRequirementsFailure(uint32_t result, const NVSDK_NGX_FeatureDiscoveryInfo* info) {
+  const bool project = info->Identifier.IdentifierType == NVSDK_NGX_Application_Identifier_Type_Project_Id;
+  const std::string text =
+      ngxreq::Describe(result, project, project ? info->Identifier.v.ProjectDesc.ProjectId : nullptr,
+                       project ? static_cast<int>(info->Identifier.v.ProjectDesc.EngineType) : 0) +
+      (g_in_admission ? "; inside slInit" : "");
+  if (g_requirements_failure.exchange(result) != result) {
+    AcquireSRWLockExclusive(&g_requirements_text_lock);
+    g_requirements_text = text;
+    ReleaseSRWLockExclusive(&g_requirements_text_lock);
+    Log("NGX frame generation requirements: " + text +
+        ". Streamline then compares its default minimum (Ada) with the architecture this addon answers.");
+  }
+  // ReShade drops add-on log lines written while Streamline starts (see the
+  // architecture trace), so the strict simulation also writes it beside the game.
+  if (SimulatedStrict()) {
+    const auto file = backend::Directory() / L"MFGAdaUnlock-archtrace.txt";
+    if (FILE* f = _wfopen(file.c_str(), L"a")) {
+      fputs(("requirements " + text + "\n").c_str(), f);
+      fclose(f);
+    }
+  }
+}
 
 inline NVSDK_NGX_Result NVSDK_CONV HookedRequirements(IDXGIAdapter* adapter, const NVSDK_NGX_FeatureDiscoveryInfo* info,
                                                        NVSDK_NGX_FeatureRequirement* out) {
@@ -197,6 +404,38 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedRequirements(IDXGIAdapter* adapter, con
   {
     AdmissionScope scope;
     result = g_real_requirements(adapter, info, out);
+  }
+  if (const uint32_t forced = SimulatedRequirementsFailure(); forced != 0) {
+    if (out != nullptr) *out = {};
+    result = static_cast<NVSDK_NGX_Result>(forced);
+  }
+  if (NVSDK_NGX_FAILED(result)) {
+    NoteRequirementsFailure(static_cast<uint32_t>(result), info);
+    const bool start = g_in_admission || CallerIsRuntime(_ReturnAddress());
+    if (out == nullptr ||
+        !ngxreq::Decide(ngxreq::Classify(static_cast<uint32_t>(result)), start, RequirementsProviderPresent(),
+                        RequirementsAnswerEnabled()))
+      return result;
+    *out = {};
+    out->FeatureSupported = NVSDK_NGX_FeatureSupportResult_Supported;
+    out->MinHWArchitecture = kLoweredMinimum;
+    strcpy_s(out->MinOSVersion, "10.0.0");  // what NGX reports for its other features (sl.log)
+    if (!g_requirements_answered.exchange(true)) {
+      AcquireSRWLockExclusive(&g_requirements_text_lock);
+      g_requirements_text += "; answered supported (a DLSS-G provider is present)";
+      ReleaseSRWLockExclusive(&g_requirements_text_lock);
+    }
+    if (g_requirements_answered.load(std::memory_order_relaxed) && !g_requirements_answer_logged.exchange(true))
+      Log("NGX frame generation requirements answered: supported, minimum Turing, since a DLSS-G provider is present "
+          "([DLSSG] PreAdaRequirementsAnswer=0 turns this off)");
+    if (SimulatedStrict()) {
+      const auto file = backend::Directory() / L"MFGAdaUnlock-archtrace.txt";
+      if (FILE* f = _wfopen(file.c_str(), L"a")) {
+        fputs("requirements answered supported\n", f);
+        fclose(f);
+      }
+    }
+    return NVSDK_NGX_Result_Success;
   }
   // FeatureSupported is a bit mask. Only the adapter bit is cleared; a driver
   // or OS refusal stays and keeps the feature unsupported.
@@ -397,6 +636,27 @@ inline void LowerProviderMinimum(HMODULE module) {
   if (session == nullptr) return;
   const uint32_t lowered = kLoweredMinimum;
   std::vector<patching::Write> writes{patching::Bytes(entry + 1, &lowered, sizeof(lowered))};
+  // 1.10.0 (dashdogy A2): the same minimum in the provider's requirements
+  // records, which NGX reports to Streamline. A record of another shape is
+  // left alone; the export above and the NGX core answer still apply.
+  int records = 0;
+  for (const char* name : {"NVSDK_NGX_D3D11_GetFeatureRequirements", "NVSDK_NGX_D3D12_GetFeatureRequirements",
+                           "NVSDK_NGX_VULKAN_GetFeatureRequirements"}) {
+    auto* code = reinterpret_cast<uint8_t*>(GetProcAddress(module, name));
+    DWORD64 image = 0;
+    const auto* function = code ? RtlLookupFunctionEntry(reinterpret_cast<DWORD64>(code), &image, nullptr) : nullptr;
+    if (function == nullptr || image != reinterpret_cast<DWORD64>(module)) continue;
+    const size_t size = std::min<size_t>(function->EndAddress - (reinterpret_cast<DWORD64>(code) - image),
+                                         ngxreq::kRequirementsWindow);
+    if (!patching::Readable(code, size)) continue;
+    const size_t at = ngxreq::FindRequirementsArchitecture(code, size);
+    if (at == SIZE_MAX) continue;
+    uint32_t record = 0;
+    std::memcpy(&record, code + at, sizeof(record));
+    if (record != kAdaArchitecture) continue;
+    writes.push_back(patching::Bytes(code + at, &lowered, sizeof(lowered)));
+    ++records;
+  }
   if (!patching::Apply(writes, true)) {
     Log("could not lower the provider's minimum architecture", true);
     return;
@@ -407,7 +667,17 @@ inline void LowerProviderMinimum(HMODULE module) {
   ReleaseSRWLockExclusive(&g_minimum_lock);
   wchar_t path[MAX_PATH]{};
   GetModuleFileNameW(module, path, MAX_PATH);
-  Log("provider minimum architecture 0x190 -> 0x160 in " + std::filesystem::path(path).filename().string());
+  const std::string message = "provider minimum architecture 0x190 -> 0x160 in " +
+                              std::filesystem::path(path).filename().string() + " (export and " +
+                              std::to_string(records) + " requirements record(s))";
+  Log(message);
+  if (SimulatedStrict()) {
+    const auto file = backend::Directory() / L"MFGAdaUnlock-archtrace.txt";
+    if (FILE* f = _wfopen(file.c_str(), L"a")) {
+      fputs((message + "\n").c_str(), f);
+      fclose(f);
+    }
+  }
 }
 
 // The multi-frame gate (cmp against 0x1b0, Blackwell) is rewritten to Turing
@@ -424,7 +694,29 @@ inline void LowerGateWrites(std::vector<patching::Write>& writes) {
 // --------------------------------------------------- what the panel reports
 // NGX CreateFeature for frame generation, seen by the NGX preset hook.
 inline std::atomic<int64_t> g_create_result{-1};  // -1: not seen yet
+// 1.10.0 (dashdogy item A3): Streamline creates frame generation again on
+// every frame after NVIDIA's runtime refused it, and dashdogy saw video
+// memory grow until Doom: The Dark Ages crashed. After kHoldOffAfter refusals
+// in a row on an admitted RTX 20/30, the SetOptions hook (framecount.hpp)
+// sends Off instead of the game's mode for the rest of the session; the
+// panel's card and the report already name the refusal.
+constexpr uint32_t kHoldOffAfter = 3;
+inline std::atomic<uint32_t> g_create_failures{0};  // in a row
+constexpr bool HoldOffDecision(bool admitted, uint32_t failures_in_a_row) {
+  return admitted && failures_in_a_row >= kHoldOffAfter;
+}
+inline bool HoldOff() {
+  return HoldOffDecision(Admitted(), g_create_failures.load(std::memory_order_acquire));
+}
 inline void ObserveCreate(NVSDK_NGX_Result result) {
+  if (NVSDK_NGX_FAILED(result)) {
+    if (g_create_failures.fetch_add(1, std::memory_order_acq_rel) + 1 == kHoldOffAfter)
+      Log("NVIDIA's runtime refused frame generation " + std::to_string(kHoldOffAfter) +
+              " times in a row; frame generation is held off for this session so Streamline stops retrying",
+          true);
+  } else {
+    g_create_failures.store(0, std::memory_order_release);
+  }
   const auto previous = g_create_result.exchange(static_cast<int64_t>(static_cast<uint32_t>(result)));
   if (previous == static_cast<int64_t>(static_cast<uint32_t>(result))) return;
   if (NVSDK_NGX_FAILED(result)) {
@@ -438,7 +730,27 @@ inline void ObserveCreate(NVSDK_NGX_Result result) {
   }
 }
 
+// 1.10.0 (plan 1.3): when the game first turned frame generation on, so the
+// panel and the log can say that NVIDIA's runtime never created the feature
+// afterwards (OW2 and Keeper on an RTX 3060 Ti: SetOptions accepted, no
+// CreateFeature, zero frames).
+inline std::atomic<uint64_t> g_first_on_tick{0};
+inline void ObserveFrameGenerationOn() {
+  uint64_t expected = 0;
+  g_first_on_tick.compare_exchange_strong(expected, GetTickCount64());
+}
+constexpr uint64_t kCreateGraceMs = 5000;
+inline bool CreateMissing(uint64_t now) {
+  const uint64_t on = g_first_on_tick.load(std::memory_order_acquire);
+  return Admitted() && on != 0 && now - on >= kCreateGraceMs && g_create_result.load() < 0;
+}
+
 // Explicit unload only: these hooks go in before the first Present.
+// 1.10.0 (plan 2.1): the loadhook saw nvapi64.dll map (under the loader lock).
+inline void OnNvapiLoaded() {
+  if (Admitted() || SimulatedStrict()) EnsureArchHook(false);
+}
+
 inline void Uninstall() {
   if (g_support_hooked.load() && hook::Uninstall(kStreamlineHooks)) g_support_hooked.store(false);
   if (g_requirements_hooked.load() && hook::Uninstall(kRequirementHooks)) g_requirements_hooked.store(false);

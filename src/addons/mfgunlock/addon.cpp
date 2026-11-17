@@ -113,6 +113,9 @@
 #include "xemfg/backend_api.hpp"
 #ifdef MFGUNLOCK_NATIVE_XEMFG
 #include "xemfg/native_bridge.hpp"
+#ifdef MFGUNLOCK_XEMFG_VULKAN
+#include "xemfg/native_vulkan.hpp"
+#endif
 #include "xemfg/dependency_manager.hpp"
 #include "dlssg_display.hpp"
 #include "dlssg_latency.hpp"
@@ -141,9 +144,16 @@
 #include <nvsdk_ngx.h>
 #include "xmx_hook.hpp"
 #include "preada_admission.hpp"
+#include "swapchain_format_guard.hpp"
 #include "drs_override.hpp"
 #include "drs_report.hpp"
 #include "advanced_settings.hpp"
+#include "streamline_log.hpp"
+#include "crash_record.hpp"
+#include "vram_timeline.hpp"
+#include "vram_trace.hpp"
+#include "sl_host.hpp"
+#include "hud_capture.hpp"
 
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
@@ -532,6 +542,46 @@ bool IsHdrColorSpace(reshade::api::color_space color_space) {
 // fatal where it is not loaded at all.
 
 mfgunlock::ngxparam::VTablePatch g_vtable_patch;
+// 1.10.0 (plan 1.2): the int slot too, for the capability answers below.
+mfgunlock::ngxparam::VTablePatch g_vtable_patch_int;
+
+// 1.10.0 (plan 1.2): the capability answers NVIDIA's plugin reads about
+// frame generation (strings in sl.dlss_g 2.14.16: "NGX indicates DLSS-G is
+// not available - DLSS-G cannot run"), once each in the log and kept for the
+// support report. Nothing is changed here.
+constexpr const char* kCapabilityNames[] = {
+    "FrameGeneration.Available",           "FrameGeneration.NeedsUpdatedDriver",
+    "FrameGeneration.MinDriverVersionMajor", "FrameGeneration.MinDriverVersionMinor",
+    "FrameGeneration.FeatureInitResult",    "DLSSG.MultiFrameCountMax"};
+std::atomic<int64_t> g_capability_values[std::size(kCapabilityNames)];
+std::atomic<unsigned int> g_capability_seen{0};
+void ObserveCapability(const char* name, bool failed, int64_t value, NVSDK_NGX_Result result) {
+  for (size_t i = 0; i < std::size(kCapabilityNames); ++i) {
+    if (std::strcmp(name, kCapabilityNames[i]) != 0) continue;
+    g_capability_values[i].store(failed ? -1 : value, std::memory_order_relaxed);
+    const unsigned int bit = 1u << i;
+    if ((g_capability_seen.fetch_or(bit, std::memory_order_acq_rel) & bit) != 0) return;
+    std::stringstream s;
+    s << "mfgunlock: NGX capability " << name << " = ";
+    if (failed) s << "failure 0x" << std::hex << static_cast<unsigned int>(result) << std::dec;
+    else s << value;
+    s << '.';
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+    return;
+  }
+}
+// For the support report: only the answers seen this session.
+std::string CapabilityReport() {
+  std::string report;
+  const unsigned int seen = g_capability_seen.load(std::memory_order_acquire);
+  for (size_t i = 0; i < std::size(kCapabilityNames); ++i) {
+    if ((seen & (1u << i)) == 0) continue;
+    const int64_t value = g_capability_values[i].load(std::memory_order_relaxed);
+    report += std::string("\nngx_") + kCapabilityNames[i] + "=" + (value < 0 ? std::string("failure") : std::to_string(value));
+  }
+  return report;
+}
+using GetInt32Fn = NVSDK_NGX_Result (*)(void* self, const char* name, int* out);
 std::atomic_bool g_override_reported{false};
 std::atomic<unsigned int> g_override_hits{0};
 std::atomic<unsigned int> g_runtime_reported_value{0};
@@ -548,6 +598,7 @@ NVSDK_NGX_Result HookedGetUInt32(void* self, const char* name, unsigned int* out
 
   if (!g_enabled.load(std::memory_order_relaxed)) return result;
   if (name == nullptr || out == nullptr) return result;
+  ObserveCapability(name, NgxFailed(result), NgxFailed(result) ? 0 : static_cast<int64_t>(*out), result);
   if (std::strcmp(name, kParamName) != 0) return result;
 
   const bool failed = NgxFailed(result);
@@ -576,8 +627,19 @@ NVSDK_NGX_Result HookedGetUInt32(void* self, const char* name, unsigned int* out
   return NVSDK_NGX_Result_Success;
 }
 
+NVSDK_NGX_Result HookedGetInt32(void* self, const char* name, int* out) {
+  const auto real = reinterpret_cast<GetInt32Fn>(g_vtable_patch_int.original.load(std::memory_order_acquire));
+  const NVSDK_NGX_Result result = real(self, name, out);
+  if (name != nullptr && out != nullptr)
+    ObserveCapability(name, NgxFailed(result), NgxFailed(result) ? 0 : static_cast<int64_t>(*out), result);
+  return result;
+}
+
 bool PatchParameterVTable(NVSDK_NGX_Parameter* params) {
   using mfgunlock::ngxparam::PatchResult;
+  // 1.10.0: the int slot only observes; its failure is not the override's.
+  mfgunlock::ngxparam::Patch(g_vtable_patch_int, params, reinterpret_cast<void*>(&HookedGetInt32),
+                             mfgunlock::ngxparam::kGetInt32Slot);
   const auto result = mfgunlock::ngxparam::Patch(
       g_vtable_patch, params, reinterpret_cast<void*>(&HookedGetUInt32));
   if (result == PatchResult::kProtectFailed) {
@@ -600,7 +662,10 @@ bool PatchParameterVTable(NVSDK_NGX_Parameter* params) {
   return result == PatchResult::kPatched || result == PatchResult::kAlreadyPatched;
 }
 
-void RestoreParameterVTable() { mfgunlock::ngxparam::Restore(g_vtable_patch); }
+void RestoreParameterVTable() {
+  mfgunlock::ngxparam::Restore(g_vtable_patch);
+  mfgunlock::ngxparam::Restore(g_vtable_patch_int);
+}
 
 #include "./addon_provider.inl"
 
@@ -634,9 +699,54 @@ bool EnsureResident() {
 // frame generation on NVIDIA's unhooked generator and then presented the real
 // frames alone (62 presents per second against 144 in 1.8.2, which hooked at load).
 void BeforeFrameGeneration() {
-  if (!mfgunlock::xmx::generator::Enabled()) return;
+  // 1.10.0 (plan 1.3): when the game first turned frame generation on.
+  mfgunlock::xmx::preada::ObserveFrameGenerationOn();
+  const bool xmx = mfgunlock::xmx::generator::Enabled();
+  // 1.10.0 (plan 1.6): the CreateFeature hook too, before NVIDIA's runtime
+  // creates frame generation. A game that turns it on before its first
+  // Present (Ghost of Tsushima) otherwise leaves g_create_seen unset, and
+  // the RTX 20/30 preparation trusts that flag not to rewrite a live provider.
+  if (!xmx && !PresetHookWanted()) return;
   if (!g_resident.load(std::memory_order_acquire) && !PinResident("when the game turned DLSS-G on")) return;
-  mfgunlock::xmx::Release(true);
+  TryInstallPresetHook();
+  if (xmx) mfgunlock::xmx::Release(true);
+}
+
+// 1.10.0 (plan 1.3): the game turned frame generation on and NVIDIA's
+// runtime never created the feature. Once, as a warning, with the next step.
+void WarnCreateMissingOnce() {
+  static std::atomic_bool logged{false};
+  if (logged.load(std::memory_order_relaxed) || !mfgunlock::xmx::preada::CreateMissing(GetTickCount64())) return;
+  if (logged.exchange(true, std::memory_order_relaxed)) return;
+  reshade::log::message(reshade::log::level::warning,
+      "mfgunlock: the game turned DLSS Frame Generation on 5 s ago and NVIDIA's runtime has not created the feature, so nothing is generated. "
+      "Turn on the Streamline log ([DLSSG] StreamlineLog=1), restart, reproduce, and send sl.log with the support files.");
+}
+
+// 1.10.0 (plan 1.8): a removed device, checked once a second, so the log
+// says so instead of ending in silence, and XMX stops evaluating on it.
+void CheckDeviceRemoved(reshade::api::swapchain* swapchain) {
+  static ULONGLONG next_ms = 0;
+  static std::atomic_bool logged{false};
+  const ULONGLONG now = GetTickCount64();
+  if (swapchain == nullptr || now < next_ms || logged.load(std::memory_order_relaxed)) return;
+  next_ms = now + 1000;
+  auto* device = swapchain->get_device();
+  if (device == nullptr || device->get_native() == 0) return;
+  const auto native = static_cast<uintptr_t>(device->get_native());
+  HRESULT reason = S_OK;
+  if (device->get_api() == reshade::api::device_api::d3d12)
+    reason = reinterpret_cast<ID3D12Device*>(native)->GetDeviceRemovedReason();
+  else if (device->get_api() == reshade::api::device_api::d3d11)
+    reason = reinterpret_cast<ID3D11Device*>(native)->GetDeviceRemovedReason();
+  else
+    return;
+  if (SUCCEEDED(reason) || logged.exchange(true, std::memory_order_relaxed)) return;
+  std::stringstream s;
+  s << "mfgunlock: the graphics device was removed (0x" << std::hex << static_cast<unsigned int>(reason) << std::dec
+    << "); frame generation stops until the game recreates it. The game's own crash log says why.";
+  reshade::log::message(reshade::log::level::warning, s.str().c_str());
+  if (mfgunlock::xmx::generator::Enabled()) mfgunlock::xmx::generator::Fail("the graphics device was removed");
 }
 
 bool PinResident(const char* when) {
@@ -659,12 +769,27 @@ bool PinResident(const char* when) {
   return true;
 }
 
+#if defined(MFGUNLOCK_NATIVE_XEMFG) && defined(MFGUNLOCK_XEMFG_VULKAN)
+// 1.10.0 (plan XMX/Vulkan/VRAM, item 3): XMX on Vulkan with the DLSS-G backend (native_vulkan.hpp). ReShade's
+// create_device for Vulkan comes before vkCreateInstance: the vulkan-1 hooks and the provider mode go in there.
+bool OnCreateDeviceXmxVulkan(reshade::api::device_api api, uint32_t& version) {
+  if (api != reshade::api::device_api::vulkan) return false;
+  // XMX's provider first (it sets the device's provider edit), then Streamline's hosted mode for games with
+  // DLSS SR only; either may raise the instance to Vulkan 1.3.
+  bool raised = mfgunlock::xemfg::native::vulkan::BeginXmxProvider(version);
+  raised = mfgunlock::xemfg::native::vulkan::BeginStreamlineHost(version) || raised;
+  return raised;
+}
+#endif
+
 void OnPresentStartDiscovery(reshade::api::command_queue* /*queue*/,
                              reshade::api::swapchain* swapchain,
                              const reshade::api::rect* /*source_rect*/,
                              const reshade::api::rect* /*dest_rect*/,
                              uint32_t /*dirty_rect_count*/,
                              const reshade::api::rect* /*dirty_rects*/) {
+  if (mfgunlock::slhost::Hosting() && swapchain != nullptr)
+    mfgunlock::slhost::OnPresent(reinterpret_cast<void*>(swapchain->get_native()));
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
   if(swapchain==g_primary_swapchain.load(std::memory_order_acquire)) mfgunlock::dlssgdisplay::Observe(swapchain);
 #endif
@@ -695,8 +820,12 @@ void OnPresentStartDiscovery(reshade::api::command_queue* /*queue*/,
       mfgunlock::framecount::NotifySwapchainTransition();
     }
   }
-  if (swapchain != nullptr &&
+  // 1.10.0 (plan 1.7): four times a second, not every Present. An HDR
+  // transition reaches the quality guard within 250 ms.
+  static ULONGLONG next_color_space_ms = 0;
+  if (const ULONGLONG now = GetTickCount64(); swapchain != nullptr && now >= next_color_space_ms &&
       swapchain == g_primary_swapchain.load(std::memory_order_acquire)) {
+    next_color_space_ms = now + 250;
     const auto color_space = swapchain->get_color_space();
     if (color_space != reshade::api::color_space::unknown) {
       if (mfgunlock::inputdiag::g_enabled.load(std::memory_order_relaxed)) {
@@ -714,11 +843,23 @@ void OnPresentStartDiscovery(reshade::api::command_queue* /*queue*/,
     }
   }
   UpdateReflexPacingLab(swapchain);
+#if defined(MFGUNLOCK_NATIVE_XEMFG) && defined(MFGUNLOCK_XEMFG_VULKAN)
+  UpdateXmxVulkanPacing(swapchain);
+#endif
   UpdateLatencyGuard(swapchain);
   mfgunlock::framecount::PublishLatencyGuardView();
   UpdateVramDiagnostics(swapchain);
+  SampleFrameGenerationVram(swapchain);
+#if defined(MFGUNLOCK_NATIVE_XEMFG) && defined(MFGUNLOCK_XEMFG_VULKAN)
+  // 1.10.0 (item 3): NGX's Vulkan entry points, once _nvngx.dll is mapped (returns at once after that).
+  if (mfgunlock::xemfg::native::vulkan::XmxProviderWanted() || mfgunlock::xemfg::native::vulkan::StreamlineHostWanted())
+    mfgunlock::xemfg::native::vulkan::DiscoverNgx();
+#endif
+  WarnCreateMissingOnce();
+  CheckDeviceRemoved(swapchain);
   StartDiscoveryWorker();
   RetryPresetHookFromPresent();
+  mfgunlock::vramtrace::Dump(mfgunlock::backend::Directory());
 #if !defined(MFGUNLOCK_LOCAL_LOW_OVERHEAD)
   if (g_render_api.load(std::memory_order_relaxed) ==
       DetectedRenderApi::kD3D12)
@@ -728,12 +869,15 @@ void OnPresentStartDiscovery(reshade::api::command_queue* /*queue*/,
 
 void OnFinishPresent(reshade::api::command_queue* /*queue*/,
                      reshade::api::swapchain* swapchain) {
+  if (mfgunlock::slhost::Hosting() && swapchain != nullptr)
+    mfgunlock::slhost::OnFinishPresent(reinterpret_cast<void*>(swapchain->get_native()));
   if (swapchain != nullptr &&
       swapchain == g_primary_swapchain.load(std::memory_order_acquire))
     mfgunlock::reflexpacing::RecordPresent();
 }
 
 void OnInitSwapchain(reshade::api::swapchain* swapchain, bool /*resize*/) {
+  mfgunlock::scguard::OnInitSwapchain(swapchain);  // 1.10.1 (plan item 7)
   bool primary_transition = false;
   if (swapchain != nullptr) {
     if (auto* device = swapchain->get_device(); device != nullptr) {
@@ -835,7 +979,36 @@ void RunCreationMaintenance(const char* event) {
 
 // These remain immediate, finite retries during graphics-device initialization. They do
 // not start a thread and therefore cannot keep a temporary addon instance alive.
+// 1.10.0 (plan 1.4): the PC, once, in the log, so a report starts with it.
+// Not from DllMain: ReadMachine may load dxgi.dll, and that path runs
+// under the loader lock when ReShade loads the addon early.
+void LogSystemOnce() {
+  static std::atomic_bool logged{false};
+  if (logged.exchange(true, std::memory_order_relaxed)) return;
+  const auto& machine = mfgunlock::system::ReadMachine();
+  const auto hags = mfgunlock::system::ReadHags();
+  reshade::log::message(hags == mfgunlock::system::Hags::kOff ? reshade::log::level::warning : reshade::log::level::info,
+      ("mfgunlock: system: " + machine.gpu + "; driver " + machine.driver + "; Windows " + machine.windows +
+       "; HAGS " + mfgunlock::system::HagsName(hags) +
+       (hags == mfgunlock::system::Hags::kOff ? "; DLSS Frame Generation requires hardware-accelerated GPU scheduling." : "."))
+          .c_str());
+}
+
 void OnInitDevice(reshade::api::device* device) {
+  LogSystemOnce();
+  // 1.10.0 diagnostic (vram_trace.hpp): MFG_VRAM_TRACE=1 only; the addon pins itself so the detours outlive no copy.
+  if (mfgunlock::vramtrace::Wanted() && device != nullptr && device->get_api() == reshade::api::device_api::d3d12) {
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                       reinterpret_cast<LPCWSTR>(&OnInitDevice), &self);
+    mfgunlock::vramtrace::Install(reinterpret_cast<ID3D12Device*>(device->get_native()));
+  }
+  // 1.10.0 (sl_host.hpp): Streamline for games that call DLSS SR through NGX only.
+  if (mfgunlock::slhost::Wanted() && device != nullptr && device->get_api() == reshade::api::device_api::d3d12) {
+    mfgunlock::slhost::OnDevice(reinterpret_cast<ID3D12Device*>(device->get_native()));
+    // The host pinned this copy; the NGX hooks must be in before the game creates DLSS SR.
+    if (mfgunlock::slhost::Hosting() && PinResident("when the Streamline host started")) TryInstallPresetHook();
+  }
   if (device != nullptr) {
     const DetectedRenderApi detected = RenderApiOf(device);
     const bool no_primary =
@@ -871,6 +1044,9 @@ void OnInitCommandQueue(reshade::api::command_queue* /*queue*/) {
 #endif
 }
 
+// 1.10.0 (plan 5): the panel's text, by key (i18n/strings.hpp).
+using mfgunlock::i18n::Str;
+using mfgunlock::i18n::T;
 #include "./addon_overlay.inl"
 
 void LoadConfig() {
@@ -1314,7 +1490,7 @@ void LoadConfig() {
 extern "C" __declspec(dllexport) constexpr const char* NAME = "MFG Unlock";
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
-    "MFG Unlock 1.9.0 - DLSS-G and XeMFG backends";
+    "MFG Unlock 1.10.1 - DLSS-G and XeMFG backends";
 #elif defined(MFGUNLOCK_DUAL_BACKEND)
     "Dual Backend Preview X1 - official 1.4.5 base; DLSS-G and XeMFG via OptiScaler; gameplay validation pending";
 #elif defined(MFGUNLOCK_RELEASE_1_4_5)
@@ -1341,6 +1517,37 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       g_self_module = h_module;
       if (!reshade::register_addon(h_module)) return FALSE;
       mfgunlock::support::BeginSession(mfgunlock::backend::Directory());
+      // 1.10.0 (plan XMX/Vulkan/VRAM, item 4): before the game can call slInit (force_fg.hpp).
+      // [DLSSG] AddFrameGeneration (the panel's single switch) turns on both routes;
+      // each stays inert where it does not apply (sl_host.hpp).
+      {
+        const auto ini = (mfgunlock::backend::Directory() / L"MFGAdaUnlock.ini");
+        // The two earlier switches become the panel's single one, so the panel
+        // shows what runs and its Off turns both off.
+        if (GetPrivateProfileIntW(L"DLSSG", L"AddFrameGeneration", -1, ini.c_str()) == -1 &&
+            (GetPrivateProfileIntW(L"DLSSG", L"ForceFrameGeneration", 0, ini.c_str()) != 0 ||
+             GetPrivateProfileIntW(L"DLSSG", L"HostStreamline", 0, ini.c_str()) != 0)) {
+          WritePrivateProfileStringW(L"DLSSG", L"AddFrameGeneration", L"1", ini.c_str());
+          WritePrivateProfileStringW(L"DLSSG", L"ForceFrameGeneration", nullptr, ini.c_str());
+          WritePrivateProfileStringW(L"DLSSG", L"HostStreamline", nullptr, ini.c_str());
+        }
+        mfgunlock::framecount::g_force_fg_enabled.store(
+            GetPrivateProfileIntW(L"DLSSG", L"ForceFrameGeneration", 0, ini.c_str()) != 0 ||
+                GetPrivateProfileIntW(L"DLSSG", L"AddFrameGeneration", 0, ini.c_str()) != 0,
+            std::memory_order_relaxed);
+      }
+      // 1.10.0 (dashdogy B1): opt-in crash record and dump (crash_record.hpp).
+      if (mfgunlock::crash::Enabled(mfgunlock::backend::Directory() / L"MFGAdaUnlock.ini"))
+        mfgunlock::crash::Install(mfgunlock::backend::Directory());
+      // 1.10.0: Streamline's own log, before the game can call slInit. Every
+      // ReShade startup copy runs this; the second finds the variables set.
+      if (mfgunlock::streamlinelog::Requested()) {
+        const auto state = mfgunlock::streamlinelog::Apply(mfgunlock::backend::Directory(), mfgunlock::streamlinelog::Configured());
+        if (state == mfgunlock::streamlinelog::State::kSet || state == mfgunlock::streamlinelog::State::kFailed)
+          reshade::log::message(state == mfgunlock::streamlinelog::State::kFailed ? reshade::log::level::warning
+                                                                                   : reshade::log::level::info,
+                                ("mfgunlock: Streamline log requested: " + mfgunlock::streamlinelog::Describe(state) + ".").c_str());
+      }
       if (mfgunlock::support::ConsumeSafeMode(mfgunlock::backend::Directory()))
         reshade::log::message(reshade::log::level::warning,
             "mfgunlock: safe mode for this start: no DLSS preset, XMX or forced multiplier; the settings are kept.");
@@ -1355,9 +1562,50 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         if (mfgunlock::support::ShouldApplyPanelFont(font_offered != 0, has_font, std::filesystem::exists(mfgunlock::support::kPanelFontPath, font_error)))
           reshade::set_config_value(nullptr, "STYLE", "Font", mfgunlock::support::kPanelFontValue);
         if (font_offered == 0) reshade::set_config_value(nullptr, kConfigSection, "PanelFontOffered", 1);
+        // 1.10.0 (plan 5): the panel's language, and a font that can draw it.
+        mfgunlock::ui::InitLanguage();
       }
       const auto saved_backend = mfgunlock::backend::Read();
       mfgunlock::backend::active = mfgunlock::backend::Effective(saved_backend);
+#if defined(MFGUNLOCK_NATIVE_XEMFG) && defined(MFGUNLOCK_XEMFG_VULKAN)
+      {
+        // 1.10.0: ReShade as the Vulkan layer (ReShade64.dll), not as a D3D/OpenGL proxy DLL.
+        wchar_t path[MAX_PATH]{};
+        GetModuleFileNameW(reshade::internal::get_reshade_module_handle(), path, MAX_PATH);
+        std::wstring stem = std::filesystem::path(path).stem().wstring();
+        for (auto& c : stem) c = static_cast<wchar_t>(towlower(c));
+        const bool proxy = stem == L"dxgi" || stem == L"d3d9" || stem == L"d3d10" || stem == L"d3d11" || stem == L"d3d12" ||
+                           stem == L"opengl32" || stem == L"dinput8" || stem == L"ddraw";
+        mfgunlock::xemfg::native::vulkan::SetVulkanLayerHost(!proxy && GetModuleHandleW(L"vulkan-1.dll") != nullptr);
+      }
+      // 1.10.0: XMX on Vulkan stays resident like XeMFG. ReShade loads the addon
+      // for the game's first Vulkan instance and unloads both with it; DOOM: The
+      // Dark Ages then ran the freed copy's Vulkan hooks, or a reloaded ReShade
+      // never saw this pinned module register. ReShade and this module stay;
+      // Intel's runtime pair is started for the provider (AttachModel; without
+      // it the pair's preparation failed with "module_pin").
+      if (mfgunlock::backend::active == mfgunlock::backend::Kind::DlssG &&
+          mfgunlock::xemfg::native::vulkan::XmxProviderWanted()) {
+        HMODULE pinned = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                           reinterpret_cast<LPCWSTR>(reshade::internal::get_reshade_module_handle()), &pinned);
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                           reinterpret_cast<LPCWSTR>(h_module), &pinned);
+        mfgunlock::xemfg::AttachModel(h_module);
+      } else
+#endif
+      // 1.10.0: the same for every Vulkan game on the DLSS-G backend. The first
+      // instance's copy patches DLSS-G and stays mapped (its hooks), so the
+      // reloaded ReShade got "No add-on was registered" and DOOM: The Dark Ages
+      // ran without the panel, XMX or Reflex controls. ReShade stays loaded too.
+      if (mfgunlock::backend::active == mfgunlock::backend::Kind::DlssG &&
+          GetModuleHandleW(L"vulkan-1.dll") != nullptr) {
+        HMODULE pinned = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                           reinterpret_cast<LPCWSTR>(reshade::internal::get_reshade_module_handle()), &pinned);
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                           reinterpret_cast<LPCWSTR>(h_module), &pinned);
+      }
       if (mfgunlock::backend::active != mfgunlock::backend::Kind::DlssG) {
 #if defined(MFGUNLOCK_NATIVE_XEMFG)
         if(mfgunlock::backend::active==mfgunlock::backend::Kind::XeMfg) {
@@ -1443,7 +1691,20 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         mfgunlock::xmx::preada::TryInstallStreamline();
       };
       mfgunlock::loadhook::g_on_dlssg_loaded = ProcessLoadedDlssgModule;
+      // 1.10.1 (plan item 1): Add frame generation's own interposer beside another addon's.
+      mfgunlock::slmodule::g_rehook.store(
+          []() {
+            mfgunlock::framecount::Uninstall();
+            mfgunlock::framecount::TryInstall();
+            mfgunlock::xmx::preada::RehookStreamline();
+            reshade::log::message(reshade::log::level::info,
+                                  "mfgunlock: another sl.interposer.dll is loaded without Streamline started; "
+                                  "the Streamline hooks moved to MFG Unlock's own copy (Add frame generation).");
+          },
+          std::memory_order_release);
       mfgunlock::framecount::internal::g_before_frame_generation.store(BeforeFrameGeneration, std::memory_order_release);
+      // 1.10.0 (dashdogy A3): Off once NVIDIA's runtime keeps refusing on RTX 20/30.
+      mfgunlock::framecount::internal::g_hold_off.store(&mfgunlock::xmx::preada::HoldOff, std::memory_order_release);
       // 1.8.5: RTX 20/30 with XMX. Streamline keeps or drops sl.dlss_g inside
       // slInit, so the admission must cover that call.
       // The Dynamic MFG ceiling also needs slInit: Streamline may read the
@@ -1458,13 +1719,16 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       mfgunlock::framecount::internal::g_init_wanted.store(
           []() {
             return mfgunlock::xmx::preada::InitHookWanted() ||
-                   mfgunlock::drsoverride::g_max_multiplier.load(std::memory_order_relaxed) != 0;
+                   mfgunlock::drsoverride::g_max_multiplier.load(std::memory_order_relaxed) != 0 ||
+                   // 1.10.0 (force_fg.hpp): DLSS-G is added inside slInit.
+                   mfgunlock::framecount::g_force_fg_enabled.load(std::memory_order_relaxed);
           },
           std::memory_order_release);
       if (mfgunlock::drsoverride::g_max_multiplier.load(std::memory_order_relaxed) != 0)
         mfgunlock::drsoverride::TryInstall();
       TryAutoEarlyLoad();
       mfgunlock::loadhook::g_on_dlssg_plugin_loaded = ProcessLoadedStreamlineDlssgPlugin;
+      mfgunlock::loadhook::g_on_nvapi_loaded = mfgunlock::xmx::preada::OnNvapiLoaded;
       mfgunlock::loadhook::g_on_ngx_loaded = []() {
         TryInstallPresetHook();
         mfgunlock::xmx::preada::TryInstallRequirements();
@@ -1477,6 +1741,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       reshade::register_overlay("MFG Unlock", OnRegisterOverlay);
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
+      // 1.10.0 (hud_capture.hpp): the HUD fix of the Streamline host.
+      if (mfgunlock::slhost::Wanted()) mfgunlock::hudcapture::Register(mfgunlock::backend::Directory() / L"MFGAdaUnlock.ini");
+      // 1.10.1 (plan item 7): the game's swap chain request, before other addons change it.
+      if (mfgunlock::slhost::Wanted()) mfgunlock::scguard::Register();
+#if defined(MFGUNLOCK_NATIVE_XEMFG) && defined(MFGUNLOCK_XEMFG_VULKAN)
+      if (mfgunlock::xemfg::native::vulkan::XmxProviderWanted() || mfgunlock::xemfg::native::vulkan::StreamlineHostWanted())
+        reshade::register_event<reshade::addon_event::create_device>(OnCreateDeviceXmxVulkan);
+#endif
       reshade::register_event<reshade::addon_event::init_swapchain>(OnInitSwapchain);
       reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
       reshade::register_event<reshade::addon_event::init_command_queue>(OnInitCommandQueue);
@@ -1488,6 +1760,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       // Only the game's exit ends the session: ReShade unloading a startup
       // copy is not one, and the marker's count must survive it.
       if (lpv_reserved != nullptr) mfgunlock::support::EndSession(mfgunlock::backend::Directory());
+      // 1.10.0 (dashdogy B1): an unloading copy takes its crash filter with it.
+      else mfgunlock::crash::Uninstall();
+#if defined(MFGUNLOCK_NATIVE_XEMFG) && defined(MFGUNLOCK_XEMFG_VULKAN)
+      // 1.10.0: and its Vulkan hooks (XMX on Vulkan installs them in the first
+      // instance's copy; native_vulkan.cpp).
+      if (lpv_reserved == nullptr) mfgunlock::xemfg::native::vulkan::UninstallForUnload();
+#endif
       // During process termination Windows is already reclaiming every mapped
       // image. Avoid detour transactions and stale provider-memory restores
       // under the loader lock; explicit addon unload still performs cleanup.
@@ -1502,6 +1781,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::init_command_queue>(OnInitCommandQueue);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
       reshade::unregister_event<reshade::addon_event::init_swapchain>(OnInitSwapchain);
+      if (mfgunlock::slhost::Wanted()) mfgunlock::scguard::Unregister();
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::unregister_overlay("MFG Unlock", OnRegisterOverlay);
       AcquireSRWLockExclusive(&g_reflex_waitable.lock);

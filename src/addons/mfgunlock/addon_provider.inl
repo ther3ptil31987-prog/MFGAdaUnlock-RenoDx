@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+﻿// SPDX-License-Identifier: MIT
 // DLSS-G provider patches (plan 6.2): the NGX parameter entries, the in-memory
 // architecture gates of nvngx_dlssg, locating the snippet, the temporal
 // (midpoint) fix, the thin-geometry and Blackwell kernels, and the provider
@@ -69,8 +69,78 @@ struct GamePresetHints {
 SRWLOCK g_game_preset_hints_lock = SRWLOCK_INIT;
 std::vector<GamePresetHints> g_game_preset_hints;
 
+// 1.10.0 (XMX video memory): NVIDIA's frame generation feature allocates
+// ~406 MiB at 1440p (48 full- and half-resolution intermediates, weights and
+// scratch; vram_trace.hpp) when DLSS-G creates it, and XMX never evaluates it.
+// With XMX ready, NGX's CreateFeature hands back XMX's own handle instead, and
+// NGX's Evaluate and Release for that handle go straight to XMX: on the
+// Streamline Sample, XMX went from 2242 to 1818 MiB, as little as NVIDIA's own
+// frame generation (Streamline 2.7.32 to 2.14.16). [DLSSG] XmxSaveVram=0
+// creates NVIDIA's feature as before 1.10.0.
+bool XmxSaveVramWanted() {
+  static const bool wanted =
+      GetPrivateProfileIntW(L"DLSSG", L"XmxSaveVram", 1,
+                            (mfgunlock::backend::Directory() / L"MFGAdaUnlock.ini").c_str()) != 0;
+  return wanted;
+}
+bool XmxSkipsNvidiaFeature() {
+  // D3D12 only: on Vulkan the XMX provider owns the feature, and the D3D12 core hooks
+  // retried every 250 ms in DOOM: The Dark Ages ("failed to install hooks in _nvngx.dll").
+  if (g_render_api.load(std::memory_order_relaxed) == DetectedRenderApi::kVulkan) return false;
+  return XmxSaveVramWanted() && mfgunlock::xmx::generator::Enabled() && mfgunlock::xmx::generator::Preflight();
+}
+// NVSDK_NGX_Handle is opaque in these headers; the runtime's own is { unsigned Id; }.
+alignas(8) unsigned int g_xmx_handle_storage[2]{0x584D5801u, 0};  // "XMX" 1
+NVSDK_NGX_Handle* XmxHandle() { return reinterpret_cast<NVSDK_NGX_Handle*>(&g_xmx_handle_storage); }
+std::atomic<int> g_xmx_handles_live{0}, g_xmx_handles_created{0};
+using NgxEvaluateFn = NVSDK_NGX_Result(NVSDK_CONV*)(ID3D12GraphicsCommandList*, const NVSDK_NGX_Handle*,
+                                                    const NVSDK_NGX_Parameter*, void*);
+using NgxReleaseFn = NVSDK_NGX_Result(NVSDK_CONV*)(NVSDK_NGX_Handle*);
+// _nvngx.dll exports no EvaluateFeature_C (driver 6xx), so only these two.
+NgxEvaluateFn g_real_core_evaluate = nullptr;
+NgxReleaseFn g_real_core_release = nullptr;
+NVSDK_NGX_Result NVSDK_CONV HookedCoreEvaluate(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Handle* handle,
+                                               const NVSDK_NGX_Parameter* params, void* callback) {
+  if (handle == XmxHandle()) return mfgunlock::xmx::EvaluateWithoutNvidia(list, params);
+  if (g_real_core_evaluate == nullptr) return NVSDK_NGX_Result_Fail;
+  const NVSDK_NGX_Result result = g_real_core_evaluate(list, handle, params, callback);
+  // 1.10.0 (sl_host.hpp): the game's DLSS SR inputs and output, tagged for its hosted Streamline.
+  if (!NgxFailed(result)) mfgunlock::slhost::AfterEvaluate(list, handle, params);
+  return result;
+}
+NVSDK_NGX_Result NVSDK_CONV HookedCoreRelease(NVSDK_NGX_Handle* handle) {
+  if (handle == XmxHandle()) {
+    const int left = g_xmx_handles_live.fetch_sub(1) - 1;
+    reshade::log::message(reshade::log::level::info,
+                          ("mfgunlock: xmx released its NGX handle (" + std::to_string(left) + " left)").c_str());
+    return NVSDK_NGX_Result_Success;
+  }
+  mfgunlock::slhost::ObserveRelease(handle);
+  if (g_real_core_release == nullptr) return NVSDK_NGX_Result_Fail;
+  return g_real_core_release(handle);
+}
+const std::vector<mfgunlock::hook::HookItem> kXmxCoreHooks = {
+    {"NVSDK_NGX_D3D12_EvaluateFeature", reinterpret_cast<void**>(&g_real_core_evaluate),
+     reinterpret_cast<void*>(&HookedCoreEvaluate)},
+    {"NVSDK_NGX_D3D12_ReleaseFeature", reinterpret_cast<void**>(&g_real_core_release),
+     reinterpret_cast<void*>(&HookedCoreRelease)},
+};
+std::atomic_bool g_xmx_core_hooks_installed{false};
+
 NVSDK_NGX_Result NVSDK_CONV HookedCreateFeature(ID3D12GraphicsCommandList* list, NVSDK_NGX_Feature feature,
                                                 NVSDK_NGX_Parameter* parameters, NVSDK_NGX_Handle** handle) {
+  if (feature == NVSDK_NGX_Feature_FrameGeneration && handle != nullptr &&
+      g_xmx_core_hooks_installed.load(std::memory_order_acquire) && XmxSkipsNvidiaFeature()) {
+    mfgunlock::ampere::provider::g_create_seen.store(true, std::memory_order_release);
+    *handle = XmxHandle();
+    g_xmx_handles_created.fetch_add(1);
+    const int live = g_xmx_handles_live.fetch_add(1) + 1;
+    if (mfgunlock::xmx::preada::Admitted()) mfgunlock::xmx::preada::ObserveCreate(NVSDK_NGX_Result_Success);
+    reshade::log::message(reshade::log::level::info,
+                          ("mfgunlock: xmx created frame generation without NVIDIA's feature (" + std::to_string(live) +
+                           " handle(s))").c_str());
+    return NVSDK_NGX_Result_Success;
+  }
   // 1.8.3, RTX 20/30 (1.9.0: with XMX or NVIDIA's generator): whether
   // NVIDIA's runtime created the feature there, for the panel. Nothing in the
   // call changes.
@@ -112,7 +182,10 @@ NVSDK_NGX_Result NVSDK_CONV HookedCreateFeature(ID3D12GraphicsCommandList* list,
   }
   // Reached through a hook this copy did not install (see hook::JumpsIntoSelf).
   if (g_real_create_feature == nullptr) return NVSDK_NGX_Result_Fail;
-  return g_real_create_feature(list, feature, parameters, handle);
+  const NVSDK_NGX_Result result = g_real_create_feature(list, feature, parameters, handle);
+  if (feature == NVSDK_NGX_Feature_SuperSampling && !NgxFailed(result) && handle != nullptr)
+    mfgunlock::slhost::ObserveCreate(parameters, *handle);
+  return result;
 }
 
 // Installed on its own, only while a preset is selected (or, since 1.8.3, XMX
@@ -129,7 +202,7 @@ bool EnsureResident();
 
 bool PresetHookWanted() {
   return mfgunlock::dlsspreset::g_selected.load(std::memory_order_relaxed) != 0 ||
-         mfgunlock::xmx::preada::Admitted();
+         mfgunlock::xmx::preada::Admitted() || XmxSkipsNvidiaFeature() || mfgunlock::slhost::Wanted();
 }
 
 void TryInstallPresetHook() {
@@ -147,6 +220,10 @@ void TryInstallPresetHook() {
     if (mod == nullptr || GetProcAddress(mod, "NVSDK_NGX_D3D12_CreateFeature") == nullptr) continue;
     char narrow[64] = {};
     WideCharToMultiByte(CP_UTF8, 0, name, -1, narrow, sizeof(narrow) - 1, nullptr, nullptr);
+    // The XMX handle's Evaluate and Release first, so CreateFeature never hands it out unrouted.
+    if ((XmxSkipsNvidiaFeature() || mfgunlock::slhost::Wanted()) && !g_xmx_core_hooks_installed.load(std::memory_order_relaxed) &&
+        mfgunlock::hook::Install(mod, kXmxCoreHooks, narrow))
+      g_xmx_core_hooks_installed.store(true, std::memory_order_release);
     if (mfgunlock::hook::Install(mod, kNgxPresetHooks, narrow))
       g_preset_hook_installed.store(true, std::memory_order_release);
   }
@@ -1084,9 +1161,10 @@ struct FrameGenChain {
   std::string gate;
   std::string slinit;
   std::string dynamic;
+  std::string ngx_feature;  // 1.10.0: RTX 20/30 only; empty elsewhere
   ChainHealth streamline_health = ChainHealth::kUnknown, provider_health = ChainHealth::kUnknown,
               gate_health = ChainHealth::kUnknown, slinit_health = ChainHealth::kUnknown,
-              dynamic_health = ChainHealth::kUnknown;
+              dynamic_health = ChainHealth::kUnknown, ngx_feature_health = ChainHealth::kUnknown;
 };
 std::string ChainVersion(HMODULE module) {
   const auto v = mfgunlock::runtimeversion::FromModule(module);
@@ -1144,18 +1222,42 @@ FrameGenChain DescribeFrameGenChain() {
   } else if (!providers.empty()) {
     chain.gate = "not open (2x at most)";
     chain.gate_health = ChainHealth::kFail;
+    // 1.10.0 (dashdogy A4): say why when every provider predates multi-frame.
+    bool all_old = true;
+    for (HMODULE module : providers)
+      all_old = all_old && mfgunlock::runtimeversion::PredatesMultiFrameDlssg(
+                               mfgunlock::runtimeversion::Pack(mfgunlock::runtimeversion::FromModule(module)));
+    if (all_old)
+      chain.gate += "; this DLSS-G version predates multi-frame generation (310.7 or newer is needed: "
+                    "the NVIDIA app's DLSS override, or a newer nvngx_dlssg.dll)";
   } else {
     chain.gate = "unknown";
+  }
+  // 1.10.1 (plan item 3): Streamline 1.x has no slGetFeatureFunction; nothing in this addon works with it.
+  if (const HMODULE interposer = GetModuleHandleW(L"sl.interposer.dll");
+      interposer != nullptr && GetProcAddress(interposer, "slGetFeatureFunction") == nullptr) {
+    chain.streamline = "Streamline 1.x" + ChainVersion(interposer) +
+                       " (not supported: DLSS-G and Add frame generation need Streamline 2)";
+    chain.streamline_health = ChainHealth::kFail;
   }
   if (mfgunlock::framecount::internal::g_init_seen.load(std::memory_order_acquire)) {
     chain.slinit = "seen by the addon";
     chain.slinit_health = ChainHealth::kOk;
+  } else if (mfgunlock::framecount::internal::g_host_init_seen.load(std::memory_order_acquire)) {
+    // 1.10.1 (plan item 5): only Add frame generation's own slInit ran.
+    chain.slinit = "MFG Unlock's own Streamline (Add frame generation); the game's slInit not seen";
+    chain.slinit_health = ChainHealth::kOk;
   } else if (GetModuleHandleW(L"sl.interposer.dll") != nullptr) {
     const bool needed = mfgunlock::xmx::preada::Admitted() ||
                         mfgunlock::drsoverride::g_max_multiplier.load(std::memory_order_relaxed) != 0;
-    chain.slinit = std::string(mfgunlock::framecount::internal::g_real_init != nullptr
-                                   ? "not called since the addon loaded"
-                                   : "ran before the addon loaded (or not hooked)") +
+    // 1.10.0 (plan 1.5): the hook is in and never ran, yet the DLSS-G plugin is
+    // mapped, which only slInit does: slInit was already running when the
+    // addon loaded (Rift Apart: the interposer loads ReShade's dxgi.dll).
+    const bool hooked = mfgunlock::framecount::internal::g_real_init != nullptr;
+    const bool in_flight = hooked && GetModuleHandleW(L"sl.dlss_g.dll") != nullptr;
+    chain.slinit = std::string(in_flight ? "started before the addon could hook it (the game loads ReShade from inside Streamline)"
+                               : hooked  ? "not called since the addon loaded"
+                                         : "ran before the addon loaded (or not hooked)") +
                    (needed ? "" : "; not needed here");
     // Only RTX 20/30 and the Dynamic MFG ceiling depend on it.
     chain.slinit_health = needed ? ChainHealth::kWarn : ChainHealth::kUnknown;
@@ -1170,6 +1272,32 @@ FrameGenChain DescribeFrameGenChain() {
   } else {
     chain.dynamic = "not supported";
     chain.dynamic_health = ChainHealth::kWarn;
+  }
+  // 1.10.0 (plan 1.3): whether NVIDIA's runtime created the feature, RTX 20/30 only.
+  if (mfgunlock::xmx::preada::Admitted()) {
+    const int64_t created = mfgunlock::xmx::preada::g_create_result.load();
+    const uint64_t on = mfgunlock::xmx::preada::g_first_on_tick.load(std::memory_order_acquire);
+    if (created >= 0 && NVSDK_NGX_FAILED(static_cast<NVSDK_NGX_Result>(created))) {
+      std::ostringstream text;
+      text << "could not be created (0x" << std::hex << static_cast<uint32_t>(created) << ")";
+      // 1.10.0 (dashdogy A3): the SetOptions hook now sends Off.
+      if (mfgunlock::xmx::preada::HoldOff())
+        text << std::dec << "; held off after " << mfgunlock::xmx::preada::kHoldOffAfter
+             << " refusals so Streamline stops retrying";
+      chain.ngx_feature = text.str();
+      chain.ngx_feature_health = ChainHealth::kFail;
+    } else if (created >= 0) {
+      chain.ngx_feature = "created";
+      chain.ngx_feature_health = ChainHealth::kOk;
+    } else if (on == 0) {
+      chain.ngx_feature = "not requested yet (frame generation off in the game)";
+    } else if (mfgunlock::xmx::preada::CreateMissing(now)) {
+      chain.ngx_feature = "not created " + std::to_string((now - on) / 1000) +
+                          " s after the game turned frame generation on; nothing is generated (see the Streamline log)";
+      chain.ngx_feature_health = ChainHealth::kFail;
+    } else {
+      chain.ngx_feature = "waiting for NVIDIA's runtime";
+    }
   }
   cached = chain;
   return chain;

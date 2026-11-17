@@ -154,6 +154,12 @@ target_compile_definitions(dlssg_streamline_smoke PRIVATE NOMINMAX UNICODE _UNIC
 target_include_directories(dlssg_streamline_smoke PRIVATE "${RENODX_SOURCE_DIR}/external/Streamline/include"
   "${RENODX_SOURCE_DIR}/external/Streamline/external/ngx-sdk/include")
 target_link_libraries(dlssg_streamline_smoke PRIVATE d3d12 dxgi)
+# 1.10.0 (plan "DLSS-G em jogos só com DLSS", step 0): a game calling DLSS SR straight through NGX.
+add_executable(ngx_sr_app "${CMAKE_SOURCE_DIR}/ngx_sr_app.cpp")
+target_compile_definitions(ngx_sr_app PRIVATE NOMINMAX UNICODE _UNICODE)
+target_include_directories(ngx_sr_app PRIVATE "${RENODX_SOURCE_DIR}/external/Streamline/external/ngx-sdk/include"
+  "${RENODX_SOURCE_DIR}/external/Streamline/include")
+target_link_libraries(ngx_sr_app PRIVATE d3d12 dxgi dxguid d3dcompiler user32 advapi32)
 add_executable(xemfg_window_tests "${CMAKE_SOURCE_DIR}/xemfg_window_tests.cpp" native_window.cpp)
 target_compile_definitions(xemfg_window_tests PRIVATE NOMINMAX UNICODE _UNICODE)
 target_link_libraries(xemfg_window_tests PRIVATE user32)
@@ -215,8 +221,12 @@ target_include_directories(xemfg_ui_tests PRIVATE "${XEMFG_SDK_ROOT}/inc/xess_fg
   "${RENODX_SOURCE_DIR}/external/Streamline/include")
 target_link_libraries(xemfg_ui_tests PRIVATE d3d12 dxgi)
 add_test(NAME xemfg_ui_composition COMMAND xemfg_ui_tests)
-add_executable(xemfg_cadence_tests "${CMAKE_SOURCE_DIR}/xemfg_cadence_tests.cpp")
-add_test(NAME xemfg_cadence COMMAND xemfg_cadence_tests)
+# 1.10.0 (dashdogy v1.7.1): the pacer's own tests replace the cadence test of the
+# removed DLSS-G-style estimator (sdk_pacing_dlssg.h).
+add_executable(xemfg_latency_pacing_tests "${CMAKE_SOURCE_DIR}/xemfg_latency_pacing_tests.cpp")
+add_test(NAME xemfg_latency_pacing COMMAND xemfg_latency_pacing_tests)
+add_executable(xemfg_pacing_diag_tests "${CMAKE_SOURCE_DIR}/xemfg_pacing_diag_tests.cpp")
+add_test(NAME xemfg_pacing_diag COMMAND xemfg_pacing_diag_tests)
 add_executable(xemfg_hud_input_tests "${CMAKE_SOURCE_DIR}/xemfg_hud_input_tests.cpp")
 target_compile_definitions(xemfg_hud_input_tests PRIVATE NOMINMAX)
 add_test(NAME xemfg_hud_inputs COMMAND xemfg_hud_input_tests)
@@ -253,6 +263,12 @@ target_include_directories(xemfg_panel_preview PRIVATE "${XEMFG_SDK_ROOT}/inc/xe
   "${RENODX_SOURCE_DIR}/external/Streamline/include" "${RENODX_SOURCE_DIR}/external/reshade"
   "${RENODX_SOURCE_DIR}/external/json/include")
 target_link_libraries(xemfg_panel_preview PRIVATE d3d12 dxgi user32 ole32 windowscodecs bcrypt version psapi shell32)
+# 1.10.0 (plan 3.2/5): image regression of the panel in its six languages.
+add_executable(image_ssim "${CMAKE_SOURCE_DIR}/image_ssim.cpp")
+target_link_libraries(image_ssim PRIVATE windowscodecs ole32)
+add_test(NAME panel_images COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/panel_image_tests.py"
+  --preview $<TARGET_FILE:xemfg_panel_preview> --ssim $<TARGET_FILE:image_ssim> --work "${CMAKE_BINARY_DIR}/ui-preview/i18n")
+set_tests_properties(panel_images PROPERTIES RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
 foreach(page RANGE 0 3)
   add_test(NAME xemfg_panel_page_${page} COMMAND xemfg_panel_preview "${CMAKE_BINARY_DIR}/ui-preview/page-${page}.png" ${page} 800)
   set_tests_properties(xemfg_panel_page_${page} PROPERTIES RUN_SERIAL TRUE)
@@ -347,6 +363,22 @@ if(XEMFG_OFFLINE_RESHADE AND XEMFG_OFFLINE_FG AND XEMFG_OFFLINE_LL)
       set_tests_properties(xemfg_sl_sample_${version} PROPERTIES RUN_SERIAL TRUE TIMEOUT 120
         LABELS sl_sample SKIP_REGULAR_EXPRESSION "SKIP:")
     endforeach()
+    # 1.10.0 (plan 2.1/3.1): the RTX 20/30 admission on a simulated RTX 30
+    # (SimulatePreAda=2), in the Rift Apart load order, judged by sl.log.
+    add_test(NAME preada_admission_sl_sample COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_SOURCE_DIR}/preada_admission_sample_tests.py" --bin "${XEMFG_SL_SAMPLES_ROOT}/sample-v2.14.16/_bin"
+      --addon $<TARGET_FILE:mfgunlock_native_xemfg> --reshade "${XEMFG_OFFLINE_RESHADE}"
+      --work "${CMAKE_BINARY_DIR}/native-checks")
+    # 1.10.0 (plan XMX/Vulkan/VRAM, items 4-5): DLSS-G forced into the SR-only
+    # sample, and XMX generating in it, judged by sl.log and video memory.
+    add_test(NAME force_fg_sl_sample COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_SOURCE_DIR}/force_fg_sample_tests.py" --bin "${XEMFG_SL_SAMPLES_ROOT}/sample-v2.14.16/_bin"
+      --addon $<TARGET_FILE:mfgunlock_native_xemfg> --reshade "${XEMFG_OFFLINE_RESHADE}"
+      --sdk-fg "${XEMFG_OFFLINE_FG}" --sdk-ll "${XEMFG_OFFLINE_LL}")
+    set_tests_properties(force_fg_sl_sample PROPERTIES RUN_SERIAL TRUE TIMEOUT 240
+      LABELS sl_sample SKIP_RETURN_CODE 77 SKIP_REGULAR_EXPRESSION "SKIP:")
+    set_tests_properties(preada_admission_sl_sample PROPERTIES RUN_SERIAL TRUE TIMEOUT 240
+      LABELS sl_sample SKIP_RETURN_CODE 77 SKIP_REGULAR_EXPRESSION "SKIP:")
   endif()
   add_test(NAME xemfg_native_retained_legacy COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_SOURCE_DIR}/xemfg_native_tests.py" --directory "${CMAKE_BINARY_DIR}/native-checks"
@@ -612,10 +644,12 @@ if(EXISTS "${XEMFG_VULKAN_HEADERS}/vulkan/vulkan.h" AND EXISTS "${XEMFG_XVK_PROG
   # The Vulkan host (vendor/xvkhost, same release) and the addon's vulkan-1 and
   # NGX Vulkan hooks (native_vulkan.cpp). The program set is embedded as RCDATA
   # 7400+ in the addon itself (vk_host passes its own module to xvk).
-  target_sources(mfgunlock_native_xemfg PRIVATE vendor/xvkhost/vk_host.cpp native_vulkan.cpp
+  target_sources(mfgunlock_native_xemfg PRIVATE vendor/xvkhost/vk_host.cpp vendor/xvkhost/xess/host_xell_binding.cpp
+    vendor/xvkhost/vk_provider.cpp vendor/xvkhost/xefg_internal.cpp vendor/xvkhost/xess/ngx_provider_local.cpp native_vulkan.cpp sl_vulkan.cpp
     "${XEMFG_XVK_GENERATED}/vk_input_copy_spv.h" "${XEMFG_XVK_GENERATED}/embedded_xvk_programs.rc")
   target_include_directories(mfgunlock_native_xemfg PRIVATE vendor/xvkhost)
-  target_compile_definitions(mfgunlock_native_xemfg PRIVATE MFGUNLOCK_XEMFG_VULKAN)
+  # 1.10.0: the provider headers include vulkan.h before xvk.h could select the Win32 platform.
+  target_compile_definitions(mfgunlock_native_xemfg PRIVATE MFGUNLOCK_XEMFG_VULKAN VK_USE_PLATFORM_WIN32_KHR)
   target_link_libraries(mfgunlock_native_xemfg PRIVATE xemfg_xvk)
   add_executable(xemfg_vulkan_policy_tests "${CMAKE_SOURCE_DIR}/xemfg_vulkan_policy_tests.cpp")
   target_include_directories(xemfg_vulkan_policy_tests PRIVATE "${XEMFG_VULKAN_HEADERS}")
